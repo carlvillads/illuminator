@@ -1,0 +1,12 @@
+[package]
+name = "illuminator-core"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+flate2.workspace = true
+nifti.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
