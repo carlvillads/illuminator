@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use std::env::VarError;
 use std::fs::{self, File};
 use std::io::{BufReader, Read, Write};
+#[cfg(unix)]
 use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, Weak};
@@ -39,10 +40,11 @@ impl VolumeCache {
             return Err(Error::invalid("Cache budget must be more than zero"));
         }
         let directory = directory.into();
-        fs::DirBuilder::new()
-            .recursive(true)
-            .mode(0o700)
-            .create(&directory)?;
+        let mut builder = fs::DirBuilder::new();
+        #[cfg(unix)]
+        builder.mode(0o700); // not possible or needed on windows.
+        builder.create(&directory)?;
+
         Ok(Self {
             directory,
             budget: budget_bytes,
@@ -211,7 +213,10 @@ impl VolumeCache {
             if in_use {
                 continue;
             }
-            fs::remove_file(&path)?;
+            if fs::remove_file(&path).is_err() {
+                // Windows will refuse to delete a file if anoter program has it open, so skip it if it can't delete
+                continue;
+            }
             let _ = fs::remove_file(path.with_extension("nii.meta"));
             leases.remove(&path);
             total -= bytes;
