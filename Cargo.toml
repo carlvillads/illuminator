@@ -12,3 +12,4 @@ thiserror = "2"
 flate2 = "1"
 tempfile = "3"
 nifti = { version = "0.18", default-features = false }
+memmap2 = "0.9"
