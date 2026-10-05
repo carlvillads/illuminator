@@ -1,0 +1,10 @@
+[package]
+name = "illuminator-app"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+illuminator-core = { path = "../illuminator-core" }
+gpui-kit.workspace = true
+futures.workspace = true
+image.workspace = true
