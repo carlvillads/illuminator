@@ -3,27 +3,36 @@
 use futures::StreamExt;
 use futures::channel::mpsc;
 use gpui_kit::component::button::{Button, ButtonVariants};
+use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::progress::Progress;
-use gpui_kit::component::{ActiveTheme, Sizable, h_flex, v_flex};
+use gpui_kit::component::slider::{Slider, SliderEvent, SliderState};
+use gpui_kit::component::{ActiveTheme, Selectable, Sizable, h_flex, v_flex};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use illuminator_core::cache::VolumeCache;
 use illuminator_core::display::VolumeDisplay;
 use illuminator_core::geometry::{Point3D, SlicePlane, ViewPlane};
 use illuminator_core::loader::{LoadState, VolumeLoader};
-use illuminator_core::slicer::{Coloring, SliceImage, fit_size};
+use illuminator_core::slicer::{Coloring, Colormap, SliceImage, fit_size};
 use image::{Frame, RgbaImage};
 use std::path::PathBuf;
 use std::sync::Arc;
 
-const SIDEBAR_WIDTH: f32 = 300.0;
+const SIDEBAR_WIDTH: f32 = 320.0;
+const SCROLL_STEP: f32 = 20.0;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SyncMode {
+    World,
+    Proportional,
+}
 
 #[derive(Clone, Copy, PartialEq)]
 struct ImageKey {
     plane: SlicePlane,
     coloring: Coloring,
     frame: usize,
-    crosshair: Point3D,
+    crosshair: Option<Point3D>,
     width: usize,
     height: usize,
 }
@@ -36,6 +45,7 @@ struct PanelImage {
 struct Column {
     display: VolumeDisplay,
     images: [Option<PanelImage>; 3],
+    error: Option<String>,
 }
 
 struct PanelLayout {
@@ -45,17 +55,39 @@ struct PanelLayout {
     image_size: Size<f32>,
 }
 
+struct Hit {
+    column: usize,
+    axis: ViewPlane,
+    s: f64,
+    t: f64,
+}
+
+struct FrameSlider {
+    state: Entity<SliderState>,
+    last_frame: usize,
+    _changes: Subscription,
+}
+
 pub struct Viewer {
+    cache: Arc<VolumeCache>,
     loader: VolumeLoader,
     columns: Vec<Column>,
     errors: Vec<String>,
+    sync: bool,
+    sync_mode: SyncMode,
+    radiological: bool,
+    show_crosshair: bool,
+    frame: usize,
+    frame_slider: Option<FrameSlider>,
+    contrast_drag: Option<(usize, Point<Pixels>)>,
+    scroll_remainder: f32,
     _loader_events: Task<()>,
 }
 
 impl Viewer {
     pub fn new(cache: Arc<VolumeCache>, files: Vec<PathBuf>, cx: &mut Context<Self>) -> Self {
         let (sender, mut changes) = mpsc::unbounded::<()>();
-        let loader = VolumeLoader::new(cache, move || {
+        let loader = VolumeLoader::new(Arc::clone(&cache), move || {
             let _ = sender.unbounded_send(());
         });
         for file in files {
@@ -73,22 +105,41 @@ impl Viewer {
             }
         });
         Self {
+            cache,
             loader,
             columns: Vec::new(),
             errors: Vec::new(),
+            sync: true,
+            sync_mode: SyncMode::Proportional,
+            radiological: false,
+            show_crosshair: true,
+            frame: 0,
+            frame_slider: None,
+            contrast_drag: None,
+            scroll_remainder: 0.0,
             _loader_events: loader_events,
         }
     }
 
     fn take_loaded(&mut self, cx: &mut Context<Self>) {
+        let mut added = false;
         for loaded in self.loader.take_completed() {
             match VolumeDisplay::new(loaded) {
-                Ok(display) => self.columns.push(Column {
-                    display,
-                    images: [None, None, None],
-                }),
+                Ok(mut display) => {
+                    let error = display.set_frame(self.frame).err().map(|e| e.to_string());
+                    self.columns.push(Column {
+                        display,
+                        images: [None, None, None],
+                        error,
+                    });
+                    added = true;
+                }
                 Err(error) => self.errors.push(error.to_string()),
             }
+        }
+        if added {
+            self.update_frame_slider(cx);
+            self.sync_from_first();
         }
         cx.notify();
     }
@@ -112,6 +163,99 @@ impl Viewer {
         .detach();
     }
 
+    fn change(
+        &mut self,
+        column: usize,
+        change: impl FnOnce(&mut VolumeDisplay) -> illuminator_core::Result<()>,
+        cx: &mut Context<Self>,
+    ) {
+        let entry = &mut self.columns[column];
+        entry.error = change(&mut entry.display).err().map(|e| e.to_string());
+        self.sync_from(column);
+        cx.notify();
+    }
+
+    fn sync_from(&mut self, active: usize) {
+        if !self.sync {
+            return;
+        }
+        let source = &self.columns[active].display;
+        match self.sync_mode {
+            SyncMode::World => {
+                if !source.world_linked() {
+                    return;
+                }
+                let cursor = source.cursor();
+                for (index, column) in self.columns.iter_mut().enumerate() {
+                    if index != active && column.display.world_linked() {
+                        column.display.set_cursor(cursor);
+                    }
+                }
+            }
+            SyncMode::Proportional => {
+                let fraction = source.fractional_cursor();
+                for (index, column) in self.columns.iter_mut().enumerate() {
+                    if index != active {
+                        column.display.set_fractional_cursor(fraction);
+                    }
+                }
+            }
+        }
+    }
+
+    fn sync_from_first(&mut self) {
+        let leader = self.columns.iter().position(|column| {
+            self.sync_mode == SyncMode::Proportional || column.display.world_linked()
+        });
+        if let Some(leader) = leader {
+            self.sync_from(leader);
+        }
+    }
+
+    fn set_frame(&mut self, frame: usize, cx: &mut Context<Self>) {
+        self.frame = frame;
+        for column in &mut self.columns {
+            column.error = column.display.set_frame(frame).err().map(|e| e.to_string());
+        }
+        cx.notify();
+    }
+
+    fn update_frame_slider(&mut self, cx: &mut Context<Self>) {
+        let frames = self
+            .columns
+            .iter()
+            .map(|column| column.display.volume().header().timepoints())
+            .max()
+            .unwrap_or(1);
+        let last_frame = frames - 1;
+        if last_frame == 0
+            || self
+                .frame_slider
+                .as_ref()
+                .is_some_and(|s| s.last_frame == last_frame)
+        {
+            return;
+        }
+        let frame = self.frame.min(last_frame) as f32;
+        let state = cx.new(|_| {
+            SliderState::new()
+                .min(0.0)
+                .max(last_frame as f32)
+                .step(1.0)
+                .default_value(frame)
+        });
+        let changes = cx.subscribe(&state, |viewer, _, event: &SliderEvent, cx| {
+            if let SliderEvent::Change(value) = event {
+                viewer.set_frame(value.start().round() as usize, cx);
+            }
+        });
+        self.frame_slider = Some(FrameSlider {
+            state,
+            last_frame,
+            _changes: changes,
+        });
+    }
+
     fn layout(&self, column: usize, row: usize, window: &Window) -> PanelLayout {
         let viewport = window.viewport_size();
         let area_width = (f32::from(viewport.width) - SIDEBAR_WIDTH).max(0.0);
@@ -120,7 +264,7 @@ impl Viewer {
         let scale = window.scale_factor();
         let plane = self.columns[column]
             .display
-            .plane(ViewPlane::ALL[row], false);
+            .plane(ViewPlane::ALL[row], self.radiological);
         let image_pixels = fit_size(&plane, (width * scale) as usize, (height * scale) as usize);
         PanelLayout {
             origin: point(column as f32 * width, row as f32 * height),
@@ -130,7 +274,7 @@ impl Viewer {
         }
     }
 
-    fn pick(&mut self, position: Point<Pixels>, window: &mut Window, cx: &mut Context<Self>) {
+    fn hit(&self, position: Point<Pixels>, window: &Window) -> Option<Hit> {
         let (x, y) = (f32::from(position.x), f32::from(position.y));
         for column in 0..self.columns.len() {
             for row in 0..3 {
@@ -146,18 +290,59 @@ impl Viewer {
                 }
                 let left = (layout.size.width - layout.image_size.width) / 2.0;
                 let top = (layout.size.height - layout.image_size.height) / 2.0;
-                let s = (local_x - left) / layout.image_size.width;
-                let t = 1.0 - (local_y - top) / layout.image_size.height;
-                let axis = ViewPlane::ALL[row];
-                if self.columns[column]
-                    .display
-                    .pick(axis, false, f64::from(s), f64::from(t))
-                {
-                    cx.notify();
-                }
-                return;
+                return Some(Hit {
+                    column,
+                    axis: ViewPlane::ALL[row],
+                    s: f64::from((local_x - left) / layout.image_size.width),
+                    t: f64::from(1.0 - (local_y - top) / layout.image_size.height),
+                });
             }
         }
+        None
+    }
+
+    fn pick(&mut self, position: Point<Pixels>, window: &Window, cx: &mut Context<Self>) {
+        let Some(hit) = self.hit(position, window) else {
+            return;
+        };
+        let radiological = self.radiological;
+        if self.columns[hit.column]
+            .display
+            .pick(hit.axis, radiological, hit.s, hit.t)
+        {
+            self.sync_from(hit.column);
+            cx.notify();
+        }
+    }
+
+    fn scroll(&mut self, event: &ScrollWheelEvent, window: &Window, cx: &mut Context<Self>) {
+        let Some(hit) = self.hit(event.position, window) else {
+            return;
+        };
+        self.scroll_remainder += f32::from(event.delta.pixel_delta(px(SCROLL_STEP)).y);
+        let steps = (self.scroll_remainder / SCROLL_STEP).trunc();
+        if steps == 0.0 {
+            return;
+        }
+        self.scroll_remainder -= steps * SCROLL_STEP;
+        if self.columns[hit.column]
+            .display
+            .step_slice(hit.axis, f64::from(steps))
+        {
+            self.sync_from(hit.column);
+            cx.notify();
+        }
+    }
+
+    fn drag_contrast(&mut self, position: Point<Pixels>, cx: &mut Context<Self>) {
+        let Some((column, last)) = self.contrast_drag else {
+            return;
+        };
+        let dx = f64::from(f32::from(position.x - last.x));
+        let dy = f64::from(f32::from(position.y - last.y));
+        self.columns[column].display.drag_window(dx, dy);
+        self.contrast_drag = Some((column, position));
+        cx.notify();
     }
 
     /// Renders any updated panels since last draw
@@ -169,10 +354,10 @@ impl Viewer {
                 let display = &self.columns[column].display;
                 let axis = ViewPlane::ALL[row];
                 let key = ImageKey {
-                    plane: display.plane(axis, false),
+                    plane: display.plane(axis, self.radiological),
                     coloring: display.coloring(),
                     frame: display.frame(),
-                    crosshair: display.cursor(),
+                    crosshair: self.show_crosshair.then_some(display.cursor()),
                     width,
                     height,
                 };
@@ -180,7 +365,8 @@ impl Viewer {
                 if width == 0 || height == 0 || current.as_ref().is_some_and(|p| p.key == key) {
                     continue;
                 }
-                let image = to_render_image(display.slice(axis, false, true).render(width, height));
+                let slice = display.slice(axis, self.radiological, self.show_crosshair);
+                let image = to_render_image(slice.render(width, height));
                 let replaced = self.columns[column].images[row].replace(PanelImage { key, image });
                 if let Some(old) = replaced {
                     cx.drop_image(old.image, Some(window));
@@ -203,10 +389,27 @@ impl Viewer {
                     viewer.pick(event.position, window, cx);
                 }),
             )
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(|viewer, event: &MouseDownEvent, window, _| {
+                    viewer.contrast_drag = viewer
+                        .hit(event.position, window)
+                        .map(|hit| (hit.column, event.position));
+                }),
+            )
+            .on_mouse_up(
+                MouseButton::Right,
+                cx.listener(|viewer, _: &MouseUpEvent, _, _| viewer.contrast_drag = None),
+            )
             .on_mouse_move(cx.listener(|viewer, event: &MouseMoveEvent, window, cx| {
-                if event.pressed_button == Some(MouseButton::Left) {
-                    viewer.pick(event.position, window, cx);
+                match event.pressed_button {
+                    Some(MouseButton::Left) => viewer.pick(event.position, window, cx),
+                    Some(MouseButton::Right) => viewer.drag_contrast(event.position, cx),
+                    _ => {}
                 }
+            }))
+            .on_scroll_wheel(cx.listener(|viewer, event: &ScrollWheelEvent, window, cx| {
+                viewer.scroll(event, window, cx);
             }));
 
         if self.columns.is_empty() {
@@ -217,14 +420,15 @@ impl Viewer {
                     .items_center()
                     .justify_center()
                     .text_color(muted)
-                    .child("Drop nifti files here, or use 'Open volume...'"),
+                    .child("Drop scans here or use Open volume..."),
             );
         }
 
         for (index, column) in self.columns.iter().enumerate() {
+            let display = &column.display;
             for row in 0..3 {
                 let layout = self.layout(index, row, window);
-                let labels = column.display.labels(ViewPlane::ALL[row], false);
+                let labels = display.labels(ViewPlane::ALL[row], self.radiological);
                 let mut panel = div()
                     .absolute()
                     .left(px(layout.origin.x))
@@ -255,18 +459,26 @@ impl Viewer {
                             .left_2()
                             .child(labels.title)
                             .when(row == 0, |title| {
-                                title.child(
-                                    div()
-                                        .text_xs()
-                                        .text_color(muted)
-                                        .child(column.display.name()),
-                                )
+                                title.child(div().text_xs().text_color(muted).child(display.name()))
                             }),
                     )
                     .child(edge(labels.left).left_2())
                     .child(edge(labels.right).right_2())
                     .child(edge(labels.top).top_1())
-                    .child(edge(labels.bottom).bottom_1());
+                    .child(edge(labels.bottom).bottom_1())
+                    .when(
+                        !display.geometry().contains_world(display.cursor()),
+                        |panel| {
+                            panel.child(
+                                div()
+                                    .absolute()
+                                    .bottom_1()
+                                    .left_2()
+                                    .text_color(label_color)
+                                    .child("Cursor outside volume"),
+                            )
+                        },
+                    );
                 area = area.child(panel);
             }
         }
@@ -276,7 +488,8 @@ impl Viewer {
     fn render_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
         let (muted, border, sidebar) = (theme.muted_foreground, theme.border, theme.sidebar);
-        let mut list = v_flex()
+        let separator = || div().border_t_1().border_color(border);
+        v_flex()
             .id("sidebar")
             .w(px(SIDEBAR_WIDTH))
             .h_full()
@@ -288,20 +501,34 @@ impl Viewer {
             .border_l_1()
             .border_color(border)
             .text_sm()
-            .child(
-                h_flex()
-                    .gap_2()
-                    .child(
-                        Button::new("open")
-                            .primary()
-                            .small()
-                            .label("Open volume...")
-                            .on_click(cx.listener(|viewer, _, _, cx| viewer.open_files(cx))),
-                    )
-                    .child(div().text_color(muted).child("or drop files here")),
-            );
+            .child(self.render_loading(cx))
+            .child(separator())
+            .child(self.render_view_controls(cx))
+            .children((0..self.columns.len()).map(|index| {
+                v_flex()
+                    .gap_3()
+                    .child(separator())
+                    .child(self.render_volume(index, cx))
+            }))
+            .child(separator())
+            .child(v_flex().gap_1().text_xs().text_color(muted).child(format!(
+                "Max cache size: {:.1} GiB",
+                self.cache.budget() as f64 / (1u64 << 30) as f64
+            )))
+    }
 
-        // Loads that are still running, or that failed or were cancelled.
+    fn render_loading(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let muted = cx.theme().muted_foreground;
+        let danger = cx.theme().danger;
+        let mut list = v_flex().gap_3().child(
+            h_flex().gap_2().child(
+                Button::new("open")
+                    .primary()
+                    .small()
+                    .label("Open volume(s)")
+                    .on_click(cx.listener(|viewer, _, _, cx| viewer.open_files(cx))),
+            ),
+        );
         let statuses = self.loader.statuses();
         let any_finished = statuses.iter().any(|status| !status.state.is_active());
         for status in statuses {
@@ -331,7 +558,7 @@ impl Viewer {
                     )
                     .into_any_element(),
                 LoadState::Failed(error) => div()
-                    .text_color(cx.theme().danger)
+                    .text_color(danger)
                     .child(error.clone())
                     .into_any_element(),
                 _ => div()
@@ -367,40 +594,270 @@ impl Viewer {
             );
         }
         for error in &self.errors {
-            list = list.child(div().text_color(cx.theme().danger).child(error.clone()));
+            list = list.child(div().text_color(danger).child(error.clone()));
         }
-
-        // summary of each volume and the value under the cursor
-        list = list.child(
-            div()
-                .pt_2()
-                .border_t_1()
-                .border_color(border)
-                .child(format!("Loaded volumes: {}", self.columns.len())),
-        );
-        for column in &self.columns {
-            let display = &column.display;
-            let h = display.volume().header();
-            let cursor = match display.cursor_sample() {
-                Some(([x, y, z], value)) => format!("Voxel {x}, {y}, {z} = {value:.6}"),
-                None => "Cursor outside volume".to_string(),
-            };
+        if !self.errors.is_empty() {
             list = list.child(
-                v_flex()
-                    .gap_1()
-                    .child(display.name())
-                    .child(div().text_xs().text_color(muted).child(format!(
-                        "{} x {} x {} x {} | {}",
-                        h.width(),
-                        h.height(),
-                        h.depth(),
-                        h.timepoints(),
-                        h.datatype.name()
-                    )))
-                    .child(div().text_xs().child(cursor)),
+                Button::new("dismiss-errors")
+                    .ghost()
+                    .xsmall()
+                    .label("Dismiss load errors")
+                    .on_click(cx.listener(|viewer, _, _, cx| {
+                        viewer.errors.clear();
+                        cx.notify();
+                    })),
             );
         }
         list
+    }
+
+    /// Settings shared by all volumes
+    fn render_view_controls(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let mode_button = |id: &'static str, label: &'static str, mode: SyncMode| {
+            Button::new(id)
+                .xsmall()
+                .label(label)
+                .selected(self.sync_mode == mode)
+                .on_click(cx.listener(move |viewer, _, _, cx| {
+                    viewer.sync_mode = mode;
+                    viewer.sync_from_first();
+                    cx.notify();
+                }))
+        };
+        v_flex()
+            .gap_2()
+            .child(format!("Loaded volumes: {}", self.columns.len()))
+            .child(
+                Checkbox::new("sync")
+                    .label("Sync crosshairs")
+                    .checked(self.sync)
+                    .on_click(cx.listener(|viewer, checked: &bool, _, cx| {
+                        viewer.sync = *checked;
+                        viewer.sync_from_first();
+                        cx.notify();
+                    })),
+            )
+            .when(self.sync, |controls| {
+                controls.child(
+                    h_flex()
+                        .gap_1()
+                        .child(mode_button(
+                            "sync-world",
+                            "World (aligned)",
+                            SyncMode::World,
+                        ))
+                        .child(mode_button(
+                            "sync-proportional",
+                            "Proportional",
+                            SyncMode::Proportional,
+                        )),
+                )
+            })
+            .child(
+                Checkbox::new("radiological")
+                    .label("Radiological convention")
+                    .checked(self.radiological)
+                    .on_click(cx.listener(|viewer, checked: &bool, _, cx| {
+                        viewer.radiological = *checked;
+                        cx.notify();
+                    })),
+            )
+            .child(
+                Checkbox::new("crosshair")
+                    .label("Show crosshairs")
+                    .checked(self.show_crosshair)
+                    .on_click(cx.listener(|viewer, checked: &bool, _, cx| {
+                        viewer.show_crosshair = *checked;
+                        cx.notify();
+                    })),
+            )
+            .when_some(self.frame_slider.as_ref(), |controls, slider| {
+                controls
+                    .child(format!(
+                        "Global frame: {} of {}",
+                        self.frame, slider.last_frame
+                    ))
+                    .child(Slider::new(&slider.state))
+            })
+    }
+
+    /// The information and controls of one volume
+    fn render_volume(&self, index: usize, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.theme();
+        let (muted, danger) = (theme.muted_foreground, theme.danger);
+        let column = &self.columns[index];
+        let display = &column.display;
+        let geometry = display.geometry();
+        let h = display.volume().header();
+        let id = |name: &'static str| (name, index as u64);
+
+        let cursor_text = match display.cursor_sample() {
+            Some(([x, y, z], value)) if display.label_mode() => {
+                format!("{x}, {y}, {z}\nLabel: {value}")
+            }
+            Some(([x, y, z], value)) => format!("{x}, {y}, {z}\nValue: {value}"),
+            None => "Outside volume".to_string(),
+        };
+
+        let mut section = v_flex()
+            .gap_2()
+            .child(
+                div()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child(format!("Volume {}", index + 1)),
+            )
+            .child(display.name())
+            .child(div().text_xs().text_color(muted).child(format!(
+                "{} x {} x {} | {}",
+                h.width(),
+                h.height(),
+                h.depth(),
+                h.datatype.name()
+            )))
+            .child(div().text_xs().text_color(muted).child(format!(
+                "Frame {} of {} | sform {} | qform {}",
+                display.frame() + 1,
+                h.timepoints(),
+                h.sform_code,
+                h.qform_code
+            )))
+            .when(display.units_unknown(), |section| {
+                section.child(
+                    Checkbox::new(id("assume-mm"))
+                        .label("Assume mm")
+                        .checked(display.options().assume_mm)
+                        .on_click(cx.listener(move |viewer, checked: &bool, _, cx| {
+                            let checked = *checked;
+                            viewer.change(index, |display| display.set_assume_mm(checked), cx);
+                        })),
+                )
+            })
+            .when(display.can_be_anatomical(), |section| {
+                section.child(
+                    Checkbox::new(id("native"))
+                        .label("Native voxel axes")
+                        .checked(display.options().native)
+                        .on_click(cx.listener(move |viewer, checked: &bool, _, cx| {
+                            let checked = *checked;
+                            viewer.change(index, |display| display.set_native(checked), cx);
+                        })),
+                )
+            })
+            .child(div().text_xs().text_color(muted).child(format!(
+                "{} units: {}",
+                geometry.transform_name, geometry.unit_name
+            )))
+            .when(
+                self.sync && self.sync_mode == SyncMode::World && geometry.anatomical,
+                |section| {
+                    section.child(
+                        Checkbox::new(id("link"))
+                            .label("Link in world space")
+                            .checked(display.link_world)
+                            .on_click(cx.listener(move |viewer, checked: &bool, _, cx| {
+                                let checked = *checked;
+                                viewer.change(
+                                    index,
+                                    |display| {
+                                        display.link_world = checked;
+                                        Ok(())
+                                    },
+                                    cx,
+                                );
+                            })),
+                    )
+                },
+            )
+            .when(geometry.anatomical, |section| {
+                let cursor = display.cursor();
+                section.child(format!(
+                    "RAS [mm]: {:.3}, {:.3}, {:.3}",
+                    cursor.x, cursor.y, cursor.z
+                ))
+            })
+            .child(cursor_text)
+            .child(
+                Button::new(id("center"))
+                    .xsmall()
+                    .label("Center cursor")
+                    .on_click(cx.listener(move |viewer, _, _, cx| {
+                        viewer.change(
+                            index,
+                            |display| {
+                                display.reset_cursor();
+                                Ok(())
+                            },
+                            cx,
+                        );
+                    })),
+            )
+            .child(
+                Checkbox::new(id("labels"))
+                    .label("Segmentation map")
+                    .checked(display.label_mode())
+                    .on_click(cx.listener(move |viewer, checked: &bool, _, cx| {
+                        let checked = *checked;
+                        viewer.change(index, |display| display.set_label_mode(checked), cx);
+                    })),
+            );
+
+        section = if display.label_mode() {
+            section.child(format!("{} labels", display.label_count()))
+        } else {
+            let window = display.window;
+            section
+                .child(
+                    h_flex()
+                        .gap_2()
+                        .child(
+                            Button::new(id("auto"))
+                                .xsmall()
+                                .label("Auto current frame")
+                                .on_click(cx.listener(move |viewer, _, _, cx| {
+                                    viewer.change(index, VolumeDisplay::auto_window, cx);
+                                })),
+                        )
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(muted)
+                                .child(format!("L: {:.6}  W: {:.6}", window.level, window.width)),
+                        ),
+                )
+                .when(display.range().is_none(), |section| {
+                    section.child(
+                        div()
+                            .text_xs()
+                            .text_color(muted)
+                            .child("No finite values in measured frame!"),
+                    )
+                })
+                .child(h_flex().gap_1().flex_wrap().children(
+                    Colormap::ALL.into_iter().enumerate().map(|(n, colormap)| {
+                        Button::new(("colormap", (index * Colormap::ALL.len() + n) as u64))
+                            .xsmall()
+                            .label(colormap.name())
+                            .selected(display.colormap == colormap)
+                            .on_click(cx.listener(move |viewer, _, _, cx| {
+                                viewer.columns[index].display.colormap = colormap;
+                                cx.notify();
+                            }))
+                    }),
+                ))
+        };
+
+        section.when_some(column.error.clone(), |section, error| {
+            section.child(div().text_color(danger).child(error)).child(
+                Button::new(id("dismiss-error"))
+                    .ghost()
+                    .xsmall()
+                    .label("Dismiss error")
+                    .on_click(cx.listener(move |viewer, _, _, cx| {
+                        viewer.columns[index].error = None;
+                        cx.notify();
+                    })),
+            )
+        })
     }
 }
 

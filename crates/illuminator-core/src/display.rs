@@ -2,35 +2,43 @@
 
 use crate::error::{Error, Result};
 use crate::geometry::{GeometryOptions, Point3D, SlicePlane, ViewPlane, VolumeGeometry};
-use crate::header::Header;
+use crate::header::{Header, SpatialUnits};
+use crate::labels::LabelTable;
 use crate::loader::LoadedVolume;
+use crate::progress::Progress;
 use crate::slicer::{Coloring, Colormap, Slice};
 use crate::volume::{NiiVolume, Range};
+
+const LABEL_LIMIT: usize = 1 << 20;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct IntensityWindow {
     pub level: f64,
     pub width: f64,
     pub min_width: f64,
+    pub step: f64,
 }
 
 impl IntensityWindow {
     pub fn spanning(low: f64, high: f64) -> Result<Self> {
         let span = high - low;
         if !span.is_finite() {
-            return Err(Error::invalid("Intensity range could not be represented"));
+            return Err(Error::invalid("Intensity range cannot be represented"));
         }
         let magnitude = low.abs().max(high.abs());
+        let width = if span > 0.0 {
+            span
+        } else {
+            (magnitude * 0.01).max(1.0)
+        };
+        let min_width = (span * 1e-6)
+            .max(magnitude * f64::EPSILON * 8.0)
+            .max(1e-300);
         Ok(Self {
             level: low * 0.5 + high * 0.5,
-            width: if span > 0.0 {
-                span
-            } else {
-                (magnitude * 0.01).max(1.0)
-            },
-            min_width: (span * 1e-6)
-                .max(magnitude * f64::EPSILON * 8.0)
-                .max(1e-300),
+            width,
+            min_width,
+            step: (width * 0.005).max(min_width),
         })
     }
 
@@ -58,25 +66,34 @@ pub struct PanelLabels {
 pub struct VolumeDisplay {
     volume: NiiVolume,
     geometry: VolumeGeometry,
+    options: GeometryOptions,
     cursor: Point3D,
     frame: usize,
+    range: Option<Range>,
+    labels: LabelTable,
+    label_mode: bool,
     pub window: IntensityWindow,
     pub colormap: Colormap,
-    pub label_mode: bool,
+    pub link_world: bool,
 }
 
 impl VolumeDisplay {
     pub fn new(loaded: LoadedVolume) -> Result<Self> {
-        let geometry = loaded.volume.geometry(GeometryOptions::default())?;
+        let options = GeometryOptions::default();
+        let geometry = loaded.volume.geometry(options)?;
         let window = IntensityWindow::initial(loaded.volume.header(), loaded.range)?;
         let mut display = Self {
             volume: loaded.volume,
             geometry,
+            options,
             cursor: Point3D::default(),
             frame: 0,
+            range: loaded.range,
+            labels: LabelTable::default(),
+            label_mode: false,
             window,
             colormap: Colormap::default(),
-            label_mode: false,
+            link_world: true,
         };
         display.reset_cursor();
         Ok(display)
@@ -90,12 +107,28 @@ impl VolumeDisplay {
         &self.geometry
     }
 
+    pub fn options(&self) -> GeometryOptions {
+        self.options
+    }
+
     pub fn cursor(&self) -> Point3D {
         self.cursor
     }
 
     pub fn frame(&self) -> usize {
         self.frame
+    }
+
+    pub fn range(&self) -> Option<Range> {
+        self.range
+    }
+
+    pub fn label_mode(&self) -> bool {
+        self.label_mode
+    }
+
+    pub fn label_count(&self) -> usize {
+        self.labels.labels().len()
     }
 
     pub fn name(&self) -> String {
@@ -105,6 +138,19 @@ impl VolumeDisplay {
             .unwrap_or(self.volume.path().as_os_str())
             .to_string_lossy()
             .into_owned()
+    }
+
+    pub fn units_unknown(&self) -> bool {
+        self.volume.header().units == SpatialUnits::Unknown
+    }
+
+    pub fn can_be_anatomical(&self) -> bool {
+        let h = self.volume.header();
+        (h.sform.is_some() || h.qform.is_some()) && self.geometry.units_known
+    }
+
+    pub fn world_linked(&self) -> bool {
+        self.geometry.anatomical && self.link_world
     }
 
     pub fn reset_cursor(&mut self) {
@@ -123,7 +169,126 @@ impl VolumeDisplay {
         }
     }
 
-    /// Current coloring
+    pub fn set_native(&mut self, native: bool) -> Result<()> {
+        self.set_options(GeometryOptions {
+            native,
+            ..self.options
+        })
+    }
+
+    pub fn set_assume_mm(&mut self, assume_mm: bool) -> Result<()> {
+        self.set_options(GeometryOptions {
+            assume_mm,
+            ..self.options
+        })
+    }
+
+    /// Rebuilds the geometry while keeping the cursor on the same voxel
+    fn set_options(&mut self, options: GeometryOptions) -> Result<()> {
+        let geometry = self.volume.geometry(options)?;
+        let voxel = self.geometry.world_to_voxel.point(self.cursor);
+        self.cursor = geometry.voxel_to_world.point(voxel);
+        self.geometry = geometry;
+        self.options = options;
+        Ok(())
+    }
+
+    pub fn fractional_cursor(&self) -> Point3D {
+        let bounds = &self.geometry.cursor_bounds;
+        let extent = bounds.extent();
+        let mut fraction = Point3D::default();
+        for axis in 0..3 {
+            fraction[axis] = if extent[axis] > 0.0 {
+                (self.cursor[axis] - bounds.min[axis]) / extent[axis]
+            } else {
+                0.5
+            };
+        }
+        fraction
+    }
+
+    pub fn set_fractional_cursor(&mut self, fraction: Point3D) {
+        if !fraction.is_finite() {
+            return;
+        }
+        let bounds = self.geometry.cursor_bounds;
+        let extent = bounds.extent();
+        for axis in 0..3 {
+            self.cursor[axis] = bounds.min[axis] + fraction[axis].clamp(0.0, 1.0) * extent[axis];
+        }
+        self.snap_to_voxel();
+    }
+
+    pub fn step_slice(&mut self, axis: ViewPlane, steps: f64) -> bool {
+        let world_axis = match axis {
+            ViewPlane::Axial => 2,
+            ViewPlane::Coronal => 1,
+            ViewPlane::Sagittal => 0,
+        };
+        let row = self.geometry.voxel_to_world.m[world_axis];
+        let step = row[..3]
+            .iter()
+            .fold(0.0, |most: f64, value| most.max(value.abs()));
+        let bounds = &self.geometry.cursor_bounds;
+        let before = self.cursor;
+        self.cursor[world_axis] = (self.cursor[world_axis] + steps * step)
+            .clamp(bounds.min[world_axis], bounds.max[world_axis]);
+        self.snap_to_voxel();
+        self.cursor != before
+    }
+
+    fn snap_to_voxel(&mut self) {
+        if self.geometry.anatomical {
+            return;
+        }
+        let mut voxel = self.geometry.world_to_voxel.point(self.cursor);
+        for axis in 0..3 {
+            let last = (self.geometry.dimensions[axis] - 1) as f64;
+            voxel[axis] = (voxel[axis] + 0.5).floor().clamp(0.0, last);
+        }
+        self.cursor = self.geometry.voxel_to_world.point(voxel);
+    }
+
+    pub fn set_frame(&mut self, t: usize) -> Result<()> {
+        let frame = self.volume.clamp_frame(t);
+        if frame == self.frame {
+            return Ok(());
+        }
+        if self.label_mode {
+            self.labels
+                .encode(&self.volume, frame, LABEL_LIMIT, &Progress::default())?;
+        }
+        self.frame = frame;
+        Ok(())
+    }
+
+    pub fn set_label_mode(&mut self, enabled: bool) -> Result<()> {
+        if enabled && !self.label_mode {
+            self.labels
+                .encode(&self.volume, self.frame, LABEL_LIMIT, &Progress::default())?;
+        }
+        self.label_mode = enabled;
+        Ok(())
+    }
+
+    pub fn auto_window(&mut self) -> Result<()> {
+        let range = self.volume.frame_range(self.frame, &Progress::default())?;
+        let (low, high) = range.map_or((0.0, 1.0), |range| (range.min, range.max));
+        self.window = IntensityWindow::spanning(low, high)?;
+        self.range = range;
+        Ok(())
+    }
+
+    pub fn drag_window(&mut self, dx: f64, dy: f64) {
+        let window = &mut self.window;
+        let width = (window.width + dx * window.step).max(window.min_width);
+        let level = window.level - dy * window.step;
+        if width.is_finite() && level.is_finite() {
+            window.width = width;
+            window.level = level;
+        }
+    }
+
     pub fn coloring(&self) -> Coloring {
         if self.label_mode {
             Coloring::Labels
@@ -147,7 +312,7 @@ impl VolumeDisplay {
             plane: self.plane(axis, radiological),
             frame: self.frame,
             coloring: self.coloring(),
-            crosshair: crosshair.then_some(self.cursor()),
+            crosshair: crosshair.then_some(self.cursor),
         }
     }
 
@@ -155,18 +320,16 @@ impl VolumeDisplay {
         if !(0.0..1.0).contains(&s) || !(0.0..1.0).contains(&t) {
             return false;
         }
-        let mut selected = self.plane(axis, radiological).point(s, t);
-        if !self.geometry.anatomical {
-            let mut voxel = self.geometry.world_to_voxel.point(selected);
-            if !self.geometry.contains_voxel(voxel) {
-                return false;
-            }
-            for axis in 0..3 {
-                voxel[axis] = (voxel[axis] + 0.5).floor();
-            }
-            selected = self.geometry.voxel_to_world.point(voxel);
+        let selected = self.plane(axis, radiological).point(s, t);
+        if !self.geometry.anatomical
+            && !self
+                .geometry
+                .contains_voxel(self.geometry.world_to_voxel.point(selected))
+        {
+            return false;
         }
         self.cursor = selected;
+        self.snap_to_voxel();
         true
     }
 
@@ -229,8 +392,8 @@ mod tests {
 
     use super::*;
     use crate::cache::VolumeCache;
-    use crate::progress::Progress;
     use crate::test_util::Fixture;
+    use crate::voxel::DataType;
 
     fn display(dir: &TempDir, fixture: &Fixture) -> VolumeDisplay {
         let path = dir.path().join("display.nii");
@@ -250,7 +413,6 @@ mod tests {
     fn windows() {
         let window = IntensityWindow::spanning(0.0, 30.0).unwrap();
         assert_eq!((window.level, window.width), (15.0, 30.0));
-        // A flat image gets a small window around its value (C++: "Constant volume").
         let flat = IntensityWindow::spanning(-5.0, -5.0).unwrap();
         assert_eq!((flat.level, flat.width), (-5.0, 1.0));
         assert!(IntensityWindow::spanning(-f64::MAX, f64::MAX).is_err());
@@ -281,9 +443,7 @@ mod tests {
     fn starts_on_the_center_voxel() {
         let dir = tempfile::tempdir().unwrap();
         let display = display(&dir, &Fixture::default());
-        // (4 - 1) / 2, (3 - 1) / 2, (4 - 1) / 2 with integer division, like C++.
         assert_eq!(display.cursor(), Point3D::new(1.0, 1.0, 1.0));
-        // Voxel (1, 1, 1) is number 1 + 4 * (1 + 3 * 1) = 17.
         assert_eq!(display.cursor_sample(), Some(([1, 1, 1], 17.0)));
         assert_eq!(
             display.coloring(),
@@ -299,15 +459,98 @@ mod tests {
     fn picking_moves_the_cursor() {
         let dir = tempfile::tempdir().unwrap();
         let mut display = display(&dir, &Fixture::default());
-        // The axial panel spans x from -0.5 to 3.5 and y from -0.5 to 2.5.
         assert!(display.pick(ViewPlane::Axial, false, 0.125, 0.5));
         assert_eq!(display.cursor(), Point3D::new(0.0, 1.0, 1.0));
-        // Outside the image: nothing changes.
         assert!(!display.pick(ViewPlane::Axial, false, 1.5, 0.5));
         assert_eq!(display.cursor(), Point3D::new(0.0, 1.0, 1.0));
-        // In radiological view the same click lands on the other side.
         assert!(display.pick(ViewPlane::Axial, true, 0.125, 0.5));
         assert_eq!(display.cursor(), Point3D::new(3.0, 1.0, 1.0));
+    }
+
+    #[test]
+    fn native_view_snaps_to_voxels_and_keeps_the_cursor() {
+        let dir = tempfile::tempdir().unwrap();
+        let flipped = Fixture {
+            sform: [
+                [-2.0, 0.0, 0.0, 30.0],
+                [0.0, 3.0, 0.0, -20.0],
+                [0.0, 0.0, 4.0, 10.0],
+            ],
+            ..Fixture::default()
+        };
+        let mut display = display(&dir, &flipped);
+        assert!(display.world_linked());
+        display.set_native(true).unwrap();
+        assert!(!display.geometry().anatomical && !display.world_linked());
+        assert_eq!(display.cursor(), Point3D::new(1.0, 1.0, 1.0));
+        assert!(display.pick(ViewPlane::Axial, false, 0.3, 0.5));
+        assert_eq!(display.cursor(), Point3D::new(1.0, 1.0, 1.0));
+    }
+
+    #[test]
+    fn proportional_cursor_round_trips() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut display = display(&dir, &Fixture::default());
+        assert_eq!(
+            display.fractional_cursor(),
+            Point3D::new(1.0 / 3.0, 0.5, 1.0 / 3.0)
+        );
+        display.set_fractional_cursor(Point3D::new(1.0, 1.0, 1.0));
+        assert_eq!(display.cursor(), Point3D::new(3.0, 2.0, 3.0));
+        assert!(display.geometry().contains_world(display.cursor()));
+    }
+
+    #[test]
+    fn steps_through_slices() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut display = display(&dir, &Fixture::default());
+        assert!(display.step_slice(ViewPlane::Axial, 1.0));
+        assert_eq!(display.cursor().z, 2.0);
+        display.step_slice(ViewPlane::Axial, 10.0);
+        assert_eq!(display.cursor().z, 3.0);
+        assert!(!display.step_slice(ViewPlane::Axial, 1.0));
+        assert!(display.step_slice(ViewPlane::Sagittal, -1.0));
+        assert_eq!(display.cursor().x, 0.0);
+    }
+
+    #[test]
+    fn frames_and_labels() {
+        let dir = tempfile::tempdir().unwrap();
+        let four_d = Fixture {
+            dims: vec![4, 3, 4, 2],
+            datatype: DataType::I32,
+            value: |i| (i % 3) as f64,
+            ..Fixture::default()
+        };
+        let mut labels = display(&dir, &four_d);
+        labels.set_frame(99).unwrap();
+        assert_eq!(labels.frame(), 1);
+        labels.set_label_mode(true).unwrap();
+        assert_eq!(labels.coloring(), Coloring::Labels);
+        assert_eq!(labels.label_count(), 3);
+
+        let other_dir = tempfile::tempdir().unwrap();
+        let fractional = Fixture {
+            datatype: DataType::F32,
+            value: |i| i as f64 + 0.5,
+            ..Fixture::default()
+        };
+        let mut floats = display(&other_dir, &fractional);
+        assert!(floats.set_label_mode(true).is_err());
+        assert!(!floats.label_mode());
+    }
+
+    #[test]
+    fn contrast_follows_the_mouse_and_the_frame() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut display = display(&dir, &Fixture::default());
+        let before = display.window;
+        display.drag_window(10.0, -10.0);
+        assert!(display.window.width > before.width && display.window.level > before.level);
+        display.drag_window(-1e9, 0.0);
+        assert_eq!(display.window.width, display.window.min_width);
+        display.auto_window().unwrap();
+        assert_eq!((display.window.level, display.window.width), (23.5, 47.0));
     }
 
     #[test]
