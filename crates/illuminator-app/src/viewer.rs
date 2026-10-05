@@ -47,6 +47,7 @@ struct PanelImage {
 struct Column {
     display: VolumeDisplay,
     images: [Option<PanelImage>; 3],
+    load_id: u64,
     error: Option<String>,
 }
 
@@ -137,14 +138,25 @@ impl Viewer {
     fn take_loaded(&mut self, cx: &mut Context<Self>) {
         let mut added = false;
         for loaded in self.loader.take_completed() {
+            let load_id = loaded.id;
             match VolumeDisplay::new(loaded) {
                 Ok(mut display) => {
                     let error = display.set_frame(self.frame).err().map(|e| e.to_string());
-                    self.columns.push(Column {
-                        display,
-                        images: [None, None, None],
-                        error,
-                    });
+                    let at = self
+                        .columns
+                        .partition_point(|column| column.load_id < load_id);
+                    if at <= self.active_panel.0 && self.active_panel.0 < self.columns.len() {
+                        self.active_panel.0 += 1;
+                    }
+                    self.columns.insert(
+                        at,
+                        Column {
+                            display,
+                            images: [None, None, None],
+                            load_id,
+                            error,
+                        },
+                    );
                     added = true;
                 }
                 Err(error) => self.errors.push(error.to_string()),

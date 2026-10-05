@@ -9,6 +9,8 @@ use crate::error::{Error, Result};
 use crate::progress::Progress;
 use crate::volume::{NiiVolume, Range};
 
+const MAX_WORKERS: usize = 4;
+
 pub struct LoadedVolume {
     pub id: u64,
     pub volume: NiiVolume,
@@ -81,7 +83,7 @@ impl Inner {
 
 pub struct VolumeLoader {
     inner: Arc<Inner>,
-    worker: Option<JoinHandle<()>>,
+    workers: Vec<JoinHandle<()>>,
 }
 
 impl VolumeLoader {
@@ -95,15 +97,19 @@ impl VolumeLoader {
             cache,
             on_change: Box::new(on_change),
         });
-        let worker_inner = Arc::clone(&inner);
-        let worker = std::thread::Builder::new()
-            .name("volume-loader".into())
-            .spawn(move || run(&worker_inner))
-            .expect("cannot start the volume loader thread");
-        Self {
-            inner,
-            worker: Some(worker),
-        }
+        let count = std::thread::available_parallelism()
+            .map_or(2, |n| n.get())
+            .clamp(1, MAX_WORKERS);
+        let workers = (0..count)
+            .map(|n| {
+                let inner = Arc::clone(&inner);
+                std::thread::Builder::new()
+                    .name(format!("volume-loader-{n}"))
+                    .spawn(move || run(&inner))
+                    .expect("cannot start a volume loader thread")
+            })
+            .collect();
+        Self { inner, workers }
     }
 
     /// Queues file for loading and returns its id
@@ -165,7 +171,7 @@ impl Drop for VolumeLoader {
             }
         }
         self.inner.wake.notify_all();
-        if let Some(worker) = self.worker.take() {
+        for worker in self.workers.drain(..) {
             let _ = worker.join();
         }
     }
