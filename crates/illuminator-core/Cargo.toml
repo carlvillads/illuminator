@@ -9,3 +9,7 @@ flate2.workspace = true
 nifti.workspace = true
 tempfile.workspace = true
 memmap2.workspace = true
+rayon.workspace = true
+
+[dev-dependencies]
+png.workspace = true
