@@ -1,6 +1,7 @@
 //! Illuminator viewer core
 
 pub mod cache;
+pub mod display;
 pub mod error;
 pub mod geometry;
 pub mod header;
