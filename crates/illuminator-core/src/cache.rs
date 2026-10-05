@@ -41,6 +41,7 @@ impl VolumeCache {
         }
         let directory = directory.into();
         let mut builder = fs::DirBuilder::new();
+        builder.recursive(true);
         #[cfg(unix)]
         builder.mode(0o700); // not possible or needed on windows.
         builder.create(&directory)?;
