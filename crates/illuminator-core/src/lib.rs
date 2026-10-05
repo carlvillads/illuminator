@@ -7,6 +7,7 @@ pub mod header;
 pub mod labels;
 pub mod loader;
 pub mod progress;
+pub mod slicer;
 pub mod volume;
 pub mod voxel;
 

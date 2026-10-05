@@ -125,7 +125,7 @@ pub fn label_id(value: f64) -> Result<i64> {
 }
 
 /// Scalar voxel type that can be decoded from raw bytes
-trait Scalar {
+pub(crate) trait Scalar: Sync {
     const SIZE: usize;
     fn read(bytes: &[u8], endian: Endian) -> f64;
 }
@@ -156,21 +156,52 @@ impl_scalar!(i32);
 impl_scalar!(f32);
 impl_scalar!(f64);
 
+macro_rules! with_scalar {
+    ($datatype:expr, |$t:ident| $body:expr) => {
+        match $datatype {
+            $crate::voxel::DataType::U8 => {
+                type $t = u8;
+                $body
+            }
+            $crate::voxel::DataType::I8 => {
+                type $t = i8;
+                $body
+            }
+            $crate::voxel::DataType::U16 => {
+                type $t = u16;
+                $body
+            }
+            $crate::voxel::DataType::I16 => {
+                type $t = i16;
+                $body
+            }
+            $crate::voxel::DataType::U32 => {
+                type $t = u32;
+                $body
+            }
+            $crate::voxel::DataType::I32 => {
+                type $t = i32;
+                $body
+            }
+            $crate::voxel::DataType::F32 => {
+                type $t = f32;
+                $body
+            }
+            $crate::voxel::DataType::F64 => {
+                type $t = f64;
+                $body
+            }
+        }
+    };
+}
+pub(crate) use with_scalar;
+
 /// Read voxel index af unscaled float64, returns none if outside of bytes
 pub fn read_value(bytes: &[u8], index: usize, data_type: DataType, endian: Endian) -> Option<f64> {
     let size = data_type.size();
     let start = index.checked_mul(size)?;
     let chunk = bytes.get(start..start.checked_add(size)?)?;
-    Some(match data_type {
-        DataType::U8 => u8::read(chunk, endian),
-        DataType::I8 => i8::read(chunk, endian),
-        DataType::I16 => i16::read(chunk, endian),
-        DataType::U16 => u16::read(chunk, endian),
-        DataType::U32 => u32::read(chunk, endian),
-        DataType::I32 => i32::read(chunk, endian),
-        DataType::F32 => f32::read(chunk, endian),
-        DataType::F64 => f64::read(chunk, endian),
-    })
+    Some(with_scalar!(data_type, |T| T::read(chunk, endian)))
 }
 
 /// Calls `f(idx, val)` for every voxel in `bytes`, stopping at first error.
@@ -178,16 +209,7 @@ pub fn for_each_value<F>(bytes: &[u8], data_type: DataType, endian: Endian, mut 
 where
     F: FnMut(usize, f64) -> Result<()>,
 {
-    match data_type {
-        DataType::U8 => for_each_typed::<u8, _>(bytes, endian, &mut f),
-        DataType::I8 => for_each_typed::<i8, _>(bytes, endian, &mut f),
-        DataType::U16 => for_each_typed::<u16, _>(bytes, endian, &mut f),
-        DataType::I16 => for_each_typed::<i16, _>(bytes, endian, &mut f),
-        DataType::U32 => for_each_typed::<u32, _>(bytes, endian, &mut f),
-        DataType::I32 => for_each_typed::<i32, _>(bytes, endian, &mut f),
-        DataType::F32 => for_each_typed::<f32, _>(bytes, endian, &mut f),
-        DataType::F64 => for_each_typed::<f64, _>(bytes, endian, &mut f),
-    }
+    with_scalar!(data_type, |T| for_each_typed::<T, _>(bytes, endian, &mut f))
 }
 
 fn for_each_typed<T: Scalar, F>(bytes: &[u8], endian: Endian, f: &mut F) -> Result<()>
