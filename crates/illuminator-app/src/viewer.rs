@@ -18,6 +18,8 @@ use image::{Frame, RgbaImage};
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use crate::shortcuts::{self, *};
+
 const SIDEBAR_WIDTH: f32 = 320.0;
 const SCROLL_STEP: f32 = 20.0;
 
@@ -81,11 +83,18 @@ pub struct Viewer {
     frame_slider: Option<FrameSlider>,
     contrast_drag: Option<(usize, Point<Pixels>)>,
     scroll_remainder: f32,
+    active_panel: (usize, ViewPlane),
+    focus_handle: FocusHandle,
     _loader_events: Task<()>,
 }
 
 impl Viewer {
-    pub fn new(cache: Arc<VolumeCache>, files: Vec<PathBuf>, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        cache: Arc<VolumeCache>,
+        files: Vec<PathBuf>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let (sender, mut changes) = mpsc::unbounded::<()>();
         let loader = VolumeLoader::new(Arc::clone(&cache), move || {
             let _ = sender.unbounded_send(());
@@ -104,6 +113,8 @@ impl Viewer {
                 }
             }
         });
+        let focus_handle = cx.focus_handle();
+        focus_handle.focus(window, cx);
         Self {
             cache,
             loader,
@@ -117,6 +128,8 @@ impl Viewer {
             frame_slider: None,
             contrast_drag: None,
             scroll_remainder: 0.0,
+            active_panel: (0, ViewPlane::Axial),
+            focus_handle,
             _loader_events: loader_events,
         }
     }
@@ -141,6 +154,142 @@ impl Viewer {
             self.update_frame_slider(cx);
             self.sync_from_first();
         }
+        cx.notify();
+    }
+
+    fn active(&self) -> Option<(usize, ViewPlane)> {
+        let (column, axis) = self.active_panel;
+        (column < self.columns.len()).then_some((column, axis))
+    }
+
+    fn set_active_panel(
+        &mut self,
+        position: Point<Pixels>,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(hit) = self.hit(position, window) {
+            let panel = (hit.column, hit.axis);
+            if panel != self.active_panel {
+                self.active_panel = panel;
+                cx.notify();
+            }
+        }
+    }
+
+    fn step_active_slice(&mut self, steps: f64, cx: &mut Context<Self>) {
+        let Some((column, axis)) = self.active() else {
+            return;
+        };
+        if self.columns[column].display.step_slice(axis, steps) {
+            self.sync_from(column);
+            cx.notify();
+        }
+    }
+
+    fn step_frame(&mut self, delta: isize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(slider) = &self.frame_slider else {
+            return;
+        };
+        let (state, last_frame) = (slider.state.clone(), slider.last_frame);
+        let frame = self.frame.saturating_add_signed(delta).min(last_frame);
+        if frame != self.frame {
+            state.update(cx, |state, cx| state.set_value(frame as f32, window, cx));
+            self.set_frame(frame, cx);
+        }
+    }
+
+    fn close_window(&mut self, _: &CloseWindow, window: &mut Window, _: &mut Context<Self>) {
+        window.remove_window();
+    }
+
+    fn open_files_action(&mut self, _: &OpenFiles, _: &mut Window, cx: &mut Context<Self>) {
+        self.open_files(cx);
+    }
+
+    fn next_slice(&mut self, _: &NextSlice, _: &mut Window, cx: &mut Context<Self>) {
+        self.step_active_slice(1.0, cx);
+    }
+
+    fn previous_slice(&mut self, _: &PreviousSlice, _: &mut Window, cx: &mut Context<Self>) {
+        self.step_active_slice(-1.0, cx);
+    }
+
+    fn next_slices(&mut self, _: &NextSlices, _: &mut Window, cx: &mut Context<Self>) {
+        self.step_active_slice(10.0, cx);
+    }
+
+    fn previous_slices(&mut self, _: &PreviousSlices, _: &mut Window, cx: &mut Context<Self>) {
+        self.step_active_slice(-10.0, cx);
+    }
+
+    fn next_frame(&mut self, _: &NextFrame, window: &mut Window, cx: &mut Context<Self>) {
+        self.step_frame(1, window, cx);
+    }
+
+    fn previous_frame(&mut self, _: &PreviousFrame, window: &mut Window, cx: &mut Context<Self>) {
+        self.step_frame(-1, window, cx);
+    }
+
+    fn center_cursor(&mut self, _: &CenterCursor, _: &mut Window, cx: &mut Context<Self>) {
+        if let Some((column, _)) = self.active() {
+            self.change(
+                column,
+                |display| {
+                    display.reset_cursor();
+                    Ok(())
+                },
+                cx,
+            );
+        }
+    }
+
+    fn auto_contrast(&mut self, _: &AutoContrast, _: &mut Window, cx: &mut Context<Self>) {
+        if let Some((column, _)) = self.active() {
+            self.change(column, VolumeDisplay::auto_window, cx);
+        }
+    }
+
+    fn next_colormap(&mut self, _: &NextColormap, _: &mut Window, cx: &mut Context<Self>) {
+        if let Some((column, _)) = self.active() {
+            let display = &mut self.columns[column].display;
+            let current = Colormap::ALL.iter().position(|&c| c == display.colormap);
+            let next = current.map_or(0, |index| (index + 1) % Colormap::ALL.len());
+            display.colormap = Colormap::ALL[next];
+            cx.notify();
+        }
+    }
+
+    fn toggle_segmentation(
+        &mut self,
+        _: &ToggleSegmentation,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some((column, _)) = self.active() {
+            let enabled = !self.columns[column].display.label_mode();
+            self.change(column, |display| display.set_label_mode(enabled), cx);
+        }
+    }
+
+    fn toggle_sync(&mut self, _: &ToggleSync, _: &mut Window, cx: &mut Context<Self>) {
+        self.sync = !self.sync;
+        self.sync_from_first();
+        cx.notify();
+    }
+
+    fn toggle_radiological(
+        &mut self,
+        _: &ToggleRadiological,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.radiological = !self.radiological;
+        cx.notify();
+    }
+
+    fn toggle_crosshair(&mut self, _: &ToggleCrosshair, _: &mut Window, cx: &mut Context<Self>) {
+        self.show_crosshair = !self.show_crosshair;
         cx.notify();
     }
 
@@ -386,6 +535,8 @@ impl Viewer {
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|viewer, event: &MouseDownEvent, window, cx| {
+                    viewer.focus_handle.focus(window, cx);
+                    viewer.set_active_panel(event.position, window, cx);
                     viewer.pick(event.position, window, cx);
                 }),
             )
@@ -402,6 +553,9 @@ impl Viewer {
                 cx.listener(|viewer, _: &MouseUpEvent, _, _| viewer.contrast_drag = None),
             )
             .on_mouse_move(cx.listener(|viewer, event: &MouseMoveEvent, window, cx| {
+                if event.pressed_button.is_none() {
+                    viewer.set_active_panel(event.position, window, cx);
+                }
                 match event.pressed_button {
                     Some(MouseButton::Left) => viewer.pick(event.position, window, cx),
                     Some(MouseButton::Right) => viewer.drag_contrast(event.position, cx),
@@ -451,7 +605,13 @@ impl Viewer {
                 let edge =
                     |text: &'static str| div().absolute().text_color(label_color).child(text);
                 panel = panel
-                    .child(div().absolute().inset_0().border_1().border_color(border))
+                    .child(div().absolute().inset_0().border_1().border_color(
+                        if self.active_panel == (index, ViewPlane::ALL[row]) {
+                            label_color
+                        } else {
+                            border
+                        },
+                    ))
                     .child(
                         v_flex()
                             .absolute()
@@ -679,6 +839,16 @@ impl Viewer {
                     ))
                     .child(Slider::new(&slider.state))
             })
+            .child(
+                v_flex()
+                    .text_xs()
+                    .children(shortcuts::help().into_iter().map(|(keys, action)| {
+                        h_flex()
+                            .gap_2()
+                            .child(div().w(px(90.0)).child(keys))
+                            .child(action)
+                    })),
+            )
     }
 
     /// The information and controls of one volume
@@ -870,6 +1040,23 @@ impl Render for Viewer {
             .size_full()
             .bg(background)
             .text_color(foreground)
+            .track_focus(&self.focus_handle)
+            .key_context(shortcuts::CONTEXT)
+            .on_action(cx.listener(Self::close_window))
+            .on_action(cx.listener(Self::open_files_action))
+            .on_action(cx.listener(Self::next_slice))
+            .on_action(cx.listener(Self::previous_slice))
+            .on_action(cx.listener(Self::next_slices))
+            .on_action(cx.listener(Self::previous_slices))
+            .on_action(cx.listener(Self::next_frame))
+            .on_action(cx.listener(Self::previous_frame))
+            .on_action(cx.listener(Self::center_cursor))
+            .on_action(cx.listener(Self::auto_contrast))
+            .on_action(cx.listener(Self::next_colormap))
+            .on_action(cx.listener(Self::toggle_segmentation))
+            .on_action(cx.listener(Self::toggle_sync))
+            .on_action(cx.listener(Self::toggle_radiological))
+            .on_action(cx.listener(Self::toggle_crosshair))
             .on_drop(cx.listener(|viewer, paths: &ExternalPaths, _, _| {
                 for path in paths.paths() {
                     viewer.loader.enqueue(path.clone());

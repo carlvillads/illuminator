@@ -1,6 +1,7 @@
 //! Illuminator viwer application
 //! Usage: illuminate [FILE...]
 
+mod shortcuts;
 mod viewer;
 
 use gpui_kit::component::{Theme, ThemeMode};
@@ -24,6 +25,7 @@ fn main() {
     gpui_kit::application().run(move |cx| {
         gpui_kit::init(cx);
         Theme::change(ThemeMode::Dark, None, cx);
+        shortcuts::bind(cx);
         // quit when the last window closes
         cx.on_window_closed(|cx, _| {
             if cx.windows().is_empty() {
@@ -44,8 +46,8 @@ fn main() {
             }),
             ..Default::default()
         };
-        gpui_kit::open_window(options, cx, |_, cx| {
-            cx.new(|cx| Viewer::new(cache, files, cx))
+        gpui_kit::open_window(options, cx, |window, cx| {
+            cx.new(|cx| Viewer::new(cache, files, window, cx))
         })
         .expect("cannot open main window");
         cx.activate(true);
