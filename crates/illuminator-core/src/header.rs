@@ -53,8 +53,12 @@ pub struct Header {
 impl Header {
     pub fn read(path: &Path) -> Result<Self> {
         let raw = NiftiHeader::from_file(path).map_err(|error| {
+            let reason = match error {
+                nifti::NiftiError::Io(error) => error.to_string(),
+                other => other.to_string(),
+            };
             Error::invalid(format!(
-                "Cannot read nifti-1 header {}: {error}",
+                "Cannot read nifti-1 header {}: {reason}",
                 path.display()
             ))
         })?;
