@@ -221,6 +221,10 @@ pub enum ViewPlane {
 
 impl ViewPlane {
     pub const ALL: [Self; 3] = [Self::Axial, Self::Coronal, Self::Sagittal];
+
+    pub fn index(self) -> usize {
+        self as usize
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

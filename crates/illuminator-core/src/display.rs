@@ -382,7 +382,11 @@ impl VolumeDisplay {
     }
 
     pub fn cursor_sample(&self) -> Option<([usize; 3], f64)> {
-        let voxel = self.geometry.world_to_voxel.point(self.cursor);
+        self.sample_world(self.cursor)
+    }
+
+    pub fn sample_world(&self, p: Point3D) -> Option<([usize; 3], f64)> {
+        let voxel = self.geometry.world_to_voxel.point(p);
         if !self.geometry.contains_voxel(voxel) {
             return None;
         }

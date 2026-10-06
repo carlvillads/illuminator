@@ -45,6 +45,14 @@ actions!(
         ToggleRadiological,
         /// Shows or hides the crosshairs
         ToggleCrosshair,
+        /// All layers overlaid in three planes
+        LayoutOrtho,
+        /// One column per layer three planes each
+        LayoutCompare,
+        /// One plane one cell per layer
+        LayoutGrid,
+        /// One large view
+        LayoutSingle,
     ]
 );
 
@@ -78,6 +86,10 @@ pub fn bind(cx: &mut App) {
         KeyBinding::new("v", ToggleLayer, viewer),
         KeyBinding::new("j", NextLayer, viewer),
         KeyBinding::new("k", PreviousLayer, viewer),
+        KeyBinding::new("1", LayoutOrtho, viewer),
+        KeyBinding::new("2", LayoutCompare, viewer),
+        KeyBinding::new("3", LayoutGrid, viewer),
+        KeyBinding::new("4", LayoutSingle, viewer),
     ]);
     cx.on_action(|_: &Quit, cx| cx.quit());
 }
@@ -97,5 +109,7 @@ pub fn help() -> Vec<(String, &'static str)> {
         ("V".into(), "Show/hide layer"),
         ("S/R/C".into(), "Sync/radiological/crosshairs"),
         (format!("{SECONDARY}W/{SECONDARY}Q"), "Close window/quit"),
+        ("1-4".into(), "Layouts"),
+        ("Double-click".into(), "Enlarge view"),
     ]
 }

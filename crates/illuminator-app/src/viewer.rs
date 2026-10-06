@@ -2,19 +2,22 @@
 
 use futures::StreamExt;
 use futures::channel::mpsc;
+use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::progress::Progress;
 use gpui_kit::component::slider::{Slider, SliderEvent, SliderState};
+use gpui_kit::component::status_bar::StatusBar;
 use gpui_kit::component::{ActiveTheme, Selectable, Sizable, h_flex, v_flex};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use illuminator_core::cache::VolumeCache;
 use illuminator_core::display::{SampleKey, VolumeDisplay};
-use illuminator_core::geometry::ViewPlane;
+use illuminator_core::geometry::{Point3D, ViewPlane};
 use illuminator_core::loader::{LoadState, VolumeLoader};
 use illuminator_core::slicer::{Coloring, Colormap, SampledSlice, SliceImage, fit_size};
 use image::{Frame, RgbaImage};
+use std::ops::Range;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -23,6 +26,8 @@ use crate::shortcuts::{self, *};
 const SIDEBAR_WIDTH: f32 = 320.0;
 const SCROLL_STEP: f32 = 20.0;
 const OVERLAY_OPACITY: f32 = 0.5;
+const TOOLBAR_HEIGHT: f32 = 36.0;
+const STATUS_HEIGHT: f32 = 24.0;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum SyncMode {
@@ -59,15 +64,19 @@ struct Layer {
     _opacity_changes: Subscription,
 }
 
-struct PanelLayout {
+/// One visible image panel
+struct View {
     origin: Point<f32>,
     size: Size<f32>,
+    axis: ViewPlane,
+    base: usize,
+    layers: Range<usize>,
     image_pixels: (usize, usize),
     image_size: Size<f32>,
 }
 
 struct Hit {
-    column: usize,
+    base: usize,
     axis: ViewPlane,
     s: f64,
     t: f64,
@@ -77,6 +86,42 @@ struct FrameSlider {
     state: Entity<SliderState>,
     last_frame: usize,
     _changes: Subscription,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Layout {
+    Ortho,
+    Compare,
+    Grid(ViewPlane),
+    Single {
+        axis: ViewPlane,
+        layer: Option<usize>,
+    },
+}
+
+impl Layout {
+    fn overlaid(self) -> bool {
+        matches!(self, Self::Ortho | Self::Single { layer: None, .. })
+    }
+
+    fn axis(self) -> Option<ViewPlane> {
+        match self {
+            Self::Grid(axis) | Self::Single { axis, .. } => Some(axis),
+            Self::Ortho | Self::Compare => None,
+        }
+    }
+
+    fn with_axis(self, axis: ViewPlane) -> Self {
+        match self {
+            Self::Grid(_) => Self::Grid(axis),
+            Self::Single { layer, .. } => Self::Single { axis, layer },
+            other => other,
+        }
+    }
+
+    fn same_kind(self, other: Self) -> bool {
+        std::mem::discriminant(&self) == std::mem::discriminant(&other)
+    }
 }
 
 pub struct Viewer {
@@ -94,7 +139,9 @@ pub struct Viewer {
     scroll_remainder: f32,
     active_panel: (usize, ViewPlane),
     focus_handle: FocusHandle,
-    overlay: bool,
+    layout: Layout,
+    previous_layout: Layout,
+    hover: Option<Point3D>,
     selected: usize,
     _loader_events: Task<()>,
 }
@@ -141,7 +188,9 @@ impl Viewer {
             scroll_remainder: 0.0,
             active_panel: (0, ViewPlane::Axial),
             focus_handle,
-            overlay: true,
+            layout: Layout::Ortho,
+            previous_layout: Layout::Ortho,
+            hover: None,
             selected: 0,
             _loader_events: loader_events,
         }
@@ -161,8 +210,14 @@ impl Viewer {
                     let shifted =
                         |index: usize, len: usize| index + usize::from(at <= index && index < len);
                     self.selected = shifted(self.selected, self.layers.len());
-                    if !self.overlay {
+                    if !self.layout.overlaid() {
                         self.active_panel.0 = shifted(self.active_panel.0, self.layers.len());
+                    }
+                    if let Layout::Single {
+                        layer: Some(layer), ..
+                    } = &mut self.layout
+                    {
+                        *layer = shifted(*layer, self.layers.len());
                     }
                     let (opacity_slider, opacity_changes) = opacity_slider(load_id, cx);
                     self.layers.insert(
@@ -192,16 +247,7 @@ impl Viewer {
 
     fn active(&self) -> Option<(usize, ViewPlane)> {
         let (column, axis) = self.active_panel;
-        (column < self.view_count()).then_some((column, axis))
-    }
-
-    /// number of panels on screen
-    fn view_count(&self) -> usize {
-        if self.overlay {
-            self.layers.len().min(1)
-        } else {
-            self.layers.len()
-        }
+        (column < self.layers.len()).then_some((column, axis))
     }
 
     fn selected(&self) -> Option<usize> {
@@ -211,18 +257,65 @@ impl Viewer {
     fn select(&mut self, layer: usize, cx: &mut Context<Self>) {
         if layer < self.layers.len() {
             self.selected = layer;
-            if !self.overlay {
+            if !self.layout.overlaid() {
                 self.active_panel.0 = layer;
             }
             cx.notify();
         }
     }
 
-    fn set_overlay(&mut self, overlay: bool, cx: &mut Context<Self>) {
-        self.overlay = overlay;
-        self.active_panel.0 = if overlay { 0 } else { self.selected };
+    fn set_layout(&mut self, layout: Layout, cx: &mut Context<Self>) {
+        if !matches!(self.layout, Layout::Single { .. }) {
+            self.previous_layout = self.layout;
+        }
+        self.layout = layout;
+        let base = match layout {
+            Layout::Single {
+                layer: Some(layer), ..
+            } => layer,
+            _ if layout.overlaid() => 0,
+            _ => self.selected,
+        };
+        self.active_panel = (base, layout.axis().unwrap_or(self.active_panel.1));
         self.sync_from_first();
         cx.notify();
+    }
+
+    fn toggle_maximize(
+        &mut self,
+        position: Point<Pixels>,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) {
+        if matches!(self.layout, Layout::Single { .. }) {
+            self.set_layout(self.previous_layout, cx);
+        } else if let Some(hit) = self.hit(position, window) {
+            let layer = (!self.layout.overlaid()).then_some(hit.base);
+            self.set_layout(
+                Layout::Single {
+                    axis: hit.axis,
+                    layer,
+                },
+                cx,
+            );
+        }
+    }
+
+    /// Remembers the world position under the mouse
+    fn set_hover(&mut self, position: Point<Pixels>, window: &Window, cx: &mut Context<Self>) {
+        let hover = self
+            .hit(position, window)
+            .filter(|hit| (0.0..1.0).contains(&hit.s) && (0.0..1.0).contains(&hit.t))
+            .map(|hit| {
+                let display = &self.layers[hit.base].display;
+                display
+                    .plane(hit.axis, self.radiological)
+                    .point(hit.s, hit.t)
+            });
+        if hover != self.hover {
+            self.hover = hover;
+            cx.notify();
+        }
     }
 
     fn set_active_panel(
@@ -232,10 +325,10 @@ impl Viewer {
         cx: &mut Context<Self>,
     ) {
         if let Some(hit) = self.hit(position, window) {
-            let panel = (hit.column, hit.axis);
+            let panel = (hit.base, hit.axis);
             if panel != self.active_panel {
-                if !self.overlay {
-                    self.selected = hit.column;
+                if !self.layout.overlaid() {
+                    self.selected = hit.base;
                 }
                 self.active_panel = panel;
                 cx.notify();
@@ -339,7 +432,30 @@ impl Viewer {
     }
 
     fn toggle_overlay(&mut self, _: &ToggleOverlay, _: &mut Window, cx: &mut Context<Self>) {
-        self.set_overlay(!self.overlay, cx);
+        let layout = if self.layout.overlaid() {
+            Layout::Compare
+        } else {
+            Layout::Ortho
+        };
+        self.set_layout(layout, cx);
+    }
+
+    fn layout_ortho(&mut self, _: &LayoutOrtho, _: &mut Window, cx: &mut Context<Self>) {
+        self.set_layout(Layout::Ortho, cx);
+    }
+
+    fn layout_compare(&mut self, _: &LayoutCompare, _: &mut Window, cx: &mut Context<Self>) {
+        self.set_layout(Layout::Compare, cx);
+    }
+
+    fn layout_grid(&mut self, _: &LayoutGrid, _: &mut Window, cx: &mut Context<Self>) {
+        let axis = self.layout.axis().unwrap_or(self.active_panel.1);
+        self.set_layout(Layout::Grid(axis), cx);
+    }
+
+    fn layout_single(&mut self, _: &LayoutSingle, _: &mut Window, cx: &mut Context<Self>) {
+        let axis = self.layout.axis().unwrap_or(self.active_panel.1);
+        self.set_layout(Layout::Single { axis, layer: None }, cx);
     }
 
     fn toggle_layer(&mut self, _: &ToggleLayer, _: &mut Window, cx: &mut Context<Self>) {
@@ -384,22 +500,16 @@ impl Viewer {
         cx.notify();
     }
 
-    fn crosshair(
-        &self,
-        column: usize,
-        row: usize,
-        layout: &PanelLayout,
-        scale: f32,
-    ) -> Option<[Div; 2]> {
-        let display = &self.layers[column].display;
-        let plane = display.plane(ViewPlane::ALL[row], self.radiological);
+    fn crosshair(&self, view: &View, scale: f32) -> Option<[Div; 2]> {
+        let display = &self.layers[view.base].display;
+        let plane = display.plane(view.axis, self.radiological);
         let (s, t) = plane.project(display.cursor());
         if !(0.0..=1.0).contains(&s) || !(0.0..=1.0).contains(&t) {
             return None;
         }
-        let image = layout.image_size;
-        let left = (layout.size.width - image.width) / 2.0;
-        let top = (layout.size.height - image.height) / 2.0;
+        let image = view.image_size;
+        let left = (view.size.width - image.width) / 2.0;
+        let top = (view.size.height - image.height) / 2.0;
         // "snap" to device screen pixels for sharp lines
         let snap = |value: f32| (value * scale).floor() / scale;
         let x = snap(left + s as f32 * image.width);
@@ -451,15 +561,15 @@ impl Viewer {
     }
 
     fn sync_from(&mut self, active: usize) {
-        if !self.sync {
-            return;
-        }
-        if self.overlay {
+        if self.layout.overlaid() {
             // make sure overlaid layers share world pos
             let cursor = self.layers[active].display.cursor();
             for column in &mut self.layers {
                 column.display.set_cursor(cursor);
             }
+            return;
+        }
+        if !self.sync {
             return;
         }
         let source = &self.layers[active].display;
@@ -487,7 +597,7 @@ impl Viewer {
     }
 
     fn sync_from_first(&mut self) {
-        if self.overlay {
+        if self.layout.overlaid() {
             if !self.layers.is_empty() {
                 self.sync_from(0);
             }
@@ -545,49 +655,79 @@ impl Viewer {
         });
     }
 
-    fn layout(&self, column: usize, row: usize, window: &Window) -> PanelLayout {
-        let viewport = window.viewport_size();
-        let area_width = (f32::from(viewport.width) - SIDEBAR_WIDTH).max(0.0);
-        let width = area_width / self.view_count().max(1) as f32;
-        let height = f32::from(viewport.height) / 3.0;
-        let scale = window.scale_factor();
-        let plane = self.layers[column]
-            .display
-            .plane(ViewPlane::ALL[row], self.radiological);
-        let image_pixels = fit_size(&plane, (width * scale) as usize, (height * scale) as usize);
-        PanelLayout {
-            origin: point(column as f32 * width, row as f32 * height),
-            size: size(width, height),
-            image_pixels,
-            image_size: size(image_pixels.0 as f32 / scale, image_pixels.1 as f32 / scale),
+    /// Every view on screen in reading order
+    fn views(&self, window: &Window) -> Vec<View> {
+        let count = self.layers.len();
+        if count == 0 {
+            return Vec::new();
         }
+        let area = view_area(window);
+        let cells: Vec<(usize, ViewPlane)> = match self.layout {
+            Layout::Ortho => ViewPlane::ALL.map(|axis| (0, axis)).to_vec(),
+            Layout::Compare => ViewPlane::ALL
+                .iter()
+                .flat_map(|&axis| (0..count).map(move |layer| (layer, axis)))
+                .collect(),
+            Layout::Grid(axis) => (0..count).map(|layer| (layer, axis)).collect(),
+            Layout::Single { axis, layer } => {
+                vec![(layer.filter(|&layer| layer < count).unwrap_or(0), axis)]
+            }
+        };
+        let columns = match self.layout {
+            Layout::Compare => count,
+            _ => grid_columns(cells.len(), area),
+        };
+        let rows = cells.len().div_ceil(columns);
+        let cell = size(area.width / columns as f32, area.height / rows as f32);
+        let scale = window.scale_factor();
+        let overlaid = self.layout.overlaid();
+        cells
+            .into_iter()
+            .enumerate()
+            .map(|(n, (base, axis))| {
+                let plane = self.layers[base].display.plane(axis, self.radiological);
+                let image_pixels = fit_size(
+                    &plane,
+                    (cell.width * scale) as usize,
+                    (cell.height * scale) as usize,
+                );
+                View {
+                    origin: point(
+                        (n % columns) as f32 * cell.width,
+                        (n / columns) as f32 * cell.height,
+                    ),
+                    size: cell,
+                    axis,
+                    base,
+                    layers: if overlaid { 0..count } else { base..base + 1 },
+                    image_pixels,
+                    image_size: size(image_pixels.0 as f32 / scale, image_pixels.1 as f32 / scale),
+                }
+            })
+            .collect()
     }
 
     fn hit(&self, position: Point<Pixels>, window: &Window) -> Option<Hit> {
-        let (x, y) = (f32::from(position.x), f32::from(position.y));
-        for column in 0..self.view_count() {
-            for row in 0..3 {
-                let layout = self.layout(column, row, window);
-                let local_x = x - layout.origin.x;
-                let local_y = y - layout.origin.y;
-                if local_x < 0.0
-                    || local_y < 0.0
-                    || local_x >= layout.size.width
-                    || local_y >= layout.size.height
-                {
-                    continue;
-                }
-                let left = (layout.size.width - layout.image_size.width) / 2.0;
-                let top = (layout.size.height - layout.image_size.height) / 2.0;
-                return Some(Hit {
-                    column,
-                    axis: ViewPlane::ALL[row],
-                    s: f64::from((local_x - left) / layout.image_size.width),
-                    t: f64::from(1.0 - (local_y - top) / layout.image_size.height),
-                });
+        let x = f32::from(position.x);
+        let y = f32::from(position.y) - TOOLBAR_HEIGHT;
+        self.views(window).into_iter().find_map(|view| {
+            let (local_x, local_y) = (x - view.origin.x, y - view.origin.y);
+            if local_x < 0.0
+                || local_y < 0.0
+                || local_x >= view.size.width
+                || local_y >= view.size.height
+            {
+                return None;
             }
-        }
-        None
+            let left = (view.size.width - view.image_size.width) / 2.0;
+            let top = (view.size.height - view.image_size.height) / 2.0;
+            Some(Hit {
+                base: view.base,
+                axis: view.axis,
+                s: f64::from((local_x - left) / view.image_size.width),
+                t: f64::from(1.0 - (local_y - top) / view.image_size.height),
+            })
+        })
     }
 
     fn pick(&mut self, position: Point<Pixels>, window: &Window, cx: &mut Context<Self>) {
@@ -595,11 +735,11 @@ impl Viewer {
             return;
         };
         let radiological = self.radiological;
-        if self.layers[hit.column]
+        if self.layers[hit.base]
             .display
             .pick(hit.axis, radiological, hit.s, hit.t)
         {
-            self.sync_from(hit.column);
+            self.sync_from(hit.base);
             cx.notify();
         }
     }
@@ -614,11 +754,11 @@ impl Viewer {
             return;
         }
         self.scroll_remainder -= steps * SCROLL_STEP;
-        if self.layers[hit.column]
+        if self.layers[hit.base]
             .display
             .step_slice(hit.axis, f64::from(steps))
         {
-            self.sync_from(hit.column);
+            self.sync_from(hit.base);
             cx.notify();
         }
     }
@@ -641,57 +781,64 @@ impl Viewer {
                 continue;
             }
             // overlaid layers are all drawn on the base layers plane
-            let view = if self.overlay { 0 } else { column };
-            for row in 0..3 {
-                let (width, height) = self.layout(view, row, window).image_pixels;
-                let plane = self.layers[view]
+            for view in self.views(window) {
+                let (width, height) = view.image_pixels;
+                if width == 0 || height == 0 {
+                    continue;
+                }
+                let plane = self.layers[view.base]
                     .display
-                    .plane(ViewPlane::ALL[row], self.radiological);
-                let entry = &self.layers[column];
-                let panel = &entry.panels[row];
-                if width == 0 || height == 0 || panel.rendering {
-                    continue;
-                }
-                let job = entry.display.job_on(plane, width, height);
-                let key = ImageKey {
-                    sample: job.key.clone(),
-                    coloring: entry.display.coloring(),
-                };
-                if panel.image.as_ref().is_some_and(|image| image.key == key) {
-                    continue;
-                }
-                let reuse = panel
-                    .samples
-                    .as_ref()
-                    .filter(|(sample, _)| *sample == key.sample)
-                    .map(|(_, samples)| Arc::clone(samples));
-                let load_id = entry.load_id;
+                    .plane(view.axis, self.radiological);
+                let row = view.axis.index();
+                for layer in view.layers {
+                    let entry = &self.layers[layer];
+                    let panel = &entry.panels[row];
+                    if !entry.visible || panel.rendering {
+                        continue;
+                    }
 
-                cx.spawn_in(window, async move |viewer, cx| {
-                    let coloring = key.coloring;
-                    let (samples, image) = cx
-                        .background_spawn(async move {
-                            let samples = reuse.unwrap_or_else(|| Arc::new(job.sample()));
-                            let image = to_render_image(samples.colorize(coloring));
-                            (samples, image)
-                        })
-                        .await;
-                    let _ = viewer.update_in(cx, |viewer, window, cx| {
-                        let Some(column) = viewer.layers.iter_mut().find(|c| c.load_id == load_id)
-                        else {
-                            return;
-                        };
-                        let panel = &mut column.panels[row];
-                        panel.rendering = false;
-                        panel.samples = Some((key.sample.clone(), samples));
-                        if let Some(old) = panel.image.replace(PanelImage { key, image }) {
-                            cx.drop_image(old.image, Some(window));
-                        }
-                        cx.notify();
-                    });
-                })
-                .detach();
-                self.layers[column].panels[row].rendering = true;
+                    let job = entry.display.job_on(plane, width, height);
+                    let key = ImageKey {
+                        sample: job.key.clone(),
+                        coloring: entry.display.coloring(),
+                    };
+                    if panel.image.as_ref().is_some_and(|image| image.key == key) {
+                        continue;
+                    }
+                    let reuse = panel
+                        .samples
+                        .as_ref()
+                        .filter(|(sample, _)| *sample == key.sample)
+                        .map(|(_, samples)| Arc::clone(samples));
+                    let load_id = entry.load_id;
+
+                    cx.spawn_in(window, async move |viewer, cx| {
+                        let coloring = key.coloring;
+                        let (samples, image) = cx
+                            .background_spawn(async move {
+                                let samples = reuse.unwrap_or_else(|| Arc::new(job.sample()));
+                                let image = to_render_image(samples.colorize(coloring));
+                                (samples, image)
+                            })
+                            .await;
+                        let _ = viewer.update_in(cx, |viewer, window, cx| {
+                            let Some(column) =
+                                viewer.layers.iter_mut().find(|c| c.load_id == load_id)
+                            else {
+                                return;
+                            };
+                            let panel = &mut column.panels[row];
+                            panel.rendering = false;
+                            panel.samples = Some((key.sample.clone(), samples));
+                            if let Some(old) = panel.image.replace(PanelImage { key, image }) {
+                                cx.drop_image(old.image, Some(window));
+                            }
+                            cx.notify();
+                        });
+                    })
+                    .detach();
+                    self.layers[layer].panels[row].rendering = true;
+                }
             }
         }
     }
@@ -700,30 +847,29 @@ impl Viewer {
         let theme = cx.theme();
         let (muted, border, label_color) = (theme.muted_foreground, theme.border, theme.info);
         let scale = window.scale_factor();
+        let overlaid = self.layout.overlaid();
         let mut area = div()
+            .id("views")
             .relative()
             .flex_1()
             .h_full()
             .bg(gpui::black())
+            .on_hover(cx.listener(|viewer, hovered: &bool, _, cx| {
+                if !hovered {
+                    viewer.hover = None;
+                    cx.notify();
+                }
+            }))
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|viewer, event: &MouseDownEvent, window, cx| {
                     viewer.focus_handle.focus(window, cx);
+                    if event.click_count == 2 {
+                        viewer.toggle_maximize(event.position, window, cx);
+                        return;
+                    }
                     viewer.set_active_panel(event.position, window, cx);
                     viewer.pick(event.position, window, cx);
-                }),
-            )
-            .on_mouse_down(
-                MouseButton::Right,
-                cx.listener(|viewer, event: &MouseDownEvent, window, _| {
-                    viewer.contrast_drag = viewer.hit(event.position, window).map(|hit| {
-                        let layer = if viewer.overlay {
-                            viewer.selected
-                        } else {
-                            hit.column
-                        };
-                        (layer, event.position)
-                    });
                 }),
             )
             .on_mouse_up(
@@ -731,6 +877,7 @@ impl Viewer {
                 cx.listener(|viewer, _: &MouseUpEvent, _, _| viewer.contrast_drag = None),
             )
             .on_mouse_move(cx.listener(|viewer, event: &MouseMoveEvent, window, cx| {
+                viewer.set_hover(event.position, window, cx);
                 if event.pressed_button.is_none() {
                     viewer.set_active_panel(event.position, window, cx);
                 }
@@ -752,101 +899,95 @@ impl Viewer {
                     .items_center()
                     .justify_center()
                     .text_color(muted)
-                    .child("Drop scans here or use Open volume..."),
+                    .child("Drop scans here or open from the toolbar"),
             );
         }
 
-        for index in 0..self.view_count() {
-            let display = &self.layers[index].display;
-            let layers = if self.overlay {
-                0..self.layers.len()
-            } else {
-                index..index + 1
-            };
-            for row in 0..3 {
-                let layout = self.layout(index, row, window);
-                let labels = display.labels(ViewPlane::ALL[row], self.radiological);
-                let mut panel = div()
-                    .absolute()
-                    .left(px(layout.origin.x))
-                    .top(px(layout.origin.y))
-                    .w(px(layout.size.width))
-                    .h(px(layout.size.height))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .overflow_hidden()
-                    .text_sm();
-                let mut stack = div()
-                    .relative()
-                    .w(px(layout.image_size.width))
-                    .h(px(layout.image_size.height));
-                let mut bottom = true;
-                for layer in layers.clone() {
-                    let column = &self.layers[layer];
-                    let Some(image) = column.panels[row].image.as_ref().filter(|_| column.visible)
-                    else {
-                        continue;
-                    };
-                    // the bottom layer covers the black background so it is always opaque
-                    let opacity = if bottom { 1.0 } else { column.opacity };
-                    bottom = false;
-                    stack = stack.child(
-                        img(image.image.clone())
-                            .absolute()
-                            .top_0()
-                            .left_0()
-                            .size_full()
-                            .opacity(opacity),
-                    );
-                }
-                panel = panel.child(stack);
-                if !bottom
-                    && self.show_crosshair
-                    && let Some(lines) = self.crosshair(index, row, &layout, scale)
-                {
-                    panel = panel.children(lines);
-                }
-
-                let edge =
-                    |text: &'static str| div().absolute().text_color(label_color).child(text);
-                panel = panel
-                    .child(div().absolute().inset_0().border_1().border_color(
-                        if self.active_panel == (index, ViewPlane::ALL[row]) {
-                            label_color
-                        } else {
-                            border
-                        },
-                    ))
-                    .child(
-                        v_flex()
-                            .absolute()
-                            .top_1()
-                            .left_2()
-                            .child(labels.title)
-                            .when(row == 0, |title| {
-                                title.child(div().text_xs().text_color(muted).child(display.name()))
-                            }),
-                    )
-                    .child(edge(labels.left).left_2())
-                    .child(edge(labels.right).right_2())
-                    .child(edge(labels.top).top_1())
-                    .child(edge(labels.bottom).bottom_1())
-                    .when(
-                        !display.geometry().contains_world(display.cursor()),
-                        |panel| {
-                            panel.child(
-                                div()
-                                    .absolute()
-                                    .bottom_1()
-                                    .left_2()
-                                    .text_color(label_color)
-                                    .child("Cursor outside volume"),
-                            )
-                        },
-                    );
-                area = area.child(panel);
+        for view in self.views(window) {
+            let display = &self.layers[view.base].display;
+            let labels = display.labels(view.axis, self.radiological);
+            let mut panel = div()
+                .absolute()
+                .left(px(view.origin.x))
+                .top(px(view.origin.y))
+                .w(px(view.size.width))
+                .h(px(view.size.height))
+                .flex()
+                .items_center()
+                .justify_center()
+                .overflow_hidden()
+                .text_sm();
+            let mut stack = div()
+                .relative()
+                .w(px(view.image_size.width))
+                .h(px(view.image_size.height));
+            let mut bottom = true;
+            for layer in view.layers.clone() {
+                let entry = &self.layers[layer];
+                let Some(image) = entry.panels[view.axis.index()]
+                    .image
+                    .as_ref()
+                    .filter(|_| entry.visible)
+                else {
+                    continue;
+                };
+                // the bottom layer covers the black background so it is always opaque
+                let opacity = if bottom { 1.0 } else { entry.opacity };
+                bottom = false;
+                stack = stack.child(
+                    img(image.image.clone())
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .size_full()
+                        .opacity(opacity),
+                );
             }
+            panel = panel.child(stack);
+            if !bottom
+                && self.show_crosshair
+                && let Some(lines) = self.crosshair(&view, scale)
+            {
+                panel = panel.children(lines);
+            }
+
+            let edge = |text: &'static str| div().absolute().text_color(label_color).child(text);
+            panel = panel
+                .child(div().absolute().inset_0().border_1().border_color(
+                    if self.active_panel == (view.base, view.axis) {
+                        label_color
+                    } else {
+                        border
+                    },
+                ))
+                .child(
+                    v_flex()
+                        .absolute()
+                        .top_1()
+                        .left_2()
+                        .child(labels.title)
+                        .when(!overlaid, |title| {
+                            title.child(div().text_xs().text_color(muted).child(display.name()))
+                        }),
+                )
+                .child(edge(labels.left).left_2())
+                .child(edge(labels.right).right_2())
+                .child(edge(labels.top).top_1())
+                .child(edge(labels.bottom).bottom_1())
+                .when(
+                    !display.geometry().contains_world(display.cursor()),
+                    |panel| {
+                        panel.child(
+                            div()
+                                .absolute()
+                                .bottom_1()
+                                .left_2()
+                                .text_color(label_color)
+                                .child("Cursor outside volume"),
+                        )
+                    },
+                );
+            area = area.child(panel);
         }
         area
     }
@@ -886,15 +1027,7 @@ impl Viewer {
     fn render_loading(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let muted = cx.theme().muted_foreground;
         let danger = cx.theme().danger;
-        let mut list = v_flex().gap_3().child(
-            h_flex().gap_2().child(
-                Button::new("open")
-                    .primary()
-                    .small()
-                    .label("Open volume(s)")
-                    .on_click(cx.listener(|viewer, _, _, cx| viewer.open_files(cx))),
-            ),
-        );
+        let mut list = v_flex().gap_3();
         let statuses = self.loader.statuses();
         let any_finished = statuses.iter().any(|status| !status.state.is_active());
         for status in statuses {
@@ -977,6 +1110,165 @@ impl Viewer {
         list
     }
 
+    fn render_toolbar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.theme();
+        let (border, background) = (theme.border, theme.sidebar);
+        let context = Some(shortcuts::CONTEXT);
+        let axis = self.layout.axis().unwrap_or(self.active_panel.1);
+        let layout_button = |id: &'static str,
+                             icon: IconName,
+                             tooltip: &'static str,
+                             action: &dyn Action,
+                             layout: Layout| {
+            Button::new(id)
+                .ghost()
+                .small()
+                .icon(icon)
+                .selected(self.layout.same_kind(layout))
+                .tooltip_with_action(tooltip, action, context)
+                .on_click(cx.listener(move |viewer, _, _, cx| viewer.set_layout(layout, cx)))
+        };
+        let plane_button = |axis: ViewPlane, label: &'static str, tooltip: &'static str| {
+            Button::new(label)
+                .ghost()
+                .small()
+                .label(label)
+                .tooltip(tooltip)
+                .selected(self.layout.axis() == Some(axis))
+                .on_click(cx.listener(move |viewer, _, _, cx| {
+                    viewer.set_layout(viewer.layout.with_axis(axis), cx);
+                }))
+        };
+        let separator = || div().w(px(1.0)).h(px(18.0)).mx_1().bg(border);
+
+        h_flex()
+            .h(px(TOOLBAR_HEIGHT))
+            .flex_none()
+            .px_2()
+            .gap_1()
+            .bg(background)
+            .border_b_1()
+            .border_color(border)
+            .child(
+                Button::new("open")
+                    .ghost()
+                    .small()
+                    .icon(IconName::FolderOpen)
+                    .tooltip_with_action("Open volumes", &OpenFiles, context)
+                    .on_click(cx.listener(|viewer, _, _, cx| viewer.open_files(cx))),
+            )
+            .child(separator())
+            .child(layout_button(
+                "layout-ortho",
+                IconName::LayoutGrid,
+                "All layers three planes",
+                &LayoutOrtho,
+                Layout::Ortho,
+            ))
+            .child(layout_button(
+                "layout-compare",
+                IconName::Grid3x3,
+                "Side by side three planes",
+                &LayoutCompare,
+                Layout::Compare,
+            ))
+            .child(layout_button(
+                "layout-grid",
+                IconName::Columns3,
+                "Side by side one plane",
+                &LayoutGrid,
+                Layout::Grid(axis),
+            ))
+            .child(layout_button(
+                "layout-single",
+                IconName::Square,
+                "Single view",
+                &LayoutSingle,
+                Layout::Single { axis, layer: None },
+            ))
+            .when(self.layout.axis().is_some(), |bar| {
+                bar.child(separator())
+                    .child(plane_button(ViewPlane::Axial, "A", "Axial"))
+                    .child(plane_button(ViewPlane::Coronal, "C", "Coronal"))
+                    .child(plane_button(ViewPlane::Sagittal, "S", "Sagittal"))
+            })
+            .child(separator())
+            .child(
+                Button::new("crosshair")
+                    .ghost()
+                    .small()
+                    .icon(IconName::Crosshair)
+                    .selected(self.show_crosshair)
+                    .tooltip_with_action("Crosshair", &ToggleCrosshair, context)
+                    .on_click(cx.listener(|viewer, _, window, cx| {
+                        viewer.toggle_crosshair(&ToggleCrosshair, window, cx);
+                    })),
+            )
+            .child(
+                Button::new("radiological")
+                    .ghost()
+                    .small()
+                    .icon(IconName::FlipHorizontal2)
+                    .selected(self.radiological)
+                    .tooltip_with_action("Radiological convention", &ToggleRadiological, context)
+                    .on_click(cx.listener(|viewer, _, window, cx| {
+                        viewer.toggle_radiological(&ToggleRadiological, window, cx);
+                    })),
+            )
+            .when(!self.layout.overlaid(), |bar| {
+                bar.child(
+                    Button::new("sync")
+                        .ghost()
+                        .small()
+                        .icon(IconName::Link)
+                        .selected(self.sync)
+                        .tooltip_with_action("Sync cursors", &ToggleSync, context)
+                        .on_click(cx.listener(|viewer, _, window, cx| {
+                            viewer.toggle_sync(&ToggleSync, window, cx);
+                        })),
+                )
+            })
+    }
+
+    /// Values of all layers at the mouse
+    fn render_status(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.theme();
+        let (muted, border, background) = (theme.muted_foreground, theme.border, theme.sidebar);
+        let status = StatusBar::new()
+            .h(px(STATUS_HEIGHT))
+            .flex_none()
+            .px_2()
+            .gap_4()
+            .text_xs()
+            .bg(background)
+            .border_t_1()
+            .border_color(border);
+        let Some(point) = self.hover else {
+            return status.left(div().text_color(muted).child("Nothing to read"));
+        };
+        let mut status = status.left(format!("{:.1}, {:.1}, {:.1} mm", point.x, point.y, point.z));
+        for (index, layer) in self.layers.iter().enumerate() {
+            let value = layer
+                .display
+                .sample_world(point)
+                .map_or("-".to_string(), |(_, value)| format_value(value));
+            status = status.child(
+                div()
+                    .when(!layer.visible, |item| item.text_color(muted))
+                    .when(index == self.selected, |item| {
+                        item.font_weight(FontWeight::SEMIBOLD)
+                    })
+                    .child(format!("{}: {value}", index + 1)),
+            );
+        }
+        if let Some(layer) = self.selected()
+            && let Some(([x, y, z], _)) = self.layers[layer].display.sample_world(point)
+        {
+            status = status.right(format!("Layer {} voxel {x}, {y}, {z}", layer + 1));
+        }
+        status
+    }
+
     /// Settings shared by all volumes
     fn render_view_controls(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let mode_button = |id: &'static str, label: &'static str, mode: SyncMode| {
@@ -992,62 +1284,18 @@ impl Viewer {
         };
         v_flex()
             .gap_2()
-            .child(format!("Loaded volumes: {}", self.layers.len()))
-            .child(
-                Checkbox::new("overlay")
-                    .label("Overlay layers")
-                    .checked(self.overlay)
-                    .on_click(cx.listener(|viewer, checked: &bool, _, cx| {
-                        viewer.set_overlay(*checked, cx);
-                    })),
-            )
-            .when(!self.overlay, |controls| {
-                controls
-                    .child(
-                        Checkbox::new("sync")
-                            .label("Sync crosshairs")
-                            .checked(self.sync)
-                            .on_click(cx.listener(|viewer, checked: &bool, _, cx| {
-                                viewer.sync = *checked;
-                                viewer.sync_from_first();
-                                cx.notify();
-                            })),
-                    )
-                    .when(self.sync, |controls| {
-                        controls.child(
-                            h_flex()
-                                .gap_1()
-                                .child(mode_button(
-                                    "sync-world",
-                                    "World (aligned)",
-                                    SyncMode::World,
-                                ))
-                                .child(mode_button(
-                                    "sync-proportional",
-                                    "Proportional",
-                                    SyncMode::Proportional,
-                                )),
-                        )
-                    })
+            .when(!self.layout.overlaid() && self.sync, |controls| {
+                controls.child(
+                    h_flex()
+                        .gap_1()
+                        .child(mode_button("sync-world", "World", SyncMode::World))
+                        .child(mode_button(
+                            "sync-proportional",
+                            "Proportional",
+                            SyncMode::Proportional,
+                        )),
+                )
             })
-            .child(
-                Checkbox::new("radiological")
-                    .label("Radiological convention")
-                    .checked(self.radiological)
-                    .on_click(cx.listener(|viewer, checked: &bool, _, cx| {
-                        viewer.radiological = *checked;
-                        cx.notify();
-                    })),
-            )
-            .child(
-                Checkbox::new("crosshair")
-                    .label("Show crosshairs")
-                    .checked(self.show_crosshair)
-                    .on_click(cx.listener(|viewer, checked: &bool, _, cx| {
-                        viewer.show_crosshair = *checked;
-                        cx.notify();
-                    })),
-            )
             .when_some(self.frame_slider.as_ref(), |controls, slider| {
                 controls
                     .child(format!(
@@ -1087,6 +1335,7 @@ impl Viewer {
         };
 
         let bottom_visible = self.layers.iter().position(|column| column.visible);
+        let overlaid = self.layout.overlaid();
         let selected = self.selected == index;
         let mut section = v_flex()
             .gap_2()
@@ -1115,12 +1364,12 @@ impl Viewer {
                             .child(format!("Layer {}", index + 1)),
                     ),
             )
-            .when(self.overlay && bottom_visible != Some(index), |section| {
+            .when(overlaid && bottom_visible != Some(index), |section| {
                 section
                     .child(format!("Opacity: {:.0}%", column.opacity * 100.0))
                     .child(Slider::new(&column.opacity_slider))
             })
-            .when(self.overlay && !geometry.anatomical, |section| {
+            .when(overlaid && !geometry.anatomical, |section| {
                 section.child(
                     div()
                         .text_xs()
@@ -1170,10 +1419,7 @@ impl Viewer {
                 geometry.transform_name, geometry.unit_name
             )))
             .when(
-                !self.overlay
-                    && self.sync
-                    && self.sync_mode == SyncMode::World
-                    && geometry.anatomical,
+                !overlaid && self.sync && self.sync_mode == SyncMode::World && geometry.anatomical,
                 |section| {
                     section.child(
                         Checkbox::new(id("link"))
@@ -1300,7 +1546,7 @@ impl Render for Viewer {
         self.schedule_renders(window, cx);
         let theme = cx.theme();
         let (background, foreground) = (theme.background, theme.foreground);
-        h_flex()
+        v_flex()
             .size_full()
             .bg(background)
             .text_color(foreground)
@@ -1319,6 +1565,10 @@ impl Render for Viewer {
             .on_action(cx.listener(Self::next_colormap))
             .on_action(cx.listener(Self::toggle_segmentation))
             .on_action(cx.listener(Self::toggle_overlay))
+            .on_action(cx.listener(Self::layout_ortho))
+            .on_action(cx.listener(Self::layout_compare))
+            .on_action(cx.listener(Self::layout_grid))
+            .on_action(cx.listener(Self::layout_single))
             .on_action(cx.listener(Self::toggle_layer))
             .on_action(cx.listener(Self::next_layer))
             .on_action(cx.listener(Self::previous_layer))
@@ -1330,8 +1580,15 @@ impl Render for Viewer {
                     viewer.loader.enqueue(path.clone());
                 }
             }))
-            .child(self.render_panels(window, cx))
-            .child(self.render_sidebar(cx))
+            .child(self.render_toolbar(cx))
+            .child(
+                h_flex()
+                    .flex_1()
+                    .min_h_0()
+                    .child(self.render_panels(window, cx))
+                    .child(self.render_sidebar(cx)),
+            )
+            .child(self.render_status(cx))
     }
 }
 
@@ -1344,6 +1601,32 @@ fn to_render_image(image: SliceImage) -> Arc<RenderImage> {
     let buffer = RgbaImage::from_raw(image.width as u32, image.height as u32, pixels)
         .expect("a slice image has width * height * 4 btyes");
     Arc::new(RenderImage::new(vec![Frame::new(buffer)]))
+}
+
+fn view_area(window: &Window) -> Size<f32> {
+    let viewport = window.viewport_size();
+    size(
+        (f32::from(viewport.width) - SIDEBAR_WIDTH).max(0.0),
+        (f32::from(viewport.height) - TOOLBAR_HEIGHT - STATUS_HEIGHT).max(0.0),
+    )
+}
+
+fn grid_columns(count: usize, area: Size<f32>) -> usize {
+    let side = |columns: usize| {
+        let rows = count.div_ceil(columns);
+        (area.width / columns as f32).min(area.height / rows as f32)
+    };
+    (1..=count.max(1))
+        .max_by(|&a, &b| side(a).total_cmp(&side(b)))
+        .unwrap_or(1)
+}
+
+fn format_value(value: f64) -> String {
+    if value.fract() == 0.0 && value.abs() < 1e9 {
+        format!("{value:.0}")
+    } else {
+        format!("{value:.3}")
+    }
 }
 
 fn opacity_slider(load_id: u64, cx: &mut Context<Viewer>) -> (Entity<SliderState>, Subscription) {
@@ -1363,4 +1646,36 @@ fn opacity_slider(load_id: u64, cx: &mut Context<Viewer>) -> (Entity<SliderState
         }
     });
     (state, changes)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Layout, ViewPlane, grid_columns, size};
+
+    #[test]
+    fn grids_make_cells_as_large_as_possible() {
+        let laptop = size(1120.0, 840.0);
+        assert_eq!(grid_columns(1, laptop), 1);
+        assert_eq!(grid_columns(3, laptop), 2);
+        assert_eq!(grid_columns(4, laptop), 2);
+        assert_eq!(grid_columns(3, size(1600.0, 500.0)), 3);
+    }
+
+    #[test]
+    fn layouts_know_their_plane() {
+        let grid = Layout::Grid(ViewPlane::Axial);
+        assert_eq!(
+            grid.with_axis(ViewPlane::Coronal),
+            Layout::Grid(ViewPlane::Coronal)
+        );
+        assert!(grid.same_kind(Layout::Grid(ViewPlane::Sagittal)));
+        assert!(!grid.same_kind(Layout::Ortho));
+        assert_eq!(Layout::Ortho.with_axis(ViewPlane::Coronal), Layout::Ortho);
+        let single = |layer| Layout::Single {
+            axis: ViewPlane::Axial,
+            layer,
+        };
+        assert!(single(None).overlaid());
+        assert!(!single(Some(1)).overlaid());
+    }
 }
