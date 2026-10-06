@@ -10,10 +10,10 @@ use gpui_kit::component::{ActiveTheme, Selectable, Sizable, h_flex, v_flex};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use illuminator_core::cache::VolumeCache;
-use illuminator_core::display::VolumeDisplay;
-use illuminator_core::geometry::{Point3D, SlicePlane, ViewPlane};
+use illuminator_core::display::{SampleKey, VolumeDisplay};
+use illuminator_core::geometry::ViewPlane;
 use illuminator_core::loader::{LoadState, VolumeLoader};
-use illuminator_core::slicer::{Coloring, Colormap, SliceImage, fit_size};
+use illuminator_core::slicer::{Coloring, Colormap, SampledSlice, SliceImage, fit_size};
 use image::{Frame, RgbaImage};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -29,14 +29,10 @@ enum SyncMode {
     Proportional,
 }
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, PartialEq)]
 struct ImageKey {
-    plane: SlicePlane,
+    sample: SampleKey,
     coloring: Coloring,
-    frame: usize,
-    crosshair: Option<Point3D>,
-    width: usize,
-    height: usize,
 }
 
 struct PanelImage {
@@ -44,9 +40,16 @@ struct PanelImage {
     image: Arc<RenderImage>,
 }
 
+#[derive(Default)]
+struct Panel {
+    image: Option<PanelImage>,
+    samples: Option<(SampleKey, Arc<SampledSlice>)>,
+    rendering: bool,
+}
+
 struct Column {
     display: VolumeDisplay,
-    images: [Option<PanelImage>; 3],
+    panels: [Panel; 3],
     load_id: u64,
     error: Option<String>,
 }
@@ -152,7 +155,7 @@ impl Viewer {
                         at,
                         Column {
                             display,
-                            images: [None, None, None],
+                            panels: Default::default(),
                             load_id,
                             error,
                         },
@@ -303,6 +306,41 @@ impl Viewer {
     fn toggle_crosshair(&mut self, _: &ToggleCrosshair, _: &mut Window, cx: &mut Context<Self>) {
         self.show_crosshair = !self.show_crosshair;
         cx.notify();
+    }
+
+    fn crosshair(
+        &self,
+        column: usize,
+        row: usize,
+        layout: &PanelLayout,
+        scale: f32,
+    ) -> Option<[Div; 2]> {
+        let display = &self.columns[column].display;
+        let plane = display.plane(ViewPlane::ALL[row], self.radiological);
+        let (s, t) = plane.project(display.cursor());
+        if !(0.0..=1.0).contains(&s) || !(0.0..=1.0).contains(&t) {
+            return None;
+        }
+        let image = layout.image_size;
+        let left = (layout.size.width - image.width) / 2.0;
+        let top = (layout.size.height - image.height) / 2.0;
+        // "snap" to device screen pixels for sharp lines
+        let snap = |value: f32| (value * scale).floor() / scale;
+        let x = snap(left + s as f32 * image.width);
+        let y = snap(top + (1.0 - t as f32) * image.height);
+        let line = || div().absolute().bg(rgba(0x00ccffb3));
+        Some([
+            line()
+                .left(px(x))
+                .top(px(top))
+                .w(px(1.0))
+                .h(px(image.height)),
+            line()
+                .left(px(left))
+                .top(px(y))
+                .w(px(image.width))
+                .h(px(1.0)),
+        ])
     }
 
     fn open_files(&mut self, cx: &mut Context<Self>) {
@@ -506,32 +544,58 @@ impl Viewer {
         cx.notify();
     }
 
-    /// Renders any updated panels since last draw
-    fn update_images(&mut self, window: &mut Window, cx: &mut App) {
+    /// Starts a background render for each panel whose image is out of date since last draw
+    fn schedule_renders(&mut self, window: &Window, cx: &mut Context<Self>) {
         for column in 0..self.columns.len() {
             for row in 0..3 {
-                let layout = self.layout(column, row, window);
-                let (width, height) = layout.image_pixels;
-                let display = &self.columns[column].display;
-                let axis = ViewPlane::ALL[row];
-                let key = ImageKey {
-                    plane: display.plane(axis, self.radiological),
-                    coloring: display.coloring(),
-                    frame: display.frame(),
-                    crosshair: self.show_crosshair.then_some(display.cursor()),
-                    width,
-                    height,
-                };
-                let current = &self.columns[column].images[row];
-                if width == 0 || height == 0 || current.as_ref().is_some_and(|p| p.key == key) {
+                let (width, height) = self.layout(column, row, window).image_pixels;
+                let entry = &self.columns[column];
+                let panel = &entry.panels[row];
+                if width == 0 || height == 0 || panel.rendering {
                     continue;
                 }
-                let slice = display.slice(axis, self.radiological, self.show_crosshair);
-                let image = to_render_image(slice.render(width, height));
-                let replaced = self.columns[column].images[row].replace(PanelImage { key, image });
-                if let Some(old) = replaced {
-                    cx.drop_image(old.image, Some(window));
+                let job = entry
+                    .display
+                    .job(ViewPlane::ALL[row], self.radiological, width, height);
+                let key = ImageKey {
+                    sample: job.key.clone(),
+                    coloring: entry.display.coloring(),
+                };
+                if panel.image.as_ref().is_some_and(|image| image.key == key) {
+                    continue;
                 }
+                let reuse = panel
+                    .samples
+                    .as_ref()
+                    .filter(|(sample, _)| *sample == key.sample)
+                    .map(|(_, samples)| Arc::clone(samples));
+                let load_id = entry.load_id;
+
+                cx.spawn_in(window, async move |viewer, cx| {
+                    let coloring = key.coloring;
+                    let (samples, image) = cx
+                        .background_spawn(async move {
+                            let samples = reuse.unwrap_or_else(|| Arc::new(job.sample()));
+                            let image = to_render_image(samples.colorize(coloring));
+                            (samples, image)
+                        })
+                        .await;
+                    let _ = viewer.update_in(cx, |viewer, window, cx| {
+                        let Some(column) = viewer.columns.iter_mut().find(|c| c.load_id == load_id)
+                        else {
+                            return;
+                        };
+                        let panel = &mut column.panels[row];
+                        panel.rendering = false;
+                        panel.samples = Some((key.sample.clone(), samples));
+                        if let Some(old) = panel.image.replace(PanelImage { key, image }) {
+                            cx.drop_image(old.image, Some(window));
+                        }
+                        cx.notify();
+                    });
+                })
+                .detach();
+                self.columns[column].panels[row].rendering = true;
             }
         }
     }
@@ -539,6 +603,7 @@ impl Viewer {
     fn render_panels(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
         let (muted, border, label_color) = (theme.muted_foreground, theme.border, theme.info);
+        let scale = window.scale_factor();
         let mut area = div()
             .relative()
             .flex_1()
@@ -606,12 +671,17 @@ impl Viewer {
                     .justify_center()
                     .overflow_hidden()
                     .text_sm();
-                if let Some(image) = &column.images[row] {
+                if let Some(image) = &column.panels[row].image {
                     panel = panel.child(
                         img(image.image.clone())
                             .w(px(layout.image_size.width))
                             .h(px(layout.image_size.height)),
                     );
+                    if self.show_crosshair
+                        && let Some(lines) = self.crosshair(index, row, &layout, scale)
+                    {
+                        panel = panel.children(lines);
+                    }
                 }
 
                 let edge =
@@ -1045,7 +1115,7 @@ impl Viewer {
 
 impl Render for Viewer {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        self.update_images(window, cx);
+        self.schedule_renders(window, cx);
         let theme = cx.theme();
         let (background, foreground) = (theme.background, theme.foreground);
         h_flex()

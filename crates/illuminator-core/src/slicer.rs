@@ -9,7 +9,6 @@ use crate::volume::NiiVolume;
 use crate::voxel::{self, Endian, Scalar, with_scalar};
 
 const INVALID_LABEL: [u8; 4] = [255, 0, 255, 255];
-const CROSSHAIR: [f64; 3] = [0.0, 204.0, 255.0];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Colormap {
@@ -64,6 +63,12 @@ pub enum Coloring {
     Labels,
 }
 
+impl Coloring {
+    pub fn is_labels(self) -> bool {
+        matches!(self, Self::Labels)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct SliceImage {
     pub width: usize,
@@ -77,85 +82,144 @@ pub struct Slice<'a> {
     pub geometry: &'a VolumeGeometry,
     pub plane: SlicePlane,
     pub frame: usize,
-    pub coloring: Coloring,
-    pub crosshair: Option<Point3D>,
+    pub labels: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SampledSlice {
+    pub width: usize,
+    pub height: usize,
+    samples: Samples,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum Samples {
+    Intensity(Vec<f32>),
+    Labels(Vec<LabelSample>),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum LabelSample {
+    Outside,
+    Invalid,
+    Id(i64),
 }
 
 impl Slice<'_> {
-    pub fn render(&self, width: usize, height: usize) -> SliceImage {
-        with_scalar!(self.volume.header().datatype, |T| {
-            self.render_typed::<T>(width, height)
-        })
+    pub fn sample(&self, width: usize, height: usize) -> SampledSlice {
+        let samples = with_scalar!(self.volume.header().datatype, |T| {
+            self.sample_typed::<T>(width, height)
+        });
+        SampledSlice {
+            width,
+            height,
+            samples,
+        }
     }
 
-    fn render_typed<T: Scalar>(&self, width: usize, height: usize) -> SliceImage {
-        let mut pixels = vec![0; width * height * 4];
-        if width == 0 || height == 0 {
-            return SliceImage {
-                width,
-                height,
-                pixels,
-            };
-        }
+    fn sample_typed<T: Scalar>(&self, width: usize, height: usize) -> Samples {
         let voxels = Voxels::<T>::new(self.volume, self.frame);
-        // voxel coords change liniarly thoughout the plane. find the start and the step per unit of s and t
-        // once, instead of recalculating for every pixel
+        let scaling = self.volume.header().scaling;
+        if self.labels {
+            Samples::Labels(
+                self.sample_pixels(width, height, LabelSample::Outside, |voxel| {
+                    match voxel::label_id(scaling.apply(voxels.nearest(voxel))) {
+                        Ok(id) => LabelSample::Id(id),
+                        Err(_) => LabelSample::Invalid,
+                    }
+                }),
+            )
+        } else {
+            Samples::Intensity(self.sample_pixels(width, height, f32::NAN, |voxel| {
+                let raw = voxels.linear(voxel);
+                if raw.is_finite() {
+                    scaling.apply(raw) as f32
+                } else {
+                    f32::NAN
+                }
+            }))
+        }
+    }
+
+    fn sample_pixels<P: Copy + Send + Sync>(
+        &self,
+        width: usize,
+        height: usize,
+        outside: P,
+        sample: impl Fn(Point3D) -> P + Sync,
+    ) -> Vec<P> {
+        let mut pixels = vec![outside; width * height];
+        if width == 0 || height == 0 {
+            return pixels;
+        }
         let to_voxel = &self.geometry.world_to_voxel;
         let origin = to_voxel.point(self.plane.origin);
         let step_s = to_voxel.point(self.plane.origin + self.plane.u) - origin;
         let step_t = to_voxel.point(self.plane.origin + self.plane.v) - origin;
-        let crosshair = self.crosshair.map(|p| self.plane.project(p));
 
         pixels
-            .par_chunks_exact_mut(width * 4)
+            .par_chunks_exact_mut(width)
             .enumerate()
             .for_each(|(row, line)| {
                 // t=1 at row 0
                 let t = 1.0 - (row as f64 + 0.5) / height as f64;
-                for (col, pixel) in line.as_chunks_mut::<4>().0.iter_mut().enumerate() {
+                for (col, pixel) in line.iter_mut().enumerate() {
                     let s = (col as f64 + 0.5) / width as f64;
-                    let Some(mut rgba) = self.color(&voxels, origin + step_s * s + step_t * t)
-                    else {
-                        continue;
-                    };
-                    if let Some((cross_s, cross_t)) = crosshair
-                        && (((s - cross_s) * width as f64).abs() < 0.75
-                            || ((t - cross_t) * height as f64).abs() < 0.75)
-                    {
-                        rgba = with_crosshair(rgba);
+                    let voxel = origin + step_s * s + step_t * t;
+                    if self.geometry.contains_voxel(voxel) {
+                        *pixel = sample(voxel);
                     }
-                    *pixel = rgba;
                 }
             });
-        SliceImage {
-            width,
-            height,
-            pixels,
-        }
+        pixels
     }
+}
 
-    fn color<T: Scalar>(&self, voxels: &Voxels<T>, voxel: Point3D) -> Option<[u8; 4]> {
-        if !self.geometry.contains_voxel(voxel) {
-            return None;
+impl SampledSlice {
+    pub fn colorize(&self, coloring: Coloring) -> SliceImage {
+        let mut pixels = vec![0; self.width * self.height * 4];
+        let out = pixels.as_chunks_mut::<4>().0;
+        let row = self.width.max(1);
+        match (&self.samples, coloring) {
+            (
+                Samples::Intensity(values),
+                Coloring::Intensity {
+                    level,
+                    width,
+                    colormap,
+                },
+            ) => {
+                out.par_chunks_mut(row)
+                    .zip(values.par_chunks(row))
+                    .for_each(|(line, values)| {
+                        for (pixel, &value) in line.iter_mut().zip(values) {
+                            if !value.is_nan() {
+                                let [r, g, b] =
+                                    colormap.color((f64::from(value) - level) / width + 0.5);
+                                *pixel = [r, g, b, 255];
+                            }
+                        }
+                    });
+            }
+            (Samples::Labels(labels), _) => {
+                out.par_chunks_mut(row)
+                    .zip(labels.par_chunks(row))
+                    .for_each(|(line, labels)| {
+                        for (pixel, label) in line.iter_mut().zip(labels) {
+                            *pixel = match *label {
+                                LabelSample::Outside => [0; 4],
+                                LabelSample::Invalid => INVALID_LABEL,
+                                LabelSample::Id(id) => label_color(id),
+                            };
+                        }
+                    });
+            }
+            (Samples::Intensity(_), Coloring::Labels) => {}
         }
-        let scaling = self.volume.header().scaling;
-        match self.coloring {
-            Coloring::Intensity {
-                level,
-                width,
-                colormap,
-            } => {
-                let raw = voxels.linear(voxel);
-                if !raw.is_finite() {
-                    return None;
-                }
-                let [r, g, b] = colormap.color((scaling.apply(raw) - level) / width + 0.5);
-                Some([r, g, b, 255])
-            }
-            Coloring::Labels => {
-                let value = scaling.apply(voxels.nearest(voxel));
-                Some(voxel::label_id(value).map_or(INVALID_LABEL, label_color))
-            }
+        SliceImage {
+            width: self.width,
+            height: self.height,
+            pixels,
         }
     }
 }
@@ -252,16 +316,6 @@ impl<'a, T: Scalar> Voxels<'a, T> {
 /// voxel coordinate to index from 0..size-1
 fn clamp_index(coordinate: f64, size: usize) -> usize {
     (coordinate as usize).min(size - 1)
-}
-
-fn with_crosshair([r, g, b, _]: [u8; 4]) -> [u8; 4] {
-    let mix = |channel: u8, target: f64| (f64::from(channel) * 0.3 + target * 0.7).round() as u8;
-    [
-        mix(r, CROSSHAIR[0]),
-        mix(g, CROSSHAIR[1]),
-        mix(b, CROSSHAIR[2]),
-        255,
-    ]
 }
 
 fn polynomial(coefficients: &[[f64; 3]; 7], t: f64) -> [f64; 3] {
@@ -366,10 +420,9 @@ mod tests {
             geometry: &geometry,
             plane: plane_at(&geometry, ViewPlane::Axial, Point3D::new(1.0, 1.0, 1.0)),
             frame,
-            coloring,
-            crosshair: None,
+            labels: coloring.is_labels(),
         };
-        slice.render(4, 3)
+        slice.sample(4, 3).colorize(coloring)
     }
 
     #[test]
@@ -439,10 +492,10 @@ mod tests {
             geometry: &geometry,
             plane: geometry.plane(ViewPlane::Axial, Point3D::new(1e4, 1e4, 1e4), false),
             frame: 0,
-            coloring: grayscale(0.0, 1.0),
-            crosshair: None,
+            labels: false,
         };
-        assert!(slice.render(8, 8).pixels.chunks(4).all(|p| p[3] == 0));
+        let image = slice.sample(8, 8).colorize(grayscale(0.0, 1.0));
+        assert!(image.pixels.chunks(4).all(|p| p[3] == 0));
     }
 
     fn field(p: Point3D) -> f64 {
@@ -533,11 +586,10 @@ mod tests {
                         geometry: &geometry,
                         plane,
                         frame: 0,
-                        coloring: grayscale(50.0, 100.0),
-                        crosshair: None,
+                        labels: false,
                     };
                     let (width, height) = (40, 40);
-                    let image = slice.render(width, height);
+                    let image = slice.sample(width, height).colorize(grayscale(50.0, 100.0));
                     for row in 0..height {
                         for col in 0..width {
                             let s = (col as f64 + 0.5) / width as f64;
@@ -586,29 +638,39 @@ mod tests {
     }
 
     #[test]
-    fn draws_the_crosshair() {
+    fn recolors_without_resampling() {
         let dir = tempfile::tempdir().unwrap();
-        let volume = load(&dir, &Fixture::default(), "cross.nii");
+        let volume = load(&dir, &Fixture::default(), "recolor.nii");
         let geometry = geometry_of(&volume);
-        let center = Point3D::new(1.0, 1.0, 1.0);
-        let mut slice = Slice {
+        let slice = Slice {
             volume: &volume,
             geometry: &geometry,
-            plane: plane_at(&geometry, ViewPlane::Axial, center),
+            plane: plane_at(&geometry, ViewPlane::Axial, Point3D::new(1.0, 1.0, 1.0)),
             frame: 0,
-            coloring: grayscale(23.5, 47.0),
-            crosshair: None,
+            labels: false,
         };
-        let plain = slice.render(4, 3);
-        slice.crosshair = Some(geometry.voxel_to_world.point(center));
-        let crossed = slice.render(4, 3);
-        for row in 0..3 {
-            for col in 0..4 {
-                let on_line = col == 1 || row == 1;
-                let changed = pixel(&plain, col, row) != pixel(&crossed, col, row);
-                assert_eq!(changed, on_line, "pixel ({col}, {row})");
-            }
+        let samples = slice.sample(4, 3);
+        for (level, width) in [(23.5, 47.0), (10.0, 5.0)] {
+            let reused = samples.colorize(grayscale(level, width));
+            let fresh = slice.sample(4, 3).colorize(grayscale(level, width));
+            assert_eq!(reused, fresh);
         }
+        assert_eq!(
+            slice
+                .sample(0, 3)
+                .colorize(grayscale(0.0, 1.0))
+                .pixels
+                .len(),
+            0
+        );
+        // labels need their own nearest-voxel samples
+        assert!(
+            samples
+                .colorize(Coloring::Labels)
+                .pixels
+                .iter()
+                .all(|&b| b == 0)
+        );
     }
 
     #[test]

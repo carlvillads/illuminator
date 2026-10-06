@@ -1,15 +1,46 @@
 //! display state for one volume
 
+use std::sync::Arc;
+
 use crate::error::{Error, Result};
 use crate::geometry::{GeometryOptions, Point3D, SlicePlane, ViewPlane, VolumeGeometry};
 use crate::header::{Header, SpatialUnits};
 use crate::labels::LabelTable;
 use crate::loader::LoadedVolume;
 use crate::progress::Progress;
-use crate::slicer::{Coloring, Colormap, Slice};
+use crate::slicer::{Coloring, Colormap, SampledSlice, Slice};
 use crate::volume::{NiiVolume, Range};
 
 const LABEL_LIMIT: usize = 1 << 20;
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SampleKey {
+    pub geometry: VolumeGeometry,
+    pub plane: SlicePlane,
+    pub frame: usize,
+    pub labels: bool,
+    pub width: usize,
+    pub height: usize,
+}
+
+pub struct SliceJob {
+    pub volume: Arc<NiiVolume>,
+    pub key: SampleKey,
+}
+
+impl SliceJob {
+    pub fn sample(&self) -> SampledSlice {
+        let key = &self.key;
+        Slice {
+            volume: &self.volume,
+            geometry: &key.geometry,
+            plane: key.plane,
+            frame: key.frame,
+            labels: key.labels,
+        }
+        .sample(key.width, key.height)
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct IntensityWindow {
@@ -64,7 +95,7 @@ pub struct PanelLabels {
 }
 
 pub struct VolumeDisplay {
-    volume: NiiVolume,
+    volume: Arc<NiiVolume>,
     geometry: VolumeGeometry,
     options: GeometryOptions,
     cursor: Point3D,
@@ -83,7 +114,7 @@ impl VolumeDisplay {
         let geometry = loaded.volume.geometry(options)?;
         let window = IntensityWindow::initial(loaded.volume.header(), loaded.range)?;
         let mut display = Self {
-            volume: loaded.volume,
+            volume: Arc::new(loaded.volume),
             geometry,
             options,
             cursor: Point3D::default(),
@@ -305,14 +336,23 @@ impl VolumeDisplay {
         self.geometry.plane(axis, self.cursor, radiological)
     }
 
-    pub fn slice(&self, axis: ViewPlane, radiological: bool, crosshair: bool) -> Slice<'_> {
-        Slice {
-            volume: &self.volume,
-            geometry: &self.geometry,
-            plane: self.plane(axis, radiological),
-            frame: self.frame,
-            coloring: self.coloring(),
-            crosshair: crosshair.then_some(self.cursor),
+    pub fn job(
+        &self,
+        axis: ViewPlane,
+        radiological: bool,
+        width: usize,
+        height: usize,
+    ) -> SliceJob {
+        SliceJob {
+            volume: Arc::clone(&self.volume),
+            key: SampleKey {
+                geometry: self.geometry.clone(),
+                plane: self.plane(axis, radiological),
+                frame: self.frame,
+                labels: self.label_mode,
+                width,
+                height,
+            },
         }
     }
 
