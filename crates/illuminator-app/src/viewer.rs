@@ -48,7 +48,7 @@ struct Panel {
     rendering: bool,
 }
 
-struct Column {
+struct Layer {
     display: VolumeDisplay,
     panels: [Panel; 3],
     load_id: u64,
@@ -82,7 +82,7 @@ struct FrameSlider {
 pub struct Viewer {
     cache: Arc<VolumeCache>,
     loader: VolumeLoader,
-    columns: Vec<Column>,
+    layers: Vec<Layer>,
     errors: Vec<String>,
     sync: bool,
     sync_mode: SyncMode,
@@ -129,7 +129,7 @@ impl Viewer {
         Self {
             cache,
             loader,
-            columns: Vec::new(),
+            layers: Vec::new(),
             errors: Vec::new(),
             sync: true,
             sync_mode: SyncMode::World,
@@ -156,18 +156,18 @@ impl Viewer {
                     let error = display.set_frame(self.frame).err().map(|e| e.to_string());
                     display.clip_low = true;
                     let at = self
-                        .columns
+                        .layers
                         .partition_point(|column| column.load_id < load_id);
                     let shifted =
                         |index: usize, len: usize| index + usize::from(at <= index && index < len);
-                    self.selected = shifted(self.selected, self.columns.len());
+                    self.selected = shifted(self.selected, self.layers.len());
                     if !self.overlay {
-                        self.active_panel.0 = shifted(self.active_panel.0, self.columns.len());
+                        self.active_panel.0 = shifted(self.active_panel.0, self.layers.len());
                     }
                     let (opacity_slider, opacity_changes) = opacity_slider(load_id, cx);
-                    self.columns.insert(
+                    self.layers.insert(
                         at,
-                        Column {
+                        Layer {
                             display,
                             panels: Default::default(),
                             load_id,
@@ -198,18 +198,18 @@ impl Viewer {
     /// number of panels on screen
     fn view_count(&self) -> usize {
         if self.overlay {
-            self.columns.len().min(1)
+            self.layers.len().min(1)
         } else {
-            self.columns.len()
+            self.layers.len()
         }
     }
 
     fn selected(&self) -> Option<usize> {
-        (self.selected < self.columns.len()).then_some(self.selected)
+        (self.selected < self.layers.len()).then_some(self.selected)
     }
 
     fn select(&mut self, layer: usize, cx: &mut Context<Self>) {
-        if layer < self.columns.len() {
+        if layer < self.layers.len() {
             self.selected = layer;
             if !self.overlay {
                 self.active_panel.0 = layer;
@@ -247,7 +247,7 @@ impl Viewer {
         let Some((column, axis)) = self.active() else {
             return;
         };
-        if self.columns[column].display.step_slice(axis, steps) {
+        if self.layers[column].display.step_slice(axis, steps) {
             self.sync_from(column);
             cx.notify();
         }
@@ -318,7 +318,7 @@ impl Viewer {
 
     fn next_colormap(&mut self, _: &NextColormap, _: &mut Window, cx: &mut Context<Self>) {
         if let Some(column) = self.selected() {
-            let display = &mut self.columns[column].display;
+            let display = &mut self.layers[column].display;
             let current = Colormap::ALL.iter().position(|&c| c == display.colormap);
             let next = current.map_or(0, |index| (index + 1) % Colormap::ALL.len());
             display.colormap = Colormap::ALL[next];
@@ -333,7 +333,7 @@ impl Viewer {
         cx: &mut Context<Self>,
     ) {
         if let Some(column) = self.selected() {
-            let enabled = !self.columns[column].display.label_mode();
+            let enabled = !self.layers[column].display.label_mode();
             self.change(column, |display| display.set_label_mode(enabled), cx);
         }
     }
@@ -344,21 +344,21 @@ impl Viewer {
 
     fn toggle_layer(&mut self, _: &ToggleLayer, _: &mut Window, cx: &mut Context<Self>) {
         if let Some(layer) = self.selected() {
-            let column = &mut self.columns[layer];
+            let column = &mut self.layers[layer];
             column.visible = !column.visible;
             cx.notify();
         }
     }
 
     fn next_layer(&mut self, _: &NextLayer, _: &mut Window, cx: &mut Context<Self>) {
-        if !self.columns.is_empty() {
-            self.select((self.selected + 1) % self.columns.len(), cx);
+        if !self.layers.is_empty() {
+            self.select((self.selected + 1) % self.layers.len(), cx);
         }
     }
 
     fn previous_layer(&mut self, _: &PreviousLayer, _: &mut Window, cx: &mut Context<Self>) {
-        if !self.columns.is_empty() {
-            let count = self.columns.len();
+        if !self.layers.is_empty() {
+            let count = self.layers.len();
             self.select((self.selected + count - 1) % count, cx);
         }
     }
@@ -391,7 +391,7 @@ impl Viewer {
         layout: &PanelLayout,
         scale: f32,
     ) -> Option<[Div; 2]> {
-        let display = &self.columns[column].display;
+        let display = &self.layers[column].display;
         let plane = display.plane(ViewPlane::ALL[row], self.radiological);
         let (s, t) = plane.project(display.cursor());
         if !(0.0..=1.0).contains(&s) || !(0.0..=1.0).contains(&t) {
@@ -444,7 +444,7 @@ impl Viewer {
         change: impl FnOnce(&mut VolumeDisplay) -> illuminator_core::Result<()>,
         cx: &mut Context<Self>,
     ) {
-        let entry = &mut self.columns[column];
+        let entry = &mut self.layers[column];
         entry.error = change(&mut entry.display).err().map(|e| e.to_string());
         self.sync_from(column);
         cx.notify();
@@ -456,20 +456,20 @@ impl Viewer {
         }
         if self.overlay {
             // make sure overlaid layers share world pos
-            let cursor = self.columns[active].display.cursor();
-            for column in &mut self.columns {
+            let cursor = self.layers[active].display.cursor();
+            for column in &mut self.layers {
                 column.display.set_cursor(cursor);
             }
             return;
         }
-        let source = &self.columns[active].display;
+        let source = &self.layers[active].display;
         match self.sync_mode {
             SyncMode::World => {
                 if !source.world_linked() {
                     return;
                 }
                 let cursor = source.cursor();
-                for (index, column) in self.columns.iter_mut().enumerate() {
+                for (index, column) in self.layers.iter_mut().enumerate() {
                     if index != active && column.display.world_linked() {
                         column.display.set_cursor(cursor);
                     }
@@ -477,7 +477,7 @@ impl Viewer {
             }
             SyncMode::Proportional => {
                 let fraction = source.fractional_cursor();
-                for (index, column) in self.columns.iter_mut().enumerate() {
+                for (index, column) in self.layers.iter_mut().enumerate() {
                     if index != active {
                         column.display.set_fractional_cursor(fraction);
                     }
@@ -488,12 +488,12 @@ impl Viewer {
 
     fn sync_from_first(&mut self) {
         if self.overlay {
-            if !self.columns.is_empty() {
+            if !self.layers.is_empty() {
                 self.sync_from(0);
             }
             return;
         }
-        let leader = self.columns.iter().position(|column| {
+        let leader = self.layers.iter().position(|column| {
             self.sync_mode == SyncMode::Proportional || column.display.world_linked()
         });
         if let Some(leader) = leader {
@@ -503,7 +503,7 @@ impl Viewer {
 
     fn set_frame(&mut self, frame: usize, cx: &mut Context<Self>) {
         self.frame = frame;
-        for column in &mut self.columns {
+        for column in &mut self.layers {
             column.error = column.display.set_frame(frame).err().map(|e| e.to_string());
         }
         cx.notify();
@@ -511,7 +511,7 @@ impl Viewer {
 
     fn update_frame_slider(&mut self, cx: &mut Context<Self>) {
         let frames = self
-            .columns
+            .layers
             .iter()
             .map(|column| column.display.volume().header().timepoints())
             .max()
@@ -551,7 +551,7 @@ impl Viewer {
         let width = area_width / self.view_count().max(1) as f32;
         let height = f32::from(viewport.height) / 3.0;
         let scale = window.scale_factor();
-        let plane = self.columns[column]
+        let plane = self.layers[column]
             .display
             .plane(ViewPlane::ALL[row], self.radiological);
         let image_pixels = fit_size(&plane, (width * scale) as usize, (height * scale) as usize);
@@ -595,7 +595,7 @@ impl Viewer {
             return;
         };
         let radiological = self.radiological;
-        if self.columns[hit.column]
+        if self.layers[hit.column]
             .display
             .pick(hit.axis, radiological, hit.s, hit.t)
         {
@@ -614,7 +614,7 @@ impl Viewer {
             return;
         }
         self.scroll_remainder -= steps * SCROLL_STEP;
-        if self.columns[hit.column]
+        if self.layers[hit.column]
             .display
             .step_slice(hit.axis, f64::from(steps))
         {
@@ -629,25 +629,25 @@ impl Viewer {
         };
         let dx = f64::from(f32::from(position.x - last.x));
         let dy = f64::from(f32::from(position.y - last.y));
-        self.columns[column].display.drag_window(dx, dy);
+        self.layers[column].display.drag_window(dx, dy);
         self.contrast_drag = Some((column, position));
         cx.notify();
     }
 
     /// Starts a background render for each panel whose image is out of date since last draw
     fn schedule_renders(&mut self, window: &Window, cx: &mut Context<Self>) {
-        for column in 0..self.columns.len() {
-            if !self.columns[column].visible {
+        for column in 0..self.layers.len() {
+            if !self.layers[column].visible {
                 continue;
             }
             // overlaid layers are all drawn on the base layers plane
             let view = if self.overlay { 0 } else { column };
             for row in 0..3 {
                 let (width, height) = self.layout(view, row, window).image_pixels;
-                let plane = self.columns[view]
+                let plane = self.layers[view]
                     .display
                     .plane(ViewPlane::ALL[row], self.radiological);
-                let entry = &self.columns[column];
+                let entry = &self.layers[column];
                 let panel = &entry.panels[row];
                 if width == 0 || height == 0 || panel.rendering {
                     continue;
@@ -677,7 +677,7 @@ impl Viewer {
                         })
                         .await;
                     let _ = viewer.update_in(cx, |viewer, window, cx| {
-                        let Some(column) = viewer.columns.iter_mut().find(|c| c.load_id == load_id)
+                        let Some(column) = viewer.layers.iter_mut().find(|c| c.load_id == load_id)
                         else {
                             return;
                         };
@@ -691,7 +691,7 @@ impl Viewer {
                     });
                 })
                 .detach();
-                self.columns[column].panels[row].rendering = true;
+                self.layers[column].panels[row].rendering = true;
             }
         }
     }
@@ -744,7 +744,7 @@ impl Viewer {
                 viewer.scroll(event, window, cx);
             }));
 
-        if self.columns.is_empty() {
+        if self.layers.is_empty() {
             return area.child(
                 div()
                     .size_full()
@@ -757,9 +757,9 @@ impl Viewer {
         }
 
         for index in 0..self.view_count() {
-            let display = &self.columns[index].display;
+            let display = &self.layers[index].display;
             let layers = if self.overlay {
-                0..self.columns.len()
+                0..self.layers.len()
             } else {
                 index..index + 1
             };
@@ -783,7 +783,7 @@ impl Viewer {
                     .h(px(layout.image_size.height));
                 let mut bottom = true;
                 for layer in layers.clone() {
-                    let column = &self.columns[layer];
+                    let column = &self.layers[layer];
                     let Some(image) = column.panels[row].image.as_ref().filter(|_| column.visible)
                     else {
                         continue;
@@ -870,7 +870,7 @@ impl Viewer {
             .child(self.render_loading(cx))
             .child(separator())
             .child(self.render_view_controls(cx))
-            .children((0..self.columns.len()).map(|index| {
+            .children((0..self.layers.len()).map(|index| {
                 v_flex()
                     .gap_3()
                     .child(separator())
@@ -992,7 +992,7 @@ impl Viewer {
         };
         v_flex()
             .gap_2()
-            .child(format!("Loaded volumes: {}", self.columns.len()))
+            .child(format!("Loaded volumes: {}", self.layers.len()))
             .child(
                 Checkbox::new("overlay")
                     .label("Overlay layers")
@@ -1072,7 +1072,7 @@ impl Viewer {
     fn render_volume(&self, index: usize, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
         let (muted, danger, info) = (theme.muted_foreground, theme.danger, theme.info);
-        let column = &self.columns[index];
+        let column = &self.layers[index];
         let display = &column.display;
         let geometry = display.geometry();
         let h = display.volume().header();
@@ -1086,7 +1086,7 @@ impl Viewer {
             None => "Outside volume".to_string(),
         };
 
-        let bottom_visible = self.columns.iter().position(|column| column.visible);
+        let bottom_visible = self.layers.iter().position(|column| column.visible);
         let selected = self.selected == index;
         let mut section = v_flex()
             .gap_2()
@@ -1105,7 +1105,7 @@ impl Viewer {
                         Checkbox::new(id("visible"))
                             .checked(column.visible)
                             .on_click(cx.listener(move |viewer, checked: &bool, _, cx| {
-                                viewer.columns[index].visible = *checked;
+                                viewer.layers[index].visible = *checked;
                                 cx.notify();
                             })),
                     )
@@ -1254,7 +1254,7 @@ impl Viewer {
                         .label("Transparent below window")
                         .checked(display.clip_low)
                         .on_click(cx.listener(move |viewer, checked: &bool, _, cx| {
-                            viewer.columns[index].display.clip_low = *checked;
+                            viewer.layers[index].display.clip_low = *checked;
                             cx.notify();
                         })),
                 )
@@ -1273,7 +1273,7 @@ impl Viewer {
                             .label(colormap.name())
                             .selected(display.colormap == colormap)
                             .on_click(cx.listener(move |viewer, _, _, cx| {
-                                viewer.columns[index].display.colormap = colormap;
+                                viewer.layers[index].display.colormap = colormap;
                                 cx.notify();
                             }))
                     }),
@@ -1287,7 +1287,7 @@ impl Viewer {
                     .xsmall()
                     .label("Dismiss error")
                     .on_click(cx.listener(move |viewer, _, _, cx| {
-                        viewer.columns[index].error = None;
+                        viewer.layers[index].error = None;
                         cx.notify();
                     })),
             )
@@ -1356,7 +1356,7 @@ fn opacity_slider(load_id: u64, cx: &mut Context<Viewer>) -> (Entity<SliderState
     });
     let changes = cx.subscribe(&state, move |viewer, _, event: &SliderEvent, cx| {
         if let SliderEvent::Change(value) = event
-            && let Some(column) = viewer.columns.iter_mut().find(|c| c.load_id == load_id)
+            && let Some(column) = viewer.layers.iter_mut().find(|c| c.load_id == load_id)
         {
             column.opacity = value.start() / 100.0;
             cx.notify();
