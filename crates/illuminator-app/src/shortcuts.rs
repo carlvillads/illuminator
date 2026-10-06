@@ -45,6 +45,9 @@ actions!(
         ToggleRadiological,
         /// Shows or hides the crosshairs
         ToggleCrosshair,
+        /// Shows or hides the text in the view corners
+        ToggleInfo,
+        ShowHelp,
         /// All layers overlaid in three planes
         LayoutOrtho,
         /// One column per layer three planes each
@@ -82,6 +85,8 @@ pub fn bind(cx: &mut App) {
         KeyBinding::new("s", ToggleSync, viewer),
         KeyBinding::new("r", ToggleRadiological, viewer),
         KeyBinding::new("c", ToggleCrosshair, viewer),
+        KeyBinding::new("i", ToggleInfo, viewer),
+        KeyBinding::new("?", ShowHelp, viewer),
         KeyBinding::new("o", ToggleOverlay, viewer),
         KeyBinding::new("v", ToggleLayer, viewer),
         KeyBinding::new("j", NextLayer, viewer),
@@ -96,20 +101,25 @@ pub fn bind(cx: &mut App) {
 
 pub fn help() -> Vec<(String, &'static str)> {
     vec![
-        (format!("{SECONDARY}O"), "Open volumes"),
+        ("Click+drag".into(), "Move cursor"),
+        ("Right+drag".into(), "Layer Window/level"),
+        ("Scroll".into(), "Change slice"),
+        ("Doubleclick".into(), "Focus/unfocus view"),
+        ("Hover".into(), "Values in the status bar"),
+        ("1-4".into(), "Layouts"),
+        ("O".into(), "Overlay/side by side"),
+        ("J/K".into(), "Next/previous layer"),
+        ("V".into(), "Show/hide layer"),
         ("\u{2191}/\u{2193}".into(), "Next/previous slice"),
         ("Shift+\u{2191}/\u{2193}".into(), "Ten slices"),
         ("\u{2190}/\u{2192}".into(), "Previous/next frame"),
         ("H".into(), "Center cursor"),
         ("A".into(), "Auto contrast"),
         ("M".into(), "Next colormap"),
-        ("L".into(), "Segmentation map"),
-        ("O".into(), "Overlay/side by side"),
-        ("J/K".into(), "Next/previous layer"),
-        ("V".into(), "Show/hide layer"),
-        ("S/R/C".into(), "Sync/radiological/crosshairs"),
+        ("L".into(), "Label map"),
+        ("S/R/C/I".into(), "Sync/radiological/crosshair/corner text"),
+        ("?".into(), "This list"),
+        (format!("{SECONDARY}O"), "Open volumes"),
         (format!("{SECONDARY}W/{SECONDARY}Q"), "Close window/quit"),
-        ("1-4".into(), "Layouts"),
-        ("Double-click".into(), "Enlarge view"),
     ]
 }

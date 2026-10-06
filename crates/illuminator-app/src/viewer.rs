@@ -5,25 +5,28 @@ use futures::channel::mpsc;
 use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::checkbox::Checkbox;
+use gpui_kit::component::hover_card::HoverCard;
 use gpui_kit::component::progress::Progress;
 use gpui_kit::component::slider::{Slider, SliderEvent, SliderState};
 use gpui_kit::component::status_bar::StatusBar;
-use gpui_kit::component::{ActiveTheme, Selectable, Sizable, h_flex, v_flex};
+use gpui_kit::component::tooltip::Tooltip;
+use gpui_kit::component::{ActiveTheme, Selectable, Sizable, WindowExt, h_flex, v_flex};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use illuminator_core::cache::VolumeCache;
 use illuminator_core::display::{SampleKey, VolumeDisplay};
 use illuminator_core::geometry::{Point3D, ViewPlane};
+use illuminator_core::labels::label_color;
 use illuminator_core::loader::{LoadState, VolumeLoader};
 use illuminator_core::slicer::{Coloring, Colormap, SampledSlice, SliceImage, fit_size};
 use image::{Frame, RgbaImage};
 use std::ops::Range;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::shortcuts::{self, *};
 
-const SIDEBAR_WIDTH: f32 = 320.0;
+const SIDEBAR_WIDTH: f32 = 280.0;
 const SCROLL_STEP: f32 = 20.0;
 const OVERLAY_OPACITY: f32 = 0.5;
 const TOOLBAR_HEIGHT: f32 = 36.0;
@@ -60,7 +63,6 @@ struct Layer {
     visible: bool,
     opacity: f32,
     opacity_slider: Entity<SliderState>,
-    error: Option<String>,
     _opacity_changes: Subscription,
 }
 
@@ -128,7 +130,6 @@ pub struct Viewer {
     cache: Arc<VolumeCache>,
     loader: VolumeLoader,
     layers: Vec<Layer>,
-    errors: Vec<String>,
     sync: bool,
     sync_mode: SyncMode,
     radiological: bool,
@@ -143,6 +144,7 @@ pub struct Viewer {
     previous_layout: Layout,
     hover: Option<Point3D>,
     selected: usize,
+    show_info: bool,
     _loader_events: Task<()>,
 }
 
@@ -177,7 +179,6 @@ impl Viewer {
             cache,
             loader,
             layers: Vec::new(),
-            errors: Vec::new(),
             sync: true,
             sync_mode: SyncMode::World,
             radiological: false,
@@ -192,6 +193,7 @@ impl Viewer {
             previous_layout: Layout::Ortho,
             hover: None,
             selected: 0,
+            show_info: false,
             _loader_events: loader_events,
         }
     }
@@ -202,7 +204,9 @@ impl Viewer {
             let load_id = loaded.id;
             match VolumeDisplay::new(loaded) {
                 Ok(mut display) => {
-                    let error = display.set_frame(self.frame).err().map(|e| e.to_string());
+                    if let Err(error) = display.set_frame(self.frame) {
+                        eprintln!("Illuminator: {}: {error}", display.name());
+                    }
                     display.clip_low = true;
                     let at = self
                         .layers
@@ -230,14 +234,20 @@ impl Viewer {
                             opacity: OVERLAY_OPACITY,
                             opacity_slider,
                             _opacity_changes: opacity_changes,
-                            error,
                         },
                     );
                     added = true;
                 }
-                Err(error) => self.errors.push(error.to_string()),
+                Err(error) => eprintln!("Illuminator: {error}"),
             }
         }
+        // report failed loads once, then drop all finished loads, so the sidebar only lists running ones
+        for status in self.loader.statuses() {
+            if let LoadState::Failed(error) = &status.state {
+                eprintln!("Illuminator: {}: {error}", status.path.display());
+            }
+        }
+        self.loader.dismiss_finished();
         if added {
             self.update_frame_slider(cx);
             self.sync_from_first();
@@ -495,6 +505,51 @@ impl Viewer {
         cx.notify();
     }
 
+    fn toggle_info(&mut self, _: &ToggleInfo, _: &mut Window, cx: &mut Context<Self>) {
+        self.show_info = !self.show_info;
+        cx.notify();
+    }
+
+    fn show_help(&mut self, _: &ShowHelp, window: &mut Window, cx: &mut Context<Self>) {
+        let cache = format!(
+            "Decompressed volumes are cached in {} >= {:.1} GiB",
+            self.cache.directory().display(),
+            self.cache.budget() as f64 / (1u64 << 30) as f64
+        );
+        window.open_dialog(cx, move |dialog, _, cx| {
+            let theme = cx.theme();
+            let (muted, border) = (theme.muted_foreground, theme.border);
+            dialog.title("Shortcuts").width(px(440.0)).child(
+                v_flex()
+                    .gap_1()
+                    .text_sm()
+                    .children(shortcuts::help().into_iter().map(|(keys, action)| {
+                        h_flex()
+                            .gap_3()
+                            .child(
+                                div().w(px(120.0)).child(
+                                    div()
+                                        .px_1()
+                                        .rounded_sm()
+                                        .border_1()
+                                        .border_color(border)
+                                        .text_xs()
+                                        .child(keys),
+                                ),
+                            )
+                            .child(action)
+                    }))
+                    .child(
+                        div()
+                            .pt_3()
+                            .text_xs()
+                            .text_color(muted)
+                            .child(cache.clone()),
+                    ),
+            )
+        });
+    }
+
     fn toggle_crosshair(&mut self, _: &ToggleCrosshair, _: &mut Window, cx: &mut Context<Self>) {
         self.show_crosshair = !self.show_crosshair;
         cx.notify();
@@ -554,8 +609,9 @@ impl Viewer {
         change: impl FnOnce(&mut VolumeDisplay) -> illuminator_core::Result<()>,
         cx: &mut Context<Self>,
     ) {
-        let entry = &mut self.layers[column];
-        entry.error = change(&mut entry.display).err().map(|e| e.to_string());
+        if let Err(error) = change(&mut self.layers[column].display) {
+            eprintln!("Illuminator: layer {}: {error}", column + 1);
+        }
         self.sync_from(column);
         cx.notify();
     }
@@ -613,8 +669,10 @@ impl Viewer {
 
     fn set_frame(&mut self, frame: usize, cx: &mut Context<Self>) {
         self.frame = frame;
-        for column in &mut self.layers {
-            column.error = column.display.set_frame(frame).err().map(|e| e.to_string());
+        for (index, layer) in self.layers.iter_mut().enumerate() {
+            if let Err(error) = layer.display.set_frame(frame) {
+                eprintln!("Illuminator: layer {}: {error}", index + 1);
+            }
         }
         cx.notify();
     }
@@ -959,6 +1017,7 @@ impl Viewer {
                         .absolute()
                         .top_1()
                         .left_2()
+                        .text_xs()
                         .child(labels.title)
                         .when(!overlaid, |title| {
                             title.child(div().text_xs().text_color(muted).child(display.name()))
@@ -968,34 +1027,83 @@ impl Viewer {
                 .child(edge(labels.right).right_2())
                 .child(edge(labels.top).top_1())
                 .child(edge(labels.bottom).bottom_1())
-                .when(
-                    !display.geometry().contains_world(display.cursor()),
-                    |panel| {
-                        panel.child(
-                            div()
-                                .absolute()
-                                .bottom_1()
-                                .left_2()
-                                .text_color(label_color)
-                                .child("Cursor outside volume"),
-                        )
-                    },
-                );
+                .when(self.show_info, |panel| {
+                    panel.child(self.corner_info(&view, muted))
+                });
             area = area.child(panel);
         }
         area
     }
 
+    fn corner_info(&self, view: &View, color: Hsla) -> Div {
+        let overlaid = view.layers.len() > 1;
+        let numbered = |layer: usize, text: String| {
+            if overlaid {
+                format!("{}: {text}", layer + 1)
+            } else {
+                text
+            }
+        };
+        let values = view
+            .layers
+            .clone()
+            .filter(|&layer| self.layers[layer].visible)
+            .map(|layer| {
+                let value = self.layers[layer]
+                    .display
+                    .cursor_sample()
+                    .map_or("-".to_string(), |(_, value)| format_value(value));
+                numbered(layer, value)
+            });
+        let windowed = if overlaid {
+            self.selected().unwrap_or(view.base)
+        } else {
+            view.base
+        };
+        let window_text = match self.layers[windowed].display.coloring() {
+            Coloring::Labels => "Labels".to_string(),
+            Coloring::Intensity { level, width, .. } => {
+                format!("W {} L {}", format_value(width), format_value(level))
+            }
+        };
+        let base = &self.layers[view.base].display;
+        let (slice, count) = base.slice_position(view.axis);
+        let corner = || div().absolute().text_xs().text_color(color);
+        div()
+            .absolute()
+            .inset_0()
+            .child(
+                corner()
+                    .top_1()
+                    .right_2()
+                    .child(v_flex().items_end().children(values)),
+            )
+            .child(
+                corner().bottom_1().left_2().child(
+                    v_flex()
+                        .when(!base.geometry().contains_world(base.cursor()), |text| {
+                            text.child("Cursor outside volume")
+                        })
+                        .child(numbered(windowed, window_text)),
+                ),
+            )
+            .child(
+                corner()
+                    .bottom_1()
+                    .right_2()
+                    .child(format!("{}/{count}", slice + 1)),
+            )
+    }
+
     fn render_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
-        let (muted, border, sidebar) = (theme.muted_foreground, theme.border, theme.sidebar);
-        let separator = || div().border_t_1().border_color(border);
+        let (border, sidebar) = (theme.border, theme.sidebar);
         v_flex()
             .id("sidebar")
             .w(px(SIDEBAR_WIDTH))
             .h_full()
             .flex_none()
-            .p_3()
+            .p_2()
             .gap_3()
             .overflow_y_scroll()
             .bg(sidebar)
@@ -1003,105 +1111,46 @@ impl Viewer {
             .border_color(border)
             .text_sm()
             .child(self.render_loading(cx))
-            .child(separator())
-            .child(self.render_view_controls(cx))
-            .children((0..self.layers.len()).map(|index| {
-                v_flex()
-                    .gap_3()
-                    .child(separator())
-                    .child(self.render_volume(index, cx))
-            }))
-            .child(separator())
-            .child(v_flex().gap_1().text_xs().text_color(muted).child(format!(
-                "Max cache size: {:.1} GiB",
-                self.cache.budget() as f64 / (1u64 << 30) as f64
-            )))
+            .child(self.render_layer_list(cx))
+            .child(self.render_layer_settings(cx))
+            .child(self.render_view_settings(cx))
     }
 
     fn render_loading(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let muted = cx.theme().muted_foreground;
-        let danger = cx.theme().danger;
-        let mut list = v_flex().gap_3();
-        let statuses = self.loader.statuses();
-        let any_finished = statuses.iter().any(|status| !status.state.is_active());
-        for status in statuses {
-            if status.state == LoadState::Ready {
-                continue;
-            }
-            let id = status.id;
-            let name = status
-                .path
-                .file_name()
-                .map(|name| name.to_string_lossy().into_owned())
-                .unwrap_or_default();
-            let detail = match &status.state {
-                LoadState::Queued | LoadState::Loading => h_flex()
-                    .gap_2()
-                    .child(
-                        Progress::new(("load-progress", id))
-                            .value(status.progress as f32 * 100.0)
-                            .flex_1(),
-                    )
-                    .child(
-                        Button::new(("load-cancel", id))
-                            .ghost()
-                            .xsmall()
-                            .label("Cancel")
-                            .on_click(cx.listener(move |viewer, _, _, _| viewer.loader.cancel(id))),
-                    )
-                    .into_any_element(),
-                LoadState::Failed(error) => div()
-                    .text_color(danger)
-                    .child(error.clone())
-                    .into_any_element(),
-                _ => div()
-                    .text_color(muted)
-                    .child(status.stage.clone())
-                    .into_any_element(),
-            };
-            list = list.child(
+        v_flex()
+            .gap_1()
+            .children(self.loader.statuses().into_iter().map(|status| {
+                let id = status.id;
                 v_flex()
-                    .gap_1()
-                    .child(name)
-                    .when(status.state.is_active(), |item| {
-                        item.child(
-                            div()
-                                .text_xs()
-                                .text_color(muted)
-                                .child(status.stage.clone()),
-                        )
-                    })
-                    .child(detail),
-            );
-        }
-        if any_finished {
-            list = list.child(
-                Button::new("dismiss")
-                    .ghost()
-                    .xsmall()
-                    .label("Clear finished loads")
-                    .on_click(cx.listener(|viewer, _, _, cx| {
-                        viewer.loader.dismiss_finished();
-                        cx.notify();
-                    })),
-            );
-        }
-        for error in &self.errors {
-            list = list.child(div().text_color(danger).child(error.clone()));
-        }
-        if !self.errors.is_empty() {
-            list = list.child(
-                Button::new("dismiss-errors")
-                    .ghost()
-                    .xsmall()
-                    .label("Dismiss load errors")
-                    .on_click(cx.listener(|viewer, _, _, cx| {
-                        viewer.errors.clear();
-                        cx.notify();
-                    })),
-            );
-        }
-        list
+                    .child(
+                        h_flex()
+                            .gap_1()
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .text_xs()
+                                    .child(tail(&file_name(&status.path), 34)),
+                            )
+                            .child(
+                                Button::new(("load-cancel", id))
+                                    .ghost()
+                                    .xsmall()
+                                    .icon(IconName::Close)
+                                    .tooltip("Cancel")
+                                    .on_click(
+                                        cx.listener(move |viewer, _, _, _| {
+                                            viewer.loader.cancel(id)
+                                        }),
+                                    ),
+                            ),
+                    )
+                    .child(
+                        Progress::new(("load-progress", id)).value(status.progress as f32 * 100.0),
+                    )
+                    .child(div().text_xs().text_color(muted).child(status.stage))
+            }))
     }
 
     fn render_toolbar(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -1209,6 +1258,17 @@ impl Viewer {
                         viewer.toggle_radiological(&ToggleRadiological, window, cx);
                     })),
             )
+            .child(
+                Button::new("info")
+                    .ghost()
+                    .small()
+                    .icon(IconName::Info)
+                    .selected(self.show_info)
+                    .tooltip_with_action("Info in view corners", &ToggleInfo, context)
+                    .on_click(cx.listener(|viewer, _, window, cx| {
+                        viewer.toggle_info(&ToggleInfo, window, cx);
+                    })),
+            )
             .when(!self.layout.overlaid(), |bar| {
                 bar.child(
                     Button::new("sync")
@@ -1222,6 +1282,17 @@ impl Viewer {
                         })),
                 )
             })
+            .child(div().flex_1())
+            .child(
+                Button::new("help")
+                    .ghost()
+                    .small()
+                    .icon(IconName::BookOpen)
+                    .tooltip_with_action("Shortcuts", &ShowHelp, context)
+                    .on_click(cx.listener(|viewer, _, window, cx| {
+                        viewer.show_help(&ShowHelp, window, cx);
+                    })),
+            )
     }
 
     /// Values of all layers at the mouse
@@ -1263,131 +1334,204 @@ impl Viewer {
         status
     }
 
-    /// Settings shared by all volumes
-    fn render_view_controls(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let mode_button = |id: &'static str, label: &'static str, mode: SyncMode| {
-            Button::new(id)
-                .xsmall()
-                .label(label)
-                .selected(self.sync_mode == mode)
-                .on_click(cx.listener(move |viewer, _, _, cx| {
-                    viewer.sync_mode = mode;
-                    viewer.sync_from_first();
-                    cx.notify();
-                }))
-        };
-        v_flex()
-            .gap_2()
-            .when(!self.layout.overlaid() && self.sync, |controls| {
-                controls.child(
-                    h_flex()
-                        .gap_1()
-                        .child(mode_button("sync-world", "World", SyncMode::World))
-                        .child(mode_button(
-                            "sync-proportional",
-                            "Proportional",
-                            SyncMode::Proportional,
-                        )),
-                )
-            })
-            .when_some(self.frame_slider.as_ref(), |controls, slider| {
-                controls
-                    .child(format!(
-                        "Global frame: {} of {}",
-                        self.frame, slider.last_frame
-                    ))
-                    .child(Slider::new(&slider.state))
-            })
-            .child(
-                v_flex()
-                    .text_xs()
-                    .children(shortcuts::help().into_iter().map(|(keys, action)| {
-                        h_flex()
-                            .gap_2()
-                            .child(div().w(px(90.0)).child(keys))
-                            .child(action)
-                    })),
-            )
-    }
-
-    /// The information and controls of one volume
-    fn render_volume(&self, index: usize, cx: &mut Context<Self>) -> impl IntoElement {
+    /// One row per layer
+    fn render_layer_list(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
-        let (muted, danger, info) = (theme.muted_foreground, theme.danger, theme.info);
-        let column = &self.layers[index];
-        let display = &column.display;
-        let geometry = display.geometry();
-        let h = display.volume().header();
-        let id = |name: &'static str| (name, index as u64);
-
-        let cursor_text = match display.cursor_sample() {
-            Some(([x, y, z], value)) if display.label_mode() => {
-                format!("{x}, {y}, {z}\nLabel: {value}")
-            }
-            Some(([x, y, z], value)) => format!("{x}, {y}, {z}\nValue: {value}"),
-            None => "Outside volume".to_string(),
-        };
-
-        let bottom_visible = self.layers.iter().position(|column| column.visible);
-        let overlaid = self.layout.overlaid();
-        let selected = self.selected == index;
-        let mut section = v_flex()
-            .gap_2()
-            .p_2()
-            .rounded_md()
-            .border_1()
-            .border_color(if selected { info } else { transparent_black() })
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(move |viewer, _, _, cx| viewer.select(index, cx)),
-            )
-            .child(
-                h_flex()
-                    .gap_2()
+        let (muted, active, hover) = (theme.muted_foreground, theme.list_active, theme.list_hover);
+        v_flex()
+            .gap_0p5()
+            .child(section_title("Layers", muted))
+            .when(self.layers.is_empty(), |list| {
+                list.child(div().text_xs().text_color(muted).child("No volumes open"))
+            })
+            .children(self.layers.iter().enumerate().map(|(index, layer)| {
+                let display = &layer.display;
+                let row = h_flex()
+                    .id(("layer-row", index))
+                    .gap_1()
+                    .h(px(26.0))
+                    .px_1()
+                    .rounded_sm()
+                    .when(index == self.selected, |row| row.bg(active))
+                    .hover(|row| row.bg(hover))
+                    .on_click(cx.listener(move |viewer, _, _, cx| viewer.select(index, cx)))
                     .child(
-                        Checkbox::new(id("visible"))
-                            .checked(column.visible)
-                            .on_click(cx.listener(move |viewer, checked: &bool, _, cx| {
-                                viewer.layers[index].visible = *checked;
+                        Button::new(("layer-visible", index))
+                            .ghost()
+                            .xsmall()
+                            .icon(if layer.visible {
+                                IconName::Eye
+                            } else {
+                                IconName::EyeOff
+                            })
+                            .on_click(cx.listener(move |viewer, _, _, cx| {
+                                let layer = &mut viewer.layers[index];
+                                layer.visible = !layer.visible;
                                 cx.notify();
                             })),
                     )
                     .child(
                         div()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child(format!("Layer {}", index + 1)),
-                    ),
+                            .w(px(14.0))
+                            .text_xs()
+                            .text_color(muted)
+                            .child(format!("{}", index + 1)),
+                    )
+                    .child(colormap_strip(display.colormap, display.label_mode(), 3))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .whitespace_nowrap()
+                            .overflow_hidden()
+                            .when(!layer.visible, |name| name.text_color(muted))
+                            .child(tail(&display.name(), 30)),
+                    );
+                let details = layer_details(display);
+                HoverCard::new(("layer-card", index))
+                    .trigger(row)
+                    .content(move |_, _, cx| {
+                        let muted = cx.theme().muted_foreground;
+                        v_flex()
+                            .w(px(360.0))
+                            .gap_1()
+                            .text_xs()
+                            .children(details.iter().map(|(label, value)| {
+                                h_flex()
+                                    .gap_2()
+                                    .items_start()
+                                    .child(div().w(px(80.0)).text_color(muted).child(*label))
+                                    .child(div().flex_1().min_w_0().child(value.clone()))
+                            }))
+                    })
+            }))
+    }
+
+    /// Settings of the selected layer
+    fn render_layer_settings(&self, cx: &mut Context<Self>) -> AnyElement {
+        let Some(index) = self.selected() else {
+            return div().into_any_element();
+        };
+        let theme = cx.theme();
+        let (muted, danger, info) = (theme.muted_foreground, theme.danger, theme.info);
+        let layer = &self.layers[index];
+        let display = &layer.display;
+        let geometry = display.geometry();
+        let overlaid = self.layout.overlaid();
+        let bottom_visible = self.layers.iter().position(|layer| layer.visible);
+        let id = |name: &'static str| (name, index as u64);
+        let row = |label: &'static str| {
+            h_flex()
+                .gap_2()
+                .child(div().w(px(64.0)).text_xs().text_color(muted).child(label))
+        };
+
+        let mut settings = v_flex()
+            .gap_2()
+            .child(section_title(format!("Layer {}", index + 1), muted))
+            .when(overlaid && bottom_visible != Some(index), |settings| {
+                settings.child(
+                    row("Opacity")
+                        .child(div().flex_1().child(Slider::new(&layer.opacity_slider)))
+                        .child(
+                            div()
+                                .w(px(32.0))
+                                .text_xs()
+                                .child(format!("{:.0}%", layer.opacity * 100.0)),
+                        ),
+                )
+            });
+
+        settings = if display.label_mode() {
+            settings.child(row("Labels").child(format!("{} labels", display.label_count())))
+        } else {
+            let window = display.window;
+            settings
+                .child(
+                    row("Window")
+                        .child(div().flex_1().text_xs().child(format!(
+                            "W {}  L {}",
+                            format_value(window.width),
+                            format_value(window.level)
+                        )))
+                        .child(
+                            Button::new(id("auto"))
+                                .ghost()
+                                .xsmall()
+                                .label("Auto")
+                                .tooltip_with_action(
+                                    "Fit to the current frame",
+                                    &AutoContrast,
+                                    Some(shortcuts::CONTEXT),
+                                )
+                                .on_click(cx.listener(move |viewer, _, _, cx| {
+                                    viewer.change(index, VolumeDisplay::auto_window, cx);
+                                })),
+                        ),
+                )
+                .child(row("Colormap").child(h_flex().gap_1().children(
+                    Colormap::ALL.into_iter().map(|colormap| {
+                        let name = colormap.name();
+                        div()
+                            .id(SharedString::from(format!("colormap-{name}")))
+                            .p_0p5()
+                            .rounded_sm()
+                            .border_1()
+                            .border_color(if display.colormap == colormap {
+                                info
+                            } else {
+                                transparent_black()
+                            })
+                            .child(colormap_strip(colormap, false, 6))
+                            .tooltip(move |window, cx| Tooltip::new(name).build(window, cx))
+                            .on_click(cx.listener(move |viewer, _, _, cx| {
+                                viewer.layers[index].display.colormap = colormap;
+                                cx.notify();
+                            }))
+                    }),
+                )))
+                .child(
+                    Checkbox::new(id("clip-low"))
+                        .label("Transparent below window")
+                        .checked(display.clip_low)
+                        .on_click(cx.listener(move |viewer, checked: &bool, _, cx| {
+                            viewer.layers[index].display.clip_low = *checked;
+                            cx.notify();
+                        })),
+                )
+                .when(display.range().is_none(), |settings| {
+                    settings.child(
+                        div()
+                            .text_xs()
+                            .text_color(muted)
+                            .child("No finite values in this frame"),
+                    )
+                })
+        };
+
+        settings
+            .child(
+                Checkbox::new(id("labels"))
+                    .label("Label map")
+                    .checked(display.label_mode())
+                    .on_click(cx.listener(move |viewer, checked: &bool, _, cx| {
+                        let checked = *checked;
+                        viewer.change(index, |display| display.set_label_mode(checked), cx);
+                    })),
             )
-            .when(overlaid && bottom_visible != Some(index), |section| {
-                section
-                    .child(format!("Opacity: {:.0}%", column.opacity * 100.0))
-                    .child(Slider::new(&column.opacity_slider))
-            })
-            .when(overlaid && !geometry.anatomical, |section| {
-                section.child(
-                    div()
-                        .text_xs()
-                        .text_color(danger)
-                        .child("No orientation in header; overlay position may be wrong"),
+            .when(display.can_be_anatomical(), |settings| {
+                settings.child(
+                    Checkbox::new(id("native"))
+                        .label("Native axes")
+                        .checked(display.options().native)
+                        .on_click(cx.listener(move |viewer, checked: &bool, _, cx| {
+                            let checked = *checked;
+                            viewer.change(index, |display| display.set_native(checked), cx);
+                        })),
                 )
             })
-            .child(display.name())
-            .child(div().text_xs().text_color(muted).child(format!(
-                "{} x {} x {} | {}",
-                h.width(),
-                h.height(),
-                h.depth(),
-                h.datatype.name()
-            )))
-            .child(div().text_xs().text_color(muted).child(format!(
-                "Frame {} of {} | sform {} | qform {}",
-                display.frame() + 1,
-                h.timepoints(),
-                h.sform_code,
-                h.qform_code
-            )))
-            .when(display.units_unknown(), |section| {
-                section.child(
+            .when(display.units_unknown(), |settings| {
+                settings.child(
                     Checkbox::new(id("assume-mm"))
                         .label("Assume mm")
                         .checked(display.options().assume_mm)
@@ -1397,27 +1541,12 @@ impl Viewer {
                         })),
                 )
             })
-            .when(display.can_be_anatomical(), |section| {
-                section.child(
-                    Checkbox::new(id("native"))
-                        .label("Native voxel axes")
-                        .checked(display.options().native)
-                        .on_click(cx.listener(move |viewer, checked: &bool, _, cx| {
-                            let checked = *checked;
-                            viewer.change(index, |display| display.set_native(checked), cx);
-                        })),
-                )
-            })
-            .child(div().text_xs().text_color(muted).child(format!(
-                "{} units: {}",
-                geometry.transform_name, geometry.unit_name
-            )))
             .when(
                 !overlaid && self.sync && self.sync_mode == SyncMode::World && geometry.anatomical,
-                |section| {
-                    section.child(
+                |settings| {
+                    settings.child(
                         Checkbox::new(id("link"))
-                            .label("Link in world space")
+                            .label("Link in world")
                             .checked(display.link_world)
                             .on_click(cx.listener(move |viewer, checked: &bool, _, cx| {
                                 let checked = *checked;
@@ -1433,105 +1562,63 @@ impl Viewer {
                     )
                 },
             )
-            .when(geometry.anatomical, |section| {
-                let cursor = display.cursor();
-                section.child(format!(
-                    "RAS [mm]: {:.3}, {:.3}, {:.3}",
-                    cursor.x, cursor.y, cursor.z
-                ))
+            .when(overlaid && !geometry.anatomical, |settings| {
+                settings.child(
+                    div()
+                        .text_xs()
+                        .text_color(danger)
+                        .child("No orientation in header. Overlay position may be wrong"),
+                )
             })
-            .child(cursor_text)
-            .child(
-                Button::new(id("center"))
-                    .xsmall()
-                    .label("Center cursor")
-                    .on_click(cx.listener(move |viewer, _, _, cx| {
-                        viewer.change(
-                            index,
-                            |display| {
-                                display.reset_cursor();
-                                Ok(())
-                            },
-                            cx,
-                        );
-                    })),
-            )
-            .child(
-                Checkbox::new(id("labels"))
-                    .label("Segmentation map")
-                    .checked(display.label_mode())
-                    .on_click(cx.listener(move |viewer, checked: &bool, _, cx| {
-                        let checked = *checked;
-                        viewer.change(index, |display| display.set_label_mode(checked), cx);
-                    })),
-            );
+            .into_any_element()
+    }
 
-        section = if display.label_mode() {
-            section.child(format!("{} labels", display.label_count()))
-        } else {
-            let window = display.window;
-            section
-                .child(
+    /// Settings shared by all layers. Empty unless there is something to set
+    fn render_view_settings(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let muted = cx.theme().muted_foreground;
+        let sync_modes = !self.layout.overlaid() && self.sync;
+        let mode_button = |id: &'static str, label: &'static str, mode: SyncMode| {
+            Button::new(id)
+                .xsmall()
+                .label(label)
+                .selected(self.sync_mode == mode)
+                .on_click(cx.listener(move |viewer, _, _, cx| {
+                    viewer.sync_mode = mode;
+                    viewer.sync_from_first();
+                    cx.notify();
+                }))
+        };
+        v_flex()
+            .gap_2()
+            .when(sync_modes || self.frame_slider.is_some(), |settings| {
+                settings.child(section_title("View", muted))
+            })
+            .when_some(self.frame_slider.as_ref(), |settings, slider| {
+                settings.child(
                     h_flex()
                         .gap_2()
-                        .child(
-                            Button::new(id("auto"))
-                                .xsmall()
-                                .label("Auto current frame")
-                                .on_click(cx.listener(move |viewer, _, _, cx| {
-                                    viewer.change(index, VolumeDisplay::auto_window, cx);
-                                })),
-                        )
-                        .child(
-                            div()
-                                .text_xs()
-                                .text_color(muted)
-                                .child(format!("L: {:.6}  W: {:.6}", window.level, window.width)),
-                        ),
+                        .child(div().w(px(64.0)).text_xs().text_color(muted).child("Frame"))
+                        .child(div().flex_1().child(Slider::new(&slider.state)))
+                        .child(div().w(px(48.0)).text_xs().child(format!(
+                            "{} / {}",
+                            self.frame + 1,
+                            slider.last_frame + 1
+                        ))),
                 )
-                .child(
-                    Checkbox::new(id("clip-low"))
-                        .label("Transparent below window")
-                        .checked(display.clip_low)
-                        .on_click(cx.listener(move |viewer, checked: &bool, _, cx| {
-                            viewer.layers[index].display.clip_low = *checked;
-                            cx.notify();
-                        })),
+            })
+            .when(sync_modes, |settings| {
+                settings.child(
+                    h_flex()
+                        .gap_2()
+                        .child(div().w(px(64.0)).text_xs().text_color(muted).child("Sync"))
+                        .child(mode_button("sync-world", "World", SyncMode::World))
+                        .child(mode_button(
+                            "sync-proportional",
+                            "Proportional",
+                            SyncMode::Proportional,
+                        )),
                 )
-                .when(display.range().is_none(), |section| {
-                    section.child(
-                        div()
-                            .text_xs()
-                            .text_color(muted)
-                            .child("No finite values in measured frame!"),
-                    )
-                })
-                .child(h_flex().gap_1().flex_wrap().children(
-                    Colormap::ALL.into_iter().enumerate().map(|(n, colormap)| {
-                        Button::new(("colormap", (index * Colormap::ALL.len() + n) as u64))
-                            .xsmall()
-                            .label(colormap.name())
-                            .selected(display.colormap == colormap)
-                            .on_click(cx.listener(move |viewer, _, _, cx| {
-                                viewer.layers[index].display.colormap = colormap;
-                                cx.notify();
-                            }))
-                    }),
-                ))
-        };
-
-        section.when_some(column.error.clone(), |section, error| {
-            section.child(div().text_color(danger).child(error)).child(
-                Button::new(id("dismiss-error"))
-                    .ghost()
-                    .xsmall()
-                    .label("Dismiss error")
-                    .on_click(cx.listener(move |viewer, _, _, cx| {
-                        viewer.layers[index].error = None;
-                        cx.notify();
-                    })),
-            )
-        })
+            })
     }
 }
 
@@ -1569,6 +1656,8 @@ impl Render for Viewer {
             .on_action(cx.listener(Self::toggle_sync))
             .on_action(cx.listener(Self::toggle_radiological))
             .on_action(cx.listener(Self::toggle_crosshair))
+            .on_action(cx.listener(Self::toggle_info))
+            .on_action(cx.listener(Self::show_help))
             .on_drop(cx.listener(|viewer, paths: &ExternalPaths, _, _| {
                 for path in paths.paths() {
                     viewer.loader.enqueue(path.clone());
@@ -1623,6 +1712,75 @@ fn format_value(value: f64) -> String {
     }
 }
 
+fn section_title(text: impl Into<SharedString>, color: Hsla) -> Div {
+    div()
+        .text_xs()
+        .font_weight(FontWeight::SEMIBOLD)
+        .text_color(color)
+        .child(text.into())
+}
+
+fn colormap_strip(colormap: Colormap, labels: bool, blocks: usize) -> Div {
+    h_flex()
+        .h(px(10.0))
+        .rounded_sm()
+        .overflow_hidden()
+        .children((0..blocks).map(|block| {
+            let [r, g, b] = if labels {
+                let [r, g, b, _] = label_color(block as i64 + 1);
+                [r, g, b]
+            } else {
+                colormap.color((block as f64 + 0.5) / blocks as f64)
+            };
+            div()
+                .w(px(6.0))
+                .h_full()
+                .bg(rgb(u32::from_be_bytes([0, r, g, b])))
+        }))
+}
+
+fn tail(text: &str, max: usize) -> String {
+    let count = text.chars().count();
+    if count <= max {
+        return text.to_string();
+    }
+    let rest: String = text.chars().skip(count - (max - 1)).collect();
+    format!("\u{2026}{rest}")
+}
+
+fn file_name(path: &Path) -> String {
+    path.file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default()
+}
+
+fn layer_details(display: &VolumeDisplay) -> Vec<(&'static str, String)> {
+    let h = display.volume().header();
+    let geometry = display.geometry();
+    vec![
+        ("File", display.name()),
+        (
+            "Size",
+            format!("{} x {} x {}", h.width(), h.height(), h.depth()),
+        ),
+        (
+            "Voxel",
+            format!(
+                "{} x {} x {} {}",
+                format_value(f64::from(h.pixdim[1])),
+                format_value(f64::from(h.pixdim[2])),
+                format_value(f64::from(h.pixdim[3])),
+                geometry.unit_name
+            ),
+        ),
+        ("Frames", h.timepoints().to_string()),
+        ("Type", h.datatype.name().to_string()),
+        ("Transform", geometry.transform_name.to_string()),
+        ("sform/qform", format!("{}/{}", h.sform_code, h.qform_code)),
+        ("Path", display.volume().path().display().to_string()),
+    ]
+}
+
 fn opacity_slider(load_id: u64, cx: &mut Context<Viewer>) -> (Entity<SliderState>, Subscription) {
     let state = cx.new(|_| {
         SliderState::new()
@@ -1644,7 +1802,7 @@ fn opacity_slider(load_id: u64, cx: &mut Context<Viewer>) -> (Entity<SliderState
 
 #[cfg(test)]
 mod tests {
-    use super::{Layout, ViewPlane, grid_columns, size};
+    use super::{Layout, ViewPlane, format_value, grid_columns, size, tail};
 
     #[test]
     fn grids_make_cells_as_large_as_possible() {
@@ -1671,5 +1829,18 @@ mod tests {
         };
         assert!(single(None).overlaid());
         assert!(!single(Some(1)).overlaid());
+    }
+
+    #[test]
+    fn names_keep_their_end() {
+        assert_eq!(tail("short.nii", 30), "short.nii");
+        assert_eq!(tail("sub-01_ses-02_pet.nii.gz", 12), "\u{2026}_pet.nii.gz");
+        assert_eq!(tail("åååå", 3), "\u{2026}åå");
+    }
+
+    #[test]
+    fn values_are_short() {
+        assert_eq!(format_value(-1024.0), "-1024");
+        assert_eq!(format_value(3.81234), "3.812");
     }
 }

@@ -252,7 +252,7 @@ impl VolumeDisplay {
         self.snap_to_voxel();
     }
 
-    pub fn step_slice(&mut self, axis: ViewPlane, steps: f64) -> bool {
+    pub fn slice_axis(&self, axis: ViewPlane) -> (usize, f64) {
         let world_axis = match axis {
             ViewPlane::Axial => 2,
             ViewPlane::Coronal => 1,
@@ -262,6 +262,22 @@ impl VolumeDisplay {
         let step = row[..3]
             .iter()
             .fold(0.0, |most: f64, value| most.max(value.abs()));
+        (world_axis, step)
+    }
+
+    pub fn slice_position(&self, axis: ViewPlane) -> (usize, usize) {
+        let (world_axis, step) = self.slice_axis(axis);
+        let bounds = &self.geometry.cursor_bounds;
+        if step <= 0.0 {
+            return (0, 1);
+        }
+        let count = ((bounds.max[world_axis] - bounds.min[world_axis]) / step).round() as usize + 1;
+        let index = ((self.cursor[world_axis] - bounds.min[world_axis]) / step).round() as usize;
+        (index.min(count - 1), count)
+    }
+
+    pub fn step_slice(&mut self, axis: ViewPlane, steps: f64) -> bool {
+        let (world_axis, step) = self.slice_axis(axis);
         let bounds = &self.geometry.cursor_bounds;
         let before = self.cursor;
         self.cursor[world_axis] = (self.cursor[world_axis] + steps * step)
