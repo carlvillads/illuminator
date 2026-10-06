@@ -22,6 +22,7 @@ use crate::shortcuts::{self, *};
 
 const SIDEBAR_WIDTH: f32 = 320.0;
 const SCROLL_STEP: f32 = 20.0;
+const OVERLAY_OPACITY: f32 = 0.5;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum SyncMode {
@@ -51,7 +52,11 @@ struct Column {
     display: VolumeDisplay,
     panels: [Panel; 3],
     load_id: u64,
+    visible: bool,
+    opacity: f32,
+    opacity_slider: Entity<SliderState>,
     error: Option<String>,
+    _opacity_changes: Subscription,
 }
 
 struct PanelLayout {
@@ -89,6 +94,8 @@ pub struct Viewer {
     scroll_remainder: f32,
     active_panel: (usize, ViewPlane),
     focus_handle: FocusHandle,
+    overlay: bool,
+    selected: usize,
     _loader_events: Task<()>,
 }
 
@@ -125,7 +132,7 @@ impl Viewer {
             columns: Vec::new(),
             errors: Vec::new(),
             sync: true,
-            sync_mode: SyncMode::Proportional,
+            sync_mode: SyncMode::World,
             radiological: false,
             show_crosshair: true,
             frame: 0,
@@ -134,6 +141,8 @@ impl Viewer {
             scroll_remainder: 0.0,
             active_panel: (0, ViewPlane::Axial),
             focus_handle,
+            overlay: true,
+            selected: 0,
             _loader_events: loader_events,
         }
     }
@@ -145,18 +154,27 @@ impl Viewer {
             match VolumeDisplay::new(loaded) {
                 Ok(mut display) => {
                     let error = display.set_frame(self.frame).err().map(|e| e.to_string());
+                    display.clip_low = true;
                     let at = self
                         .columns
                         .partition_point(|column| column.load_id < load_id);
-                    if at <= self.active_panel.0 && self.active_panel.0 < self.columns.len() {
-                        self.active_panel.0 += 1;
+                    let shifted =
+                        |index: usize, len: usize| index + usize::from(at <= index && index < len);
+                    self.selected = shifted(self.selected, self.columns.len());
+                    if !self.overlay {
+                        self.active_panel.0 = shifted(self.active_panel.0, self.columns.len());
                     }
+                    let (opacity_slider, opacity_changes) = opacity_slider(load_id, cx);
                     self.columns.insert(
                         at,
                         Column {
                             display,
                             panels: Default::default(),
                             load_id,
+                            visible: true,
+                            opacity: OVERLAY_OPACITY,
+                            opacity_slider,
+                            _opacity_changes: opacity_changes,
                             error,
                         },
                     );
@@ -174,7 +192,37 @@ impl Viewer {
 
     fn active(&self) -> Option<(usize, ViewPlane)> {
         let (column, axis) = self.active_panel;
-        (column < self.columns.len()).then_some((column, axis))
+        (column < self.view_count()).then_some((column, axis))
+    }
+
+    /// number of panels on screen
+    fn view_count(&self) -> usize {
+        if self.overlay {
+            self.columns.len().min(1)
+        } else {
+            self.columns.len()
+        }
+    }
+
+    fn selected(&self) -> Option<usize> {
+        (self.selected < self.columns.len()).then_some(self.selected)
+    }
+
+    fn select(&mut self, layer: usize, cx: &mut Context<Self>) {
+        if layer < self.columns.len() {
+            self.selected = layer;
+            if !self.overlay {
+                self.active_panel.0 = layer;
+            }
+            cx.notify();
+        }
+    }
+
+    fn set_overlay(&mut self, overlay: bool, cx: &mut Context<Self>) {
+        self.overlay = overlay;
+        self.active_panel.0 = if overlay { 0 } else { self.selected };
+        self.sync_from_first();
+        cx.notify();
     }
 
     fn set_active_panel(
@@ -186,6 +234,9 @@ impl Viewer {
         if let Some(hit) = self.hit(position, window) {
             let panel = (hit.column, hit.axis);
             if panel != self.active_panel {
+                if !self.overlay {
+                    self.selected = hit.column;
+                }
                 self.active_panel = panel;
                 cx.notify();
             }
@@ -247,7 +298,7 @@ impl Viewer {
     }
 
     fn center_cursor(&mut self, _: &CenterCursor, _: &mut Window, cx: &mut Context<Self>) {
-        if let Some((column, _)) = self.active() {
+        if let Some(column) = self.selected() {
             self.change(
                 column,
                 |display| {
@@ -260,13 +311,13 @@ impl Viewer {
     }
 
     fn auto_contrast(&mut self, _: &AutoContrast, _: &mut Window, cx: &mut Context<Self>) {
-        if let Some((column, _)) = self.active() {
+        if let Some(column) = self.selected() {
             self.change(column, VolumeDisplay::auto_window, cx);
         }
     }
 
     fn next_colormap(&mut self, _: &NextColormap, _: &mut Window, cx: &mut Context<Self>) {
-        if let Some((column, _)) = self.active() {
+        if let Some(column) = self.selected() {
             let display = &mut self.columns[column].display;
             let current = Colormap::ALL.iter().position(|&c| c == display.colormap);
             let next = current.map_or(0, |index| (index + 1) % Colormap::ALL.len());
@@ -281,9 +332,34 @@ impl Viewer {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let Some((column, _)) = self.active() {
+        if let Some(column) = self.selected() {
             let enabled = !self.columns[column].display.label_mode();
             self.change(column, |display| display.set_label_mode(enabled), cx);
+        }
+    }
+
+    fn toggle_overlay(&mut self, _: &ToggleOverlay, _: &mut Window, cx: &mut Context<Self>) {
+        self.set_overlay(!self.overlay, cx);
+    }
+
+    fn toggle_layer(&mut self, _: &ToggleLayer, _: &mut Window, cx: &mut Context<Self>) {
+        if let Some(layer) = self.selected() {
+            let column = &mut self.columns[layer];
+            column.visible = !column.visible;
+            cx.notify();
+        }
+    }
+
+    fn next_layer(&mut self, _: &NextLayer, _: &mut Window, cx: &mut Context<Self>) {
+        if !self.columns.is_empty() {
+            self.select((self.selected + 1) % self.columns.len(), cx);
+        }
+    }
+
+    fn previous_layer(&mut self, _: &PreviousLayer, _: &mut Window, cx: &mut Context<Self>) {
+        if !self.columns.is_empty() {
+            let count = self.columns.len();
+            self.select((self.selected + count - 1) % count, cx);
         }
     }
 
@@ -378,6 +454,14 @@ impl Viewer {
         if !self.sync {
             return;
         }
+        if self.overlay {
+            // make sure overlaid layers share world pos
+            let cursor = self.columns[active].display.cursor();
+            for column in &mut self.columns {
+                column.display.set_cursor(cursor);
+            }
+            return;
+        }
         let source = &self.columns[active].display;
         match self.sync_mode {
             SyncMode::World => {
@@ -403,6 +487,12 @@ impl Viewer {
     }
 
     fn sync_from_first(&mut self) {
+        if self.overlay {
+            if !self.columns.is_empty() {
+                self.sync_from(0);
+            }
+            return;
+        }
         let leader = self.columns.iter().position(|column| {
             self.sync_mode == SyncMode::Proportional || column.display.world_linked()
         });
@@ -458,7 +548,7 @@ impl Viewer {
     fn layout(&self, column: usize, row: usize, window: &Window) -> PanelLayout {
         let viewport = window.viewport_size();
         let area_width = (f32::from(viewport.width) - SIDEBAR_WIDTH).max(0.0);
-        let width = area_width / self.columns.len().max(1) as f32;
+        let width = area_width / self.view_count().max(1) as f32;
         let height = f32::from(viewport.height) / 3.0;
         let scale = window.scale_factor();
         let plane = self.columns[column]
@@ -475,7 +565,7 @@ impl Viewer {
 
     fn hit(&self, position: Point<Pixels>, window: &Window) -> Option<Hit> {
         let (x, y) = (f32::from(position.x), f32::from(position.y));
-        for column in 0..self.columns.len() {
+        for column in 0..self.view_count() {
             for row in 0..3 {
                 let layout = self.layout(column, row, window);
                 let local_x = x - layout.origin.x;
@@ -547,16 +637,22 @@ impl Viewer {
     /// Starts a background render for each panel whose image is out of date since last draw
     fn schedule_renders(&mut self, window: &Window, cx: &mut Context<Self>) {
         for column in 0..self.columns.len() {
+            if !self.columns[column].visible {
+                continue;
+            }
+            // overlaid layers are all drawn on the base layers plane
+            let view = if self.overlay { 0 } else { column };
             for row in 0..3 {
-                let (width, height) = self.layout(column, row, window).image_pixels;
+                let (width, height) = self.layout(view, row, window).image_pixels;
+                let plane = self.columns[view]
+                    .display
+                    .plane(ViewPlane::ALL[row], self.radiological);
                 let entry = &self.columns[column];
                 let panel = &entry.panels[row];
                 if width == 0 || height == 0 || panel.rendering {
                     continue;
                 }
-                let job = entry
-                    .display
-                    .job(ViewPlane::ALL[row], self.radiological, width, height);
+                let job = entry.display.job_on(plane, width, height);
                 let key = ImageKey {
                     sample: job.key.clone(),
                     coloring: entry.display.coloring(),
@@ -620,9 +716,14 @@ impl Viewer {
             .on_mouse_down(
                 MouseButton::Right,
                 cx.listener(|viewer, event: &MouseDownEvent, window, _| {
-                    viewer.contrast_drag = viewer
-                        .hit(event.position, window)
-                        .map(|hit| (hit.column, event.position));
+                    viewer.contrast_drag = viewer.hit(event.position, window).map(|hit| {
+                        let layer = if viewer.overlay {
+                            viewer.selected
+                        } else {
+                            hit.column
+                        };
+                        (layer, event.position)
+                    });
                 }),
             )
             .on_mouse_up(
@@ -655,8 +756,13 @@ impl Viewer {
             );
         }
 
-        for (index, column) in self.columns.iter().enumerate() {
-            let display = &column.display;
+        for index in 0..self.view_count() {
+            let display = &self.columns[index].display;
+            let layers = if self.overlay {
+                0..self.columns.len()
+            } else {
+                index..index + 1
+            };
             for row in 0..3 {
                 let layout = self.layout(index, row, window);
                 let labels = display.labels(ViewPlane::ALL[row], self.radiological);
@@ -671,17 +777,35 @@ impl Viewer {
                     .justify_center()
                     .overflow_hidden()
                     .text_sm();
-                if let Some(image) = &column.panels[row].image {
-                    panel = panel.child(
+                let mut stack = div()
+                    .relative()
+                    .w(px(layout.image_size.width))
+                    .h(px(layout.image_size.height));
+                let mut bottom = true;
+                for layer in layers.clone() {
+                    let column = &self.columns[layer];
+                    let Some(image) = column.panels[row].image.as_ref().filter(|_| column.visible)
+                    else {
+                        continue;
+                    };
+                    // the bottom layer covers the black background so it is always opaque
+                    let opacity = if bottom { 1.0 } else { column.opacity };
+                    bottom = false;
+                    stack = stack.child(
                         img(image.image.clone())
-                            .w(px(layout.image_size.width))
-                            .h(px(layout.image_size.height)),
+                            .absolute()
+                            .top_0()
+                            .left_0()
+                            .size_full()
+                            .opacity(opacity),
                     );
-                    if self.show_crosshair
-                        && let Some(lines) = self.crosshair(index, row, &layout, scale)
-                    {
-                        panel = panel.children(lines);
-                    }
+                }
+                panel = panel.child(stack);
+                if !bottom
+                    && self.show_crosshair
+                    && let Some(lines) = self.crosshair(index, row, &layout, scale)
+                {
+                    panel = panel.children(lines);
                 }
 
                 let edge =
@@ -870,30 +994,41 @@ impl Viewer {
             .gap_2()
             .child(format!("Loaded volumes: {}", self.columns.len()))
             .child(
-                Checkbox::new("sync")
-                    .label("Sync crosshairs")
-                    .checked(self.sync)
+                Checkbox::new("overlay")
+                    .label("Overlay layers")
+                    .checked(self.overlay)
                     .on_click(cx.listener(|viewer, checked: &bool, _, cx| {
-                        viewer.sync = *checked;
-                        viewer.sync_from_first();
-                        cx.notify();
+                        viewer.set_overlay(*checked, cx);
                     })),
             )
-            .when(self.sync, |controls| {
-                controls.child(
-                    h_flex()
-                        .gap_1()
-                        .child(mode_button(
-                            "sync-world",
-                            "World (aligned)",
-                            SyncMode::World,
-                        ))
-                        .child(mode_button(
-                            "sync-proportional",
-                            "Proportional",
-                            SyncMode::Proportional,
-                        )),
-                )
+            .when(!self.overlay, |controls| {
+                controls
+                    .child(
+                        Checkbox::new("sync")
+                            .label("Sync crosshairs")
+                            .checked(self.sync)
+                            .on_click(cx.listener(|viewer, checked: &bool, _, cx| {
+                                viewer.sync = *checked;
+                                viewer.sync_from_first();
+                                cx.notify();
+                            })),
+                    )
+                    .when(self.sync, |controls| {
+                        controls.child(
+                            h_flex()
+                                .gap_1()
+                                .child(mode_button(
+                                    "sync-world",
+                                    "World (aligned)",
+                                    SyncMode::World,
+                                ))
+                                .child(mode_button(
+                                    "sync-proportional",
+                                    "Proportional",
+                                    SyncMode::Proportional,
+                                )),
+                        )
+                    })
             })
             .child(
                 Checkbox::new("radiological")
@@ -936,7 +1071,7 @@ impl Viewer {
     /// The information and controls of one volume
     fn render_volume(&self, index: usize, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
-        let (muted, danger) = (theme.muted_foreground, theme.danger);
+        let (muted, danger, info) = (theme.muted_foreground, theme.danger, theme.info);
         let column = &self.columns[index];
         let display = &column.display;
         let geometry = display.geometry();
@@ -951,13 +1086,48 @@ impl Viewer {
             None => "Outside volume".to_string(),
         };
 
+        let bottom_visible = self.columns.iter().position(|column| column.visible);
+        let selected = self.selected == index;
         let mut section = v_flex()
             .gap_2()
-            .child(
-                div()
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .child(format!("Volume {}", index + 1)),
+            .p_2()
+            .rounded_md()
+            .border_1()
+            .border_color(if selected { info } else { transparent_black() })
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |viewer, _, _, cx| viewer.select(index, cx)),
             )
+            .child(
+                h_flex()
+                    .gap_2()
+                    .child(
+                        Checkbox::new(id("visible"))
+                            .checked(column.visible)
+                            .on_click(cx.listener(move |viewer, checked: &bool, _, cx| {
+                                viewer.columns[index].visible = *checked;
+                                cx.notify();
+                            })),
+                    )
+                    .child(
+                        div()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child(format!("Layer {}", index + 1)),
+                    ),
+            )
+            .when(self.overlay && bottom_visible != Some(index), |section| {
+                section
+                    .child(format!("Opacity: {:.0}%", column.opacity * 100.0))
+                    .child(Slider::new(&column.opacity_slider))
+            })
+            .when(self.overlay && !geometry.anatomical, |section| {
+                section.child(
+                    div()
+                        .text_xs()
+                        .text_color(danger)
+                        .child("No orientation in header; overlay position may be wrong"),
+                )
+            })
             .child(display.name())
             .child(div().text_xs().text_color(muted).child(format!(
                 "{} x {} x {} | {}",
@@ -1000,7 +1170,10 @@ impl Viewer {
                 geometry.transform_name, geometry.unit_name
             )))
             .when(
-                self.sync && self.sync_mode == SyncMode::World && geometry.anatomical,
+                !self.overlay
+                    && self.sync
+                    && self.sync_mode == SyncMode::World
+                    && geometry.anatomical,
                 |section| {
                     section.child(
                         Checkbox::new(id("link"))
@@ -1076,6 +1249,15 @@ impl Viewer {
                                 .child(format!("L: {:.6}  W: {:.6}", window.level, window.width)),
                         ),
                 )
+                .child(
+                    Checkbox::new(id("clip-low"))
+                        .label("Transparent below window")
+                        .checked(display.clip_low)
+                        .on_click(cx.listener(move |viewer, checked: &bool, _, cx| {
+                            viewer.columns[index].display.clip_low = *checked;
+                            cx.notify();
+                        })),
+                )
                 .when(display.range().is_none(), |section| {
                     section.child(
                         div()
@@ -1136,6 +1318,10 @@ impl Render for Viewer {
             .on_action(cx.listener(Self::auto_contrast))
             .on_action(cx.listener(Self::next_colormap))
             .on_action(cx.listener(Self::toggle_segmentation))
+            .on_action(cx.listener(Self::toggle_overlay))
+            .on_action(cx.listener(Self::toggle_layer))
+            .on_action(cx.listener(Self::next_layer))
+            .on_action(cx.listener(Self::previous_layer))
             .on_action(cx.listener(Self::toggle_sync))
             .on_action(cx.listener(Self::toggle_radiological))
             .on_action(cx.listener(Self::toggle_crosshair))
@@ -1158,4 +1344,23 @@ fn to_render_image(image: SliceImage) -> Arc<RenderImage> {
     let buffer = RgbaImage::from_raw(image.width as u32, image.height as u32, pixels)
         .expect("a slice image has width * height * 4 btyes");
     Arc::new(RenderImage::new(vec![Frame::new(buffer)]))
+}
+
+fn opacity_slider(load_id: u64, cx: &mut Context<Viewer>) -> (Entity<SliderState>, Subscription) {
+    let state = cx.new(|_| {
+        SliderState::new()
+            .min(0.0)
+            .max(100.0)
+            .step(5.0)
+            .default_value(OVERLAY_OPACITY * 100.0)
+    });
+    let changes = cx.subscribe(&state, move |viewer, _, event: &SliderEvent, cx| {
+        if let SliderEvent::Change(value) = event
+            && let Some(column) = viewer.columns.iter_mut().find(|c| c.load_id == load_id)
+        {
+            column.opacity = value.start() / 100.0;
+            cx.notify();
+        }
+    });
+    (state, changes)
 }

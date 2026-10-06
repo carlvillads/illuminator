@@ -105,6 +105,7 @@ pub struct VolumeDisplay {
     label_mode: bool,
     pub window: IntensityWindow,
     pub colormap: Colormap,
+    pub clip_low: bool,
     pub link_world: bool,
 }
 
@@ -124,6 +125,7 @@ impl VolumeDisplay {
             label_mode: false,
             window,
             colormap: Colormap::default(),
+            clip_low: false,
             link_world: true,
         };
         display.reset_cursor();
@@ -328,6 +330,7 @@ impl VolumeDisplay {
                 level: self.window.level,
                 width: self.window.width,
                 colormap: self.colormap,
+                clip_low: self.clip_low,
             }
         }
     }
@@ -336,6 +339,7 @@ impl VolumeDisplay {
         self.geometry.plane(axis, self.cursor, radiological)
     }
 
+    /// What to render for one panel of w x h pixels
     pub fn job(
         &self,
         axis: ViewPlane,
@@ -343,11 +347,15 @@ impl VolumeDisplay {
         width: usize,
         height: usize,
     ) -> SliceJob {
+        self.job_on(self.plane(axis, radiological), width, height)
+    }
+
+    pub fn job_on(&self, plane: SlicePlane, width: usize, height: usize) -> SliceJob {
         SliceJob {
             volume: Arc::clone(&self.volume),
             key: SampleKey {
                 geometry: self.geometry.clone(),
-                plane: self.plane(axis, radiological),
+                plane,
                 frame: self.frame,
                 labels: self.label_mode,
                 width,
@@ -491,6 +499,7 @@ mod tests {
                 level: 23.5,
                 width: 47.0,
                 colormap: Colormap::Grayscale,
+                clip_low: false,
             }
         );
     }

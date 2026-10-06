@@ -31,6 +31,14 @@ actions!(
         NextColormap,
         /// Turns segmentation display on or off for the active volume
         ToggleSegmentation,
+        /// Switches between overlaid layers and side by side columns
+        ToggleOverlay,
+        /// Shows or hides the selected layer
+        ToggleLayer,
+        /// Selects the next layer
+        NextLayer,
+        /// Selects the previous layer
+        PreviousLayer,
         /// Turns crosshair sync on or off
         ToggleSync,
         /// Switches between radiological and neurological orientation
@@ -66,6 +74,10 @@ pub fn bind(cx: &mut App) {
         KeyBinding::new("s", ToggleSync, viewer),
         KeyBinding::new("r", ToggleRadiological, viewer),
         KeyBinding::new("c", ToggleCrosshair, viewer),
+        KeyBinding::new("o", ToggleOverlay, viewer),
+        KeyBinding::new("v", ToggleLayer, viewer),
+        KeyBinding::new("j", NextLayer, viewer),
+        KeyBinding::new("k", PreviousLayer, viewer),
     ]);
     cx.on_action(|_: &Quit, cx| cx.quit());
 }
@@ -80,6 +92,9 @@ pub fn help() -> Vec<(String, &'static str)> {
         ("A".into(), "Auto contrast"),
         ("M".into(), "Next colormap"),
         ("L".into(), "Segmentation map"),
+        ("O".into(), "Overlay/side by side"),
+        ("J/K".into(), "Next/previous layer"),
+        ("V".into(), "Show/hide layer"),
         ("S/R/C".into(), "Sync/radiological/crosshairs"),
         (format!("{SECONDARY}W/{SECONDARY}Q"), "Close window/quit"),
     ]

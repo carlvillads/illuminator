@@ -59,6 +59,8 @@ pub enum Coloring {
         level: f64,
         width: f64,
         colormap: Colormap,
+        // below min are transparent
+        clip_low: bool,
     },
     Labels,
 }
@@ -187,15 +189,16 @@ impl SampledSlice {
                     level,
                     width,
                     colormap,
+                    clip_low,
                 },
             ) => {
                 out.par_chunks_mut(row)
                     .zip(values.par_chunks(row))
                     .for_each(|(line, values)| {
                         for (pixel, &value) in line.iter_mut().zip(values) {
-                            if !value.is_nan() {
-                                let [r, g, b] =
-                                    colormap.color((f64::from(value) - level) / width + 0.5);
+                            let t = (f64::from(value) - level) / width + 0.5;
+                            if !value.is_nan() && !(clip_low && t <= 0.0) {
+                                let [r, g, b] = colormap.color(t);
                                 *pixel = [r, g, b, 255];
                             }
                         }
@@ -405,6 +408,7 @@ mod tests {
             level,
             width,
             colormap: Colormap::Grayscale,
+            clip_low: false,
         }
     }
 
@@ -671,6 +675,26 @@ mod tests {
                 .iter()
                 .all(|&b| b == 0)
         );
+    }
+
+    #[test]
+    fn clips_values_below_the_window() {
+        let dir = tempfile::tempdir().unwrap();
+        let ramp = Fixture {
+            datatype: DataType::F32,
+            value: |i| (i % 4) as f64 * 10.0,
+            ..Fixture::default()
+        };
+        let volume = load(&dir, &ramp, "clip.nii");
+        let clipped = Coloring::Intensity {
+            level: 15.0,
+            width: 10.0,
+            colormap: Colormap::Grayscale,
+            clip_low: true,
+        };
+        let image = render_axial(&volume, clipped, 0);
+        let alpha = |col| pixel(&image, col, 0)[3];
+        assert_eq!([alpha(0), alpha(1), alpha(2), alpha(3)], [0, 0, 255, 255]);
     }
 
     #[test]
