@@ -2,7 +2,6 @@
 
 use futures::StreamExt;
 use futures::channel::mpsc;
-use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::hover_card::HoverCard;
@@ -24,13 +23,15 @@ use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use crate::assets::Carbon;
 use crate::shortcuts::{self, *};
 
-const SIDEBAR_WIDTH: f32 = 280.0;
+const SIDEBAR_WIDTH: f32 = 240.0;
 const SCROLL_STEP: f32 = 20.0;
 const OVERLAY_OPACITY: f32 = 0.5;
 const TOOLBAR_HEIGHT: f32 = 36.0;
 const STATUS_HEIGHT: f32 = 24.0;
+const CORNER_TEXT: f32 = 10.0;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum SyncMode {
@@ -91,6 +92,33 @@ struct FrameSlider {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InfoLevel {
+    /// Only images
+    Off,
+    /// letters + slice number
+    Minimal,
+    Full,
+}
+
+impl InfoLevel {
+    fn next(self) -> Self {
+        match self {
+            Self::Off => Self::Minimal,
+            Self::Minimal => Self::Full,
+            Self::Full => Self::Off,
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Minimal => "minimal",
+            Self::Full => "all",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Layout {
     Ortho,
     Compare,
@@ -144,7 +172,7 @@ pub struct Viewer {
     previous_layout: Layout,
     hover: Option<Point3D>,
     selected: usize,
-    show_info: bool,
+    info: InfoLevel,
     _loader_events: Task<()>,
 }
 
@@ -193,7 +221,7 @@ impl Viewer {
             previous_layout: Layout::Ortho,
             hover: None,
             selected: 0,
-            show_info: false,
+            info: InfoLevel::Minimal,
             _loader_events: loader_events,
         }
     }
@@ -506,7 +534,7 @@ impl Viewer {
     }
 
     fn toggle_info(&mut self, _: &ToggleInfo, _: &mut Window, cx: &mut Context<Self>) {
-        self.show_info = !self.show_info;
+        self.info = self.info.next();
         cx.notify();
     }
 
@@ -1012,23 +1040,25 @@ impl Viewer {
                         border
                     },
                 ))
-                .child(
-                    v_flex()
-                        .absolute()
-                        .top_1()
-                        .left_2()
-                        .text_xs()
-                        .child(labels.title)
-                        .when(!overlaid, |title| {
-                            title.child(div().text_xs().text_color(muted).child(display.name()))
-                        }),
-                )
-                .child(edge(labels.left).left_2())
-                .child(edge(labels.right).right_2())
-                .child(edge(labels.top).top_1())
-                .child(edge(labels.bottom).bottom_1())
-                .when(self.show_info, |panel| {
-                    panel.child(self.corner_info(&view, muted))
+                .when(self.info == InfoLevel::Full, |panel| {
+                    panel.child(
+                        v_flex()
+                            .absolute()
+                            .top_1()
+                            .left_2()
+                            .text_size(px(CORNER_TEXT))
+                            .text_color(muted)
+                            .child(labels.title)
+                            .when(!overlaid, |title| title.child(display.name())),
+                    )
+                })
+                .when(self.info != InfoLevel::Off, |panel| {
+                    panel
+                        .child(edge(labels.left).left_2())
+                        .child(edge(labels.right).right_2())
+                        .child(edge(labels.top).top_1())
+                        .child(edge(labels.bottom).bottom_1())
+                        .child(self.corner_info(&view, muted))
                 });
             area = area.child(panel);
         }
@@ -1068,25 +1098,33 @@ impl Viewer {
         };
         let base = &self.layers[view.base].display;
         let (slice, count) = base.slice_position(view.axis);
-        let corner = || div().absolute().text_xs().text_color(color);
+        let corner = || {
+            div()
+                .absolute()
+                .text_size(px(CORNER_TEXT))
+                .text_color(color)
+        };
+        let full = self.info == InfoLevel::Full;
         div()
             .absolute()
             .inset_0()
-            .child(
-                corner()
-                    .top_1()
-                    .right_2()
-                    .child(v_flex().items_end().children(values)),
-            )
-            .child(
-                corner().bottom_1().left_2().child(
-                    v_flex()
-                        .when(!base.geometry().contains_world(base.cursor()), |text| {
-                            text.child("Cursor outside volume")
-                        })
-                        .child(numbered(windowed, window_text)),
-                ),
-            )
+            .when(full, |info| {
+                info.child(
+                    corner()
+                        .top_1()
+                        .right_2()
+                        .child(v_flex().items_end().children(values)),
+                )
+                .child(
+                    corner().bottom_1().left_2().child(
+                        v_flex()
+                            .when(!base.geometry().contains_world(base.cursor()), |text| {
+                                text.child("Cursor outside volume")
+                            })
+                            .child(numbered(windowed, window_text)),
+                    ),
+                )
+            })
             .child(
                 corner()
                     .bottom_1()
@@ -1131,13 +1169,16 @@ impl Viewer {
                                     .flex_1()
                                     .min_w_0()
                                     .text_xs()
-                                    .child(tail(&file_name(&status.path), 34)),
+                                    .overflow_hidden()
+                                    .whitespace_nowrap()
+                                    .text_ellipsis_start()
+                                    .child(file_name(&status.path)),
                             )
                             .child(
                                 Button::new(("load-cancel", id))
                                     .ghost()
                                     .xsmall()
-                                    .icon(IconName::Close)
+                                    .icon(Carbon::Close)
                                     .tooltip("Cancel")
                                     .on_click(
                                         cx.listener(move |viewer, _, _, _| {
@@ -1159,7 +1200,7 @@ impl Viewer {
         let context = Some(shortcuts::CONTEXT);
         let axis = self.layout.axis().unwrap_or(self.active_panel.1);
         let layout_button = |id: &'static str,
-                             icon: IconName,
+                             icon: Carbon,
                              tooltip: &'static str,
                              action: &dyn Action,
                              layout: Layout| {
@@ -1196,35 +1237,35 @@ impl Viewer {
                 Button::new("open")
                     .ghost()
                     .small()
-                    .icon(IconName::FolderOpen)
+                    .icon(Carbon::FolderOpen)
                     .tooltip_with_action("Open volumes", &OpenFiles, context)
                     .on_click(cx.listener(|viewer, _, _, cx| viewer.open_files(cx))),
             )
             .child(separator())
             .child(layout_button(
                 "layout-ortho",
-                IconName::LayoutGrid,
+                Carbon::Ortho,
                 "All layers three planes",
                 &LayoutOrtho,
                 Layout::Ortho,
             ))
             .child(layout_button(
                 "layout-compare",
-                IconName::Grid3x3,
+                Carbon::Compare,
                 "Side by side three planes",
                 &LayoutCompare,
                 Layout::Compare,
             ))
             .child(layout_button(
                 "layout-grid",
-                IconName::Columns3,
+                Carbon::Grid,
                 "Side by side one plane",
                 &LayoutGrid,
                 Layout::Grid(axis),
             ))
             .child(layout_button(
                 "layout-single",
-                IconName::Square,
+                Carbon::Single,
                 "Single view",
                 &LayoutSingle,
                 Layout::Single { axis, layer: None },
@@ -1240,7 +1281,7 @@ impl Viewer {
                 Button::new("crosshair")
                     .ghost()
                     .small()
-                    .icon(IconName::Crosshair)
+                    .icon(Carbon::Crosshair)
                     .selected(self.show_crosshair)
                     .tooltip_with_action("Crosshair", &ToggleCrosshair, context)
                     .on_click(cx.listener(|viewer, _, window, cx| {
@@ -1251,7 +1292,7 @@ impl Viewer {
                 Button::new("radiological")
                     .ghost()
                     .small()
-                    .icon(IconName::FlipHorizontal2)
+                    .icon(Carbon::Radiological)
                     .selected(self.radiological)
                     .tooltip_with_action("Radiological convention", &ToggleRadiological, context)
                     .on_click(cx.listener(|viewer, _, window, cx| {
@@ -1262,9 +1303,13 @@ impl Viewer {
                 Button::new("info")
                     .ghost()
                     .small()
-                    .icon(IconName::Info)
-                    .selected(self.show_info)
-                    .tooltip_with_action("Info in view corners", &ToggleInfo, context)
+                    .icon(Carbon::CornerText)
+                    .selected(self.info != InfoLevel::Off)
+                    .tooltip_with_action(
+                        format!("Text in views: {}", self.info.name()),
+                        &ToggleInfo,
+                        context,
+                    )
                     .on_click(cx.listener(|viewer, _, window, cx| {
                         viewer.toggle_info(&ToggleInfo, window, cx);
                     })),
@@ -1274,7 +1319,7 @@ impl Viewer {
                     Button::new("sync")
                         .ghost()
                         .small()
-                        .icon(IconName::Link)
+                        .icon(Carbon::Link)
                         .selected(self.sync)
                         .tooltip_with_action("Sync cursors", &ToggleSync, context)
                         .on_click(cx.listener(|viewer, _, window, cx| {
@@ -1287,7 +1332,7 @@ impl Viewer {
                 Button::new("help")
                     .ghost()
                     .small()
-                    .icon(IconName::BookOpen)
+                    .icon(Carbon::Help)
                     .tooltip_with_action("Shortcuts", &ShowHelp, context)
                     .on_click(cx.listener(|viewer, _, window, cx| {
                         viewer.show_help(&ShowHelp, window, cx);
@@ -1360,9 +1405,9 @@ impl Viewer {
                             .ghost()
                             .xsmall()
                             .icon(if layer.visible {
-                                IconName::Eye
+                                Carbon::View
                             } else {
-                                IconName::EyeOff
+                                Carbon::ViewOff
                             })
                             .on_click(cx.listener(move |viewer, _, _, cx| {
                                 let layer = &mut viewer.layers[index];
@@ -1377,18 +1422,24 @@ impl Viewer {
                             .text_color(muted)
                             .child(format!("{}", index + 1)),
                     )
-                    .child(colormap_strip(display.colormap, display.label_mode(), 3))
+                    .child(div().w(px(18.0)).child(colormap_strip(
+                        display.colormap,
+                        display.label_mode(),
+                        3,
+                    )))
                     .child(
                         div()
                             .flex_1()
                             .min_w_0()
-                            .whitespace_nowrap()
                             .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_ellipsis_start()
                             .when(!layer.visible, |name| name.text_color(muted))
-                            .child(tail(&display.name(), 30)),
+                            .child(display.name()),
                     );
                 let details = layer_details(display);
                 HoverCard::new(("layer-card", index))
+                    .anchor(Anchor::RightCenter)
                     .trigger(row)
                     .content(move |_, _, cx| {
                         let muted = cx.theme().muted_foreground;
@@ -1442,72 +1493,74 @@ impl Viewer {
                 )
             });
 
-        settings = if display.label_mode() {
-            settings.child(row("Labels").child(format!("{} labels", display.label_count())))
-        } else {
-            let window = display.window;
-            settings
-                .child(
-                    row("Window")
-                        .child(div().flex_1().text_xs().child(format!(
-                            "W {}  L {}",
-                            format_value(window.width),
-                            format_value(window.level)
-                        )))
-                        .child(
-                            Button::new(id("auto"))
-                                .ghost()
-                                .xsmall()
-                                .label("Auto")
-                                .tooltip_with_action(
-                                    "Fit to the current frame",
-                                    &AutoContrast,
-                                    Some(shortcuts::CONTEXT),
-                                )
-                                .on_click(cx.listener(move |viewer, _, _, cx| {
-                                    viewer.change(index, VolumeDisplay::auto_window, cx);
-                                })),
-                        ),
-                )
-                .child(row("Colormap").child(h_flex().gap_1().children(
-                    Colormap::ALL.into_iter().map(|colormap| {
-                        let name = colormap.name();
-                        div()
-                            .id(SharedString::from(format!("colormap-{name}")))
-                            .p_0p5()
-                            .rounded_sm()
-                            .border_1()
-                            .border_color(if display.colormap == colormap {
-                                info
-                            } else {
-                                transparent_black()
-                            })
-                            .child(colormap_strip(colormap, false, 6))
-                            .tooltip(move |window, cx| Tooltip::new(name).build(window, cx))
-                            .on_click(cx.listener(move |viewer, _, _, cx| {
-                                viewer.layers[index].display.colormap = colormap;
-                                cx.notify();
-                            }))
-                    }),
-                )))
-                .child(
-                    Checkbox::new(id("clip-low"))
-                        .label("Transparent below window")
-                        .checked(display.clip_low)
-                        .on_click(cx.listener(move |viewer, checked: &bool, _, cx| {
-                            viewer.layers[index].display.clip_low = *checked;
-                            cx.notify();
-                        })),
-                )
-                .when(display.range().is_none(), |settings| {
-                    settings.child(
-                        div()
-                            .text_xs()
-                            .text_color(muted)
-                            .child("No finite values in this frame"),
+        settings =
+            if display.label_mode() {
+                settings.child(row("Labels").child(format!("{} labels", display.label_count())))
+            } else {
+                let window = display.window;
+                settings
+                    .child(
+                        row("Window")
+                            .child(div().flex_1().text_xs().child(format!(
+                                "W {}  L {}",
+                                format_value(window.width),
+                                format_value(window.level)
+                            )))
+                            .child(
+                                Button::new(id("auto"))
+                                    .ghost()
+                                    .xsmall()
+                                    .icon(Carbon::AutoWindow)
+                                    .tooltip_with_action(
+                                        "Fit to the current frame",
+                                        &AutoContrast,
+                                        Some(shortcuts::CONTEXT),
+                                    )
+                                    .on_click(cx.listener(move |viewer, _, _, cx| {
+                                        viewer.change(index, VolumeDisplay::auto_window, cx);
+                                    })),
+                            ),
                     )
-                })
-        };
+                    .child(row("Colormap").child(h_flex().flex_1().gap_1().children(
+                        Colormap::ALL.into_iter().map(|colormap| {
+                            let name = colormap.name();
+                            div()
+                                .id(SharedString::from(format!("colormap-{name}")))
+                                .flex_1()
+                                .p_0p5()
+                                .rounded_sm()
+                                .border_1()
+                                .border_color(if display.colormap == colormap {
+                                    info
+                                } else {
+                                    transparent_black()
+                                })
+                                .child(colormap_strip(colormap, false, 8))
+                                .tooltip(move |window, cx| Tooltip::new(name).build(window, cx))
+                                .on_click(cx.listener(move |viewer, _, _, cx| {
+                                    viewer.layers[index].display.colormap = colormap;
+                                    cx.notify();
+                                }))
+                        }),
+                    )))
+                    .child(
+                        Checkbox::new(id("clip-low"))
+                            .label("Transparent below window")
+                            .checked(display.clip_low)
+                            .on_click(cx.listener(move |viewer, checked: &bool, _, cx| {
+                                viewer.layers[index].display.clip_low = *checked;
+                                cx.notify();
+                            })),
+                    )
+                    .when(display.range().is_none(), |settings| {
+                        settings.child(
+                            div()
+                                .text_xs()
+                                .text_color(muted)
+                                .child("No finite values in this frame"),
+                        )
+                    })
+            };
 
         settings
             .child(
@@ -1722,6 +1775,7 @@ fn section_title(text: impl Into<SharedString>, color: Hsla) -> Div {
 
 fn colormap_strip(colormap: Colormap, labels: bool, blocks: usize) -> Div {
     h_flex()
+        .w_full()
         .h(px(10.0))
         .rounded_sm()
         .overflow_hidden()
@@ -1733,19 +1787,10 @@ fn colormap_strip(colormap: Colormap, labels: bool, blocks: usize) -> Div {
                 colormap.color((block as f64 + 0.5) / blocks as f64)
             };
             div()
-                .w(px(6.0))
+                .flex_1()
                 .h_full()
                 .bg(rgb(u32::from_be_bytes([0, r, g, b])))
         }))
-}
-
-fn tail(text: &str, max: usize) -> String {
-    let count = text.chars().count();
-    if count <= max {
-        return text.to_string();
-    }
-    let rest: String = text.chars().skip(count - (max - 1)).collect();
-    format!("\u{2026}{rest}")
 }
 
 fn file_name(path: &Path) -> String {
@@ -1802,7 +1847,7 @@ fn opacity_slider(load_id: u64, cx: &mut Context<Viewer>) -> (Entity<SliderState
 
 #[cfg(test)]
 mod tests {
-    use super::{Layout, ViewPlane, format_value, grid_columns, size, tail};
+    use super::{Layout, ViewPlane, format_value, grid_columns, size};
 
     #[test]
     fn grids_make_cells_as_large_as_possible() {
@@ -1829,13 +1874,6 @@ mod tests {
         };
         assert!(single(None).overlaid());
         assert!(!single(Some(1)).overlaid());
-    }
-
-    #[test]
-    fn names_keep_their_end() {
-        assert_eq!(tail("short.nii", 30), "short.nii");
-        assert_eq!(tail("sub-01_ses-02_pet.nii.gz", 12), "\u{2026}_pet.nii.gz");
-        assert_eq!(tail("åååå", 3), "\u{2026}åå");
     }
 
     #[test]
