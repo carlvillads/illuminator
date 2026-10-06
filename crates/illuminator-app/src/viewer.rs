@@ -776,69 +776,63 @@ impl Viewer {
 
     /// Starts a background render for each panel whose image is out of date since last draw
     fn schedule_renders(&mut self, window: &Window, cx: &mut Context<Self>) {
-        for column in 0..self.layers.len() {
-            if !self.layers[column].visible {
+        // overlaid layers are all drawn on the base layers plane
+        for view in self.views(window) {
+            let (width, height) = view.image_pixels;
+            if width == 0 || height == 0 {
                 continue;
             }
-            // overlaid layers are all drawn on the base layers plane
-            for view in self.views(window) {
-                let (width, height) = view.image_pixels;
-                if width == 0 || height == 0 {
+            let plane = self.layers[view.base]
+                .display
+                .plane(view.axis, self.radiological);
+            let row = view.axis.index();
+            for layer in view.layers {
+                let entry = &self.layers[layer];
+                let panel = &entry.panels[row];
+                if !entry.visible || panel.rendering {
                     continue;
                 }
-                let plane = self.layers[view.base]
-                    .display
-                    .plane(view.axis, self.radiological);
-                let row = view.axis.index();
-                for layer in view.layers {
-                    let entry = &self.layers[layer];
-                    let panel = &entry.panels[row];
-                    if !entry.visible || panel.rendering {
-                        continue;
-                    }
 
-                    let job = entry.display.job_on(plane, width, height);
-                    let key = ImageKey {
-                        sample: job.key.clone(),
-                        coloring: entry.display.coloring(),
-                    };
-                    if panel.image.as_ref().is_some_and(|image| image.key == key) {
-                        continue;
-                    }
-                    let reuse = panel
-                        .samples
-                        .as_ref()
-                        .filter(|(sample, _)| *sample == key.sample)
-                        .map(|(_, samples)| Arc::clone(samples));
-                    let load_id = entry.load_id;
-
-                    cx.spawn_in(window, async move |viewer, cx| {
-                        let coloring = key.coloring;
-                        let (samples, image) = cx
-                            .background_spawn(async move {
-                                let samples = reuse.unwrap_or_else(|| Arc::new(job.sample()));
-                                let image = to_render_image(samples.colorize(coloring));
-                                (samples, image)
-                            })
-                            .await;
-                        let _ = viewer.update_in(cx, |viewer, window, cx| {
-                            let Some(column) =
-                                viewer.layers.iter_mut().find(|c| c.load_id == load_id)
-                            else {
-                                return;
-                            };
-                            let panel = &mut column.panels[row];
-                            panel.rendering = false;
-                            panel.samples = Some((key.sample.clone(), samples));
-                            if let Some(old) = panel.image.replace(PanelImage { key, image }) {
-                                cx.drop_image(old.image, Some(window));
-                            }
-                            cx.notify();
-                        });
-                    })
-                    .detach();
-                    self.layers[layer].panels[row].rendering = true;
+                let job = entry.display.job_on(plane, width, height);
+                let key = ImageKey {
+                    sample: job.key.clone(),
+                    coloring: entry.display.coloring(),
+                };
+                if panel.image.as_ref().is_some_and(|image| image.key == key) {
+                    continue;
                 }
+                let reuse = panel
+                    .samples
+                    .as_ref()
+                    .filter(|(sample, _)| *sample == key.sample)
+                    .map(|(_, samples)| Arc::clone(samples));
+                let load_id = entry.load_id;
+
+                cx.spawn_in(window, async move |viewer, cx| {
+                    let coloring = key.coloring;
+                    let (samples, image) = cx
+                        .background_spawn(async move {
+                            let samples = reuse.unwrap_or_else(|| Arc::new(job.sample()));
+                            let image = to_render_image(samples.colorize(coloring));
+                            (samples, image)
+                        })
+                        .await;
+                    let _ = viewer.update_in(cx, |viewer, window, cx| {
+                        let Some(column) = viewer.layers.iter_mut().find(|c| c.load_id == load_id)
+                        else {
+                            return;
+                        };
+                        let panel = &mut column.panels[row];
+                        panel.rendering = false;
+                        panel.samples = Some((key.sample.clone(), samples));
+                        if let Some(old) = panel.image.replace(PanelImage { key, image }) {
+                            cx.drop_image(old.image, Some(window));
+                        }
+                        cx.notify();
+                    });
+                })
+                .detach();
+                self.layers[layer].panels[row].rendering = true;
             }
         }
     }
