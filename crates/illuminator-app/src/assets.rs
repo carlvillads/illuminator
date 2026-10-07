@@ -46,7 +46,7 @@ carbon_icons! {
     Link => "sync-settings.svg",
     Ortho => "3D-MPR-Toggle.svg",
     Radiological => "reflect--horizontal.svg",
-    Single => "maximize.svg",
+    Single => "array-users.svg",
     View => "view.svg",
     ViewOff => "view--off.svg",
     WindowPreset => "window--preset.svg",
