@@ -4,6 +4,7 @@
 mod assets;
 mod shortcuts;
 mod viewer;
+mod zoom;
 
 use gpui_kit::component::{Theme, ThemeMode};
 use gpui_kit::*;

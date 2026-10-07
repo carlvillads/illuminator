@@ -66,6 +66,12 @@ actions!(
         MoveLayerUp,
         /// Moves the selected layer one step away from the base
         MoveLayerDown,
+        /// Zooms the active view's plane in
+        ZoomIn,
+        /// Zooms the active view's plane out
+        ZoomOut,
+        /// Shows every plane whole again
+        ZoomReset,
     ]
 );
 
@@ -115,6 +121,9 @@ pub fn bind(cx: &mut App) {
         KeyBinding::new("secondary-r", ReloadLayer, viewer),
         KeyBinding::new("alt-k", MoveLayerUp, viewer),
         KeyBinding::new("alt-j", MoveLayerDown, viewer),
+        KeyBinding::new("=", ZoomIn, viewer),
+        KeyBinding::new("-", ZoomOut, viewer),
+        KeyBinding::new("0", ZoomReset, viewer),
     ]);
     cx.on_action(|_: &Quit, cx| cx.quit());
 }
@@ -124,6 +133,9 @@ pub fn help() -> Vec<(String, &'static str)> {
         ("Click+drag".into(), "Move cursor"),
         ("Right+drag".into(), "Layer Window/level"),
         ("Scroll".into(), "Change slice"),
+        (format!("{SECONDARY}scroll"), "Zoom at the mouse"),
+        (format!("Middle+drag/{ALT}drag"), "Pan a zoomed view"),
+        ("=/-/0".into(), "Zoom in/out/reset"),
         ("Doubleclick".into(), "Focus/unfocus view"),
         ("Hover".into(), "Values in the status bar"),
         ("1-4".into(), "Layouts"),
@@ -140,7 +152,7 @@ pub fn help() -> Vec<(String, &'static str)> {
         ("Shift+L".into(), "Label outlines"),
         ("S/R/C/I".into(), "Sync/radiological/crosshair/corner text"),
         ("?".into(), "This list"),
-        (format!("{ALT}+J/K"), "Move layer down/up"),
+        (format!("{ALT}J/K"), "Move layer down/up"),
         (format!("{SECONDARY}R"), "Reload layer from disk"),
         (format!("{SECONDARY}\u{232b}"), "Close layer"),
         ("Drag layer".into(), "Reorder layers"),

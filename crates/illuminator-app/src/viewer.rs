@@ -29,6 +29,7 @@ use std::sync::Arc;
 
 use crate::assets::Carbon;
 use crate::shortcuts::{self, *};
+use crate::zoom::Zoom;
 
 const SIDEBAR_WIDTH: f32 = 240.0;
 const SCROLL_STEP: f32 = 20.0;
@@ -38,6 +39,35 @@ const STATUS_HEIGHT: f32 = 24.0;
 const CORNER_TEXT: f32 = 10.0;
 const HISTOGRAM_BINS: usize = 128;
 const HISTOGRAM_HEIGHT: f32 = 56.0;
+const ZOOM_SPEED: f64 = 200.0;
+const PRESETS: &[(&str, &[(&str, Preset)])] = &[
+    (
+        "CT (HU)",
+        &[
+            ("Brain  W 80 L 40", Preset::Limits(0.0, 80.0)),
+            ("Subdural  W 200 L 75", Preset::Limits(-25.0, 175.0)),
+            ("Stroke  W 40 L 40", Preset::Limits(20.0, 60.0)),
+            ("Soft tissue  W 400 L 50", Preset::Limits(-150.0, 250.0)),
+            ("Lung  W 1500 L -600", Preset::Limits(-1350.0, 150.0)),
+            ("Bone  W 1800 L 400", Preset::Limits(-500.0, 1300.0)),
+        ],
+    ),
+    (
+        "PET (SUV)",
+        &[
+            ("0 to 5", Preset::Limits(0.0, 5.0)),
+            ("0 to 10", Preset::Limits(0.0, 10.0)),
+        ],
+    ),
+    (
+        "Histogram",
+        &[
+            ("Full range", Preset::Percentiles(0.0, 1.0)),
+            ("1 to 99 %", Preset::Percentiles(0.01, 0.99)),
+            ("5 to 95 %", Preset::Percentiles(0.05, 0.95)),
+        ],
+    ),
+];
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum SyncMode {
@@ -68,35 +98,6 @@ enum Preset {
     Limits(f64, f64),
     Percentiles(f64, f64),
 }
-
-const PRESETS: &[(&str, &[(&str, Preset)])] = &[
-    (
-        "CT (HU)",
-        &[
-            ("Brain  W 80 L 40", Preset::Limits(0.0, 80.0)),
-            ("Subdural  W 200 L 75", Preset::Limits(-25.0, 175.0)),
-            ("Stroke  W 40 L 40", Preset::Limits(20.0, 60.0)),
-            ("Soft tissue  W 400 L 50", Preset::Limits(-150.0, 250.0)),
-            ("Lung  W 1500 L -600", Preset::Limits(-1350.0, 150.0)),
-            ("Bone  W 1800 L 400", Preset::Limits(-500.0, 1300.0)),
-        ],
-    ),
-    (
-        "PET (SUV)",
-        &[
-            ("0 to 5", Preset::Limits(0.0, 5.0)),
-            ("0 to 10", Preset::Limits(0.0, 10.0)),
-        ],
-    ),
-    (
-        "Histogram",
-        &[
-            ("Full range", Preset::Percentiles(0.0, 1.0)),
-            ("1 to 99 %", Preset::Percentiles(0.01, 0.99)),
-            ("5 to 95 %", Preset::Percentiles(0.05, 0.95)),
-        ],
-    ),
-];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum WindowEdge {
@@ -156,6 +157,7 @@ struct View {
     layers: Range<usize>,
     image_pixels: (usize, usize),
     image_size: Size<f32>,
+    zoom: Zoom,
 }
 
 struct Hit {
@@ -163,6 +165,8 @@ struct Hit {
     axis: ViewPlane,
     s: f64,
     t: f64,
+    in_view: (f64, f64),
+    image_size: Size<f32>,
 }
 
 struct FrameSlider {
@@ -245,6 +249,8 @@ pub struct Viewer {
     frame: usize,
     frame_slider: Option<FrameSlider>,
     contrast_drag: Option<(usize, Point<Pixels>)>,
+    zoom: [Zoom; 3],
+    pan_drag: Option<(ViewPlane, Point<Pixels>, Size<f32>)>,
     scroll_remainder: f32,
     active_panel: (usize, ViewPlane),
     focus_handle: FocusHandle,
@@ -296,6 +302,8 @@ impl Viewer {
             frame: 0,
             frame_slider: None,
             contrast_drag: None,
+            zoom: Default::default(),
+            pan_drag: None,
             scroll_remainder: 0.0,
             active_panel: (0, ViewPlane::Axial),
             focus_handle,
@@ -734,6 +742,7 @@ impl Viewer {
         cx: &mut Context<Self>,
     ) {
         self.radiological = !self.radiological;
+        self.zoom = Default::default();
         cx.notify();
     }
 
@@ -790,7 +799,7 @@ impl Viewer {
     fn crosshair(&self, view: &View, scale: f32) -> Option<[Div; 2]> {
         let display = &self.layers[view.base].display;
         let plane = display.plane(view.axis, self.radiological);
-        let (s, t) = plane.project(display.cursor());
+        let (s, t) = view.zoom.to_view(plane.project(display.cursor()));
         if !(0.0..=1.0).contains(&s) || !(0.0..=1.0).contains(&t) {
             return None;
         }
@@ -996,6 +1005,7 @@ impl Viewer {
                     layers: if overlaid { 0..count } else { base..base + 1 },
                     image_pixels,
                     image_size: size(image_pixels.0 as f32 / scale, image_pixels.1 as f32 / scale),
+                    zoom: self.zoom[axis.index()],
                 }
             })
             .collect()
@@ -1015,11 +1025,18 @@ impl Viewer {
             }
             let left = (view.size.width - view.image_size.width) / 2.0;
             let top = (view.size.height - view.image_size.height) / 2.0;
+            let in_view = (
+                f64::from((local_x - left) / view.image_size.width),
+                f64::from(1.0 - (local_y - top) / view.image_size.height),
+            );
+            let (s, t) = view.zoom.to_plane(in_view);
             Some(Hit {
                 base: view.base,
                 axis: view.axis,
-                s: f64::from((local_x - left) / view.image_size.width),
-                t: f64::from(1.0 - (local_y - top) / view.image_size.height),
+                s,
+                t,
+                in_view,
+                image_size: view.image_size,
             })
         })
     }
@@ -1042,6 +1059,14 @@ impl Viewer {
         let Some(hit) = self.hit(event.position, window) else {
             return;
         };
+        if event.modifiers.secondary() {
+            let pixels = f64::from(f32::from(event.delta.pixel_delta(px(SCROLL_STEP)).y));
+            let zoom = &mut self.zoom[hit.axis.index()];
+            // 2^x should make the zooming feel even across different zooms
+            *zoom = zoom.zoom_at((pixels / ZOOM_SPEED).exp2(), hit.in_view);
+            cx.notify();
+            return;
+        }
         self.scroll_remainder += f32::from(event.delta.pixel_delta(px(SCROLL_STEP)).y);
         let steps = (self.scroll_remainder / SCROLL_STEP).trunc();
         if steps == 0.0 {
@@ -1055,6 +1080,48 @@ impl Viewer {
             self.sync_from(hit.base);
             cx.notify();
         }
+    }
+
+    fn start_pan(&mut self, position: Point<Pixels>, window: &Window) {
+        self.pan_drag = self
+            .hit(position, window)
+            .map(|hit| (hit.axis, position, hit.image_size));
+    }
+
+    /// moves the zoomed view with mouse
+    fn drag_pan(&mut self, position: Point<Pixels>, cx: &mut Context<Self>) {
+        let Some((axis, last, image)) = self.pan_drag else {
+            return;
+        };
+        let dx = f64::from(f32::from(position.x - last.x) / image.width);
+        // y is downwards
+        let dy = -f64::from(f32::from(position.y - last.y) / image.height);
+        let zoom = &mut self.zoom[axis.index()];
+        *zoom = zoom.pan((dx, dy));
+        self.pan_drag = Some((axis, position, image));
+        cx.notify();
+    }
+
+    /// Zooms active view plane at the middle
+    fn zoom_active(&mut self, factor: f64, cx: &mut Context<Self>) {
+        if let Some((_, axis)) = self.active() {
+            let zoom = &mut self.zoom[axis.index()];
+            *zoom = zoom.zoom_at(factor, (0.5, 0.5));
+            cx.notify();
+        }
+    }
+
+    fn zoom_in(&mut self, _: &ZoomIn, _: &mut Window, cx: &mut Context<Self>) {
+        self.zoom_active(2.0_f64.sqrt(), cx);
+    }
+
+    fn zoom_out(&mut self, _: &ZoomOut, _: &mut Window, cx: &mut Context<Self>) {
+        self.zoom_active(0.5_f64.sqrt(), cx);
+    }
+
+    fn reset_zoom(&mut self, _: &ZoomReset, _: &mut Window, cx: &mut Context<Self>) {
+        self.zoom = Default::default();
+        cx.notify();
     }
 
     fn drag_contrast(&mut self, position: Point<Pixels>, cx: &mut Context<Self>) {
@@ -1076,9 +1143,11 @@ impl Viewer {
             if width == 0 || height == 0 {
                 continue;
             }
-            let plane = self.layers[view.base]
-                .display
-                .plane(view.axis, self.radiological);
+            let plane = view.zoom.apply(
+                self.layers[view.base]
+                    .display
+                    .plane(view.axis, self.radiological),
+            );
             let row = view.axis.index();
             for layer in view.layers {
                 let entry = &self.layers[layer];
@@ -1242,12 +1311,43 @@ impl Viewer {
                         return;
                     }
                     viewer.set_active_panel(event.position, window, cx);
-                    viewer.pick(event.position, window, cx);
+                    if event.modifiers.alt {
+                        viewer.start_pan(event.position, window);
+                    } else {
+                        viewer.pick(event.position, window, cx);
+                    }
+                }),
+            )
+            .on_mouse_down(
+                MouseButton::Middle,
+                cx.listener(|viewer, event: &MouseDownEvent, window, _| {
+                    viewer.start_pan(event.position, window);
+                }),
+            )
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(|viewer, event: &MouseDownEvent, window, _| {
+                    viewer.contrast_drag = viewer.hit(event.position, window).map(|hit| {
+                        let layer = if viewer.layout.overlaid() {
+                            viewer.selected
+                        } else {
+                            hit.base
+                        };
+                        (layer, event.position)
+                    });
                 }),
             )
             .on_mouse_up(
                 MouseButton::Right,
                 cx.listener(|viewer, _: &MouseUpEvent, _, _| viewer.contrast_drag = None),
+            )
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|viewer, _: &MouseUpEvent, _, _| viewer.pan_drag = None),
+            )
+            .on_mouse_up(
+                MouseButton::Middle,
+                cx.listener(|viewer, _: &MouseUpEvent, _, _| viewer.pan_drag = None),
             )
             .on_mouse_move(cx.listener(|viewer, event: &MouseMoveEvent, window, cx| {
                 viewer.set_hover(event.position, window, cx);
@@ -1255,6 +1355,9 @@ impl Viewer {
                     viewer.set_active_panel(event.position, window, cx);
                 }
                 match event.pressed_button {
+                    Some(MouseButton::Left | MouseButton::Middle) if viewer.pan_drag.is_some() => {
+                        viewer.drag_pan(event.position, cx)
+                    }
                     Some(MouseButton::Left) => viewer.pick(event.position, window, cx),
                     Some(MouseButton::Right) => viewer.drag_contrast(event.position, cx),
                     _ => {}
@@ -1443,7 +1546,11 @@ impl Viewer {
                 corner()
                     .bottom_1()
                     .right_2()
-                    .child(format!("{}/{count}", slice + 1)),
+                    .child(if view.zoom.scale > 1.0 {
+                        format!("\u{d7}{:.1} {}/{count}", view.zoom.scale, slice + 1)
+                    } else {
+                        format!("{}/{count}", slice + 1)
+                    }),
             )
     }
 
@@ -2233,6 +2340,9 @@ impl Render for Viewer {
             .on_action(cx.listener(Self::toggle_crosshair))
             .on_action(cx.listener(Self::toggle_info))
             .on_action(cx.listener(Self::show_help))
+            .on_action(cx.listener(Self::zoom_in))
+            .on_action(cx.listener(Self::zoom_out))
+            .on_action(cx.listener(Self::reset_zoom))
             .on_drop(cx.listener(|viewer, paths: &ExternalPaths, _, _| {
                 for path in paths.paths() {
                     viewer.loader.enqueue(path.clone());
