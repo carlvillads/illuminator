@@ -2341,6 +2341,7 @@ impl Render for Viewer {
             .size_full()
             .bg(background)
             .text_color(foreground)
+            .font_features(tabular_nums())
             .track_focus(&self.focus_handle)
             .key_context(shortcuts::CONTEXT)
             .on_action(cx.listener(Self::close_window))
@@ -2529,6 +2530,10 @@ fn file_name(path: &Path) -> String {
     path.file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_default()
+}
+
+fn tabular_nums() -> FontFeatures {
+    FontFeatures(Arc::new(vec![("tnum".into(), 1)]))
 }
 
 fn layer_details(display: &VolumeDisplay) -> Vec<(&'static str, String)> {
