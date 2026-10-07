@@ -58,6 +58,14 @@ actions!(
         LayoutGrid,
         /// One large view
         LayoutSingle,
+        /// Closes the selected layer
+        CloseLayer,
+        /// Loads the selected layers file again
+        ReloadLayer,
+        /// Moves the selected layer one step towards the base
+        MoveLayerUp,
+        /// Moves the selected layer one step away from the base
+        MoveLayerDown,
     ]
 );
 
@@ -66,6 +74,11 @@ const SECONDARY: &str = if cfg!(target_os = "macos") {
     "\u{2318}"
 } else {
     "Ctrl+"
+};
+const ALT: &str = if cfg!(target_os = "macos") {
+    "\u{2325}"
+} else {
+    "Alt+"
 };
 
 pub fn bind(cx: &mut App) {
@@ -98,6 +111,10 @@ pub fn bind(cx: &mut App) {
         KeyBinding::new("2", LayoutCompare, viewer),
         KeyBinding::new("3", LayoutGrid, viewer),
         KeyBinding::new("4", LayoutSingle, viewer),
+        KeyBinding::new("secondary-backspace", CloseLayer, viewer),
+        KeyBinding::new("secondary-r", ReloadLayer, viewer),
+        KeyBinding::new("alt-k", MoveLayerUp, viewer),
+        KeyBinding::new("alt-j", MoveLayerDown, viewer),
     ]);
     cx.on_action(|_: &Quit, cx| cx.quit());
 }
@@ -123,6 +140,10 @@ pub fn help() -> Vec<(String, &'static str)> {
         ("Shift+L".into(), "Label outlines"),
         ("S/R/C/I".into(), "Sync/radiological/crosshair/corner text"),
         ("?".into(), "This list"),
+        (format!("{ALT}+J/K"), "Move layer down/up"),
+        (format!("{SECONDARY}R"), "Reload layer from disk"),
+        (format!("{SECONDARY}\u{232b}"), "Close layer"),
+        ("Drag layer".into(), "Reorder layers"),
         (format!("{SECONDARY}O"), "Open volumes"),
         (format!("{SECONDARY}W/{SECONDARY}Q"), "Close window/quit"),
     ]

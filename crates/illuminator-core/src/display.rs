@@ -15,6 +15,7 @@ const LABEL_LIMIT: usize = 1 << 20;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct SampleKey {
+    pub volume: u64,
     pub geometry: VolumeGeometry,
     pub plane: SlicePlane,
     pub frame: usize,
@@ -218,6 +219,18 @@ impl VolumeDisplay {
         })
     }
 
+    pub fn keep_settings_of(&mut self, old: &VolumeDisplay) -> Result<()> {
+        self.window = old.window;
+        self.colormap = old.colormap;
+        self.clip_low = old.clip_low;
+        self.outline = old.outline;
+        self.link_world = old.link_world;
+        self.set_options(old.options)?;
+        self.set_cursor(old.cursor);
+        self.set_frame(old.frame)?;
+        self.set_label_mode(old.label_mode)
+    }
+
     /// Rebuilds the geometry while keeping the cursor on the same voxel
     fn set_options(&mut self, options: GeometryOptions) -> Result<()> {
         let geometry = self.volume.geometry(options)?;
@@ -392,6 +405,7 @@ impl VolumeDisplay {
         SliceJob {
             volume: Arc::clone(&self.volume),
             key: SampleKey {
+                volume: self.volume.id(),
                 geometry: self.geometry.clone(),
                 plane,
                 frame: self.frame,
@@ -639,6 +653,31 @@ mod tests {
         let mut floats = display(&other_dir, &fractional);
         assert!(floats.set_label_mode(true).is_err());
         assert!(!floats.label_mode());
+    }
+
+    #[test]
+    fn reloading_keeps_the_settings() {
+        let four_d = Fixture {
+            dims: vec![4, 3, 4, 2],
+            datatype: DataType::I32,
+            value: |i| (i % 3) as f64,
+            ..Fixture::default()
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let mut old = display(&dir, &four_d);
+        old.set_frame(1).unwrap();
+        old.set_label_mode(true).unwrap();
+        old.outline = true;
+        old.colormap = Colormap::Viridis;
+        old.step_slice(ViewPlane::Axial, 1.0);
+
+        let other_dir = tempfile::tempdir().unwrap();
+        let mut new = display(&other_dir, &four_d);
+        new.keep_settings_of(&old).unwrap();
+        assert_eq!(new.frame(), 1);
+        assert_eq!(new.coloring(), Coloring::Labels { outline: true });
+        assert_eq!(new.colormap, Colormap::Viridis);
+        assert_eq!(new.cursor(), old.cursor());
     }
 
     #[test]

@@ -21,6 +21,8 @@ use illuminator_core::labels::label_color;
 use illuminator_core::loader::{LoadState, VolumeLoader};
 use illuminator_core::slicer::{Coloring, Colormap, SampledSlice, SliceImage, fit_size};
 use image::{Frame, RgbaImage};
+use std::cmp::Ordering;
+use std::collections::HashMap;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -111,6 +113,24 @@ struct DragEdge {
 impl Render for DragEdge {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         Empty
+    }
+}
+
+#[derive(Clone)]
+struct DragLayer {
+    index: usize,
+    name: SharedString,
+}
+
+impl Render for DragLayer {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .px_2()
+            .py_1()
+            .rounded_sm()
+            .bg(cx.theme().secondary)
+            .text_xs()
+            .child(self.name.clone())
     }
 }
 
@@ -233,6 +253,8 @@ pub struct Viewer {
     hover: Option<Point3D>,
     selected: usize,
     info: InfoLevel,
+    reloads: HashMap<u64, u64>,
+    retired: Vec<Arc<RenderImage>>,
     _loader_events: Task<()>,
 }
 
@@ -282,6 +304,8 @@ impl Viewer {
             hover: None,
             selected: 0,
             info: InfoLevel::Minimal,
+            reloads: HashMap::new(),
+            retired: Vec::new(),
             _loader_events: loader_events,
         }
     }
@@ -290,27 +314,24 @@ impl Viewer {
         let mut added = false;
         for loaded in self.loader.take_completed() {
             let load_id = loaded.id;
+            let reload_of = self.reloads.remove(&load_id);
             match VolumeDisplay::new(loaded) {
                 Ok(mut display) => {
+                    if let Some(old_id) = reload_of {
+                        self.replace_layer(old_id, display);
+                        added = true;
+                        continue;
+                    }
                     if let Err(error) = display.set_frame(self.frame) {
                         eprintln!("Illuminator: {}: {error}", display.name());
                     }
                     display.clip_low = true;
                     let at = self
                         .layers
-                        .partition_point(|column| column.load_id < load_id);
-                    let shifted =
-                        |index: usize, len: usize| index + usize::from(at <= index && index < len);
-                    self.selected = shifted(self.selected, self.layers.len());
-                    if !self.layout.overlaid() {
-                        self.active_panel.0 = shifted(self.active_panel.0, self.layers.len());
-                    }
-                    if let Layout::Single {
-                        layer: Some(layer), ..
-                    } = &mut self.layout
-                    {
-                        *layer = shifted(*layer, self.layers.len());
-                    }
+                        .iter()
+                        .rposition(|layer| layer.load_id < load_id)
+                        .map_or(0, |index| index + 1);
+                    self.reindex(|index| Some(if index >= at { index + 1 } else { index }));
                     let (opacity_slider, opacity_changes) = opacity_slider(load_id, cx);
                     self.layers.insert(
                         at,
@@ -529,6 +550,118 @@ impl Viewer {
         if let Some(column) = self.selected() {
             let enabled = !self.layers[column].display.label_mode();
             self.change(column, |display| display.set_label_mode(enabled), cx);
+        }
+    }
+
+    fn reindex(&mut self, new_index: impl Fn(usize) -> Option<usize>) {
+        let count = self.layers.len();
+        if self.selected < count {
+            // a removed selected layer passes the selection to the one before it
+            self.selected = new_index(self.selected).unwrap_or(self.selected.saturating_sub(1));
+        }
+        if !self.layout.overlaid() && self.active_panel.0 < count {
+            self.active_panel.0 = new_index(self.active_panel.0).unwrap_or(self.selected);
+        }
+        if let Layout::Single {
+            axis,
+            layer: Some(layer),
+        } = self.layout
+            && layer < count
+        {
+            self.layout = match new_index(layer) {
+                Some(layer) => Layout::Single {
+                    axis,
+                    layer: Some(layer),
+                },
+                None => self.previous_layout,
+            };
+        }
+    }
+
+    fn close_layer(&mut self, index: usize, cx: &mut Context<Self>) {
+        if index >= self.layers.len() {
+            return;
+        }
+        self.reindex(|other| match other.cmp(&index) {
+            Ordering::Less => Some(other),
+            Ordering::Equal => None,
+            Ordering::Greater => Some(other - 1),
+        });
+        let layer = self.layers.remove(index);
+        self.retire(layer.panels);
+        self.update_frame_slider(cx);
+        self.sync_from_first();
+        cx.notify();
+    }
+
+    fn move_layer(&mut self, from: usize, to: usize, cx: &mut Context<Self>) {
+        let count = self.layers.len();
+        if from >= count || to >= count || from == to {
+            return;
+        }
+        self.reindex(|index| Some(moved(index, from, to)));
+        let layer = self.layers.remove(from);
+        self.layers.insert(to, layer);
+        self.sync_from_first();
+        cx.notify();
+    }
+
+    fn reload_layer(&mut self, index: usize) {
+        let Some(layer) = self.layers.get(index) else {
+            return;
+        };
+        let path = layer.display.volume().path().to_path_buf();
+        let load_id = self.loader.enqueue(path);
+        self.reloads.insert(load_id, layer.load_id);
+    }
+
+    fn replace_layer(&mut self, load_id: u64, mut display: VolumeDisplay) {
+        let Some(layer) = self.layers.iter_mut().find(|l| l.load_id == load_id) else {
+            return;
+        };
+        if let Err(error) = display.keep_settings_of(&layer.display) {
+            eprintln!("Illuminator: {}: {error}", display.name());
+        }
+        layer.display = display;
+        layer.histogram = None;
+        layer.histogram_frame = None;
+        layer.histogram_pending = false;
+        let panels = std::mem::take(&mut layer.panels);
+        self.retire(panels);
+    }
+
+    fn retire(&mut self, panels: [Panel; 3]) {
+        self.retired.extend(
+            panels
+                .into_iter()
+                .filter_map(|panel| panel.image)
+                .map(|image| image.image),
+        );
+    }
+
+    fn close_selected(&mut self, _: &CloseLayer, _: &mut Window, cx: &mut Context<Self>) {
+        if let Some(index) = self.selected() {
+            self.close_layer(index, cx);
+        }
+    }
+
+    fn reload_selected(&mut self, _: &ReloadLayer, _: &mut Window, _: &mut Context<Self>) {
+        if let Some(index) = self.selected() {
+            self.reload_layer(index);
+        }
+    }
+
+    fn move_selected_up(&mut self, _: &MoveLayerUp, _: &mut Window, cx: &mut Context<Self>) {
+        if let Some(index) = self.selected()
+            && index > 0
+        {
+            self.move_layer(index, index - 1, cx);
+        }
+    }
+
+    fn move_selected_down(&mut self, _: &MoveLayerDown, _: &mut Window, cx: &mut Context<Self>) {
+        if let Some(index) = self.selected() {
+            self.move_layer(index, index + 1, cx);
         }
     }
 
@@ -784,11 +917,15 @@ impl Viewer {
             .max()
             .unwrap_or(1);
         let last_frame = frames - 1;
-        if last_frame == 0
-            || self
-                .frame_slider
-                .as_ref()
-                .is_some_and(|s| s.last_frame == last_frame)
+        if last_frame == 0 {
+            // no 4d layers left
+            self.frame_slider = None;
+            return;
+        }
+        if self
+            .frame_slider
+            .as_ref()
+            .is_some_and(|s| s.last_frame == last_frame)
         {
             return;
         }
@@ -1009,6 +1146,7 @@ impl Viewer {
         }
         layer.histogram_pending = true;
         let volume = layer.display.shared_volume();
+        let volume_id = volume.id();
         let load_id = layer.load_id;
         cx.spawn(async move |viewer, cx| {
             let histogram = cx
@@ -1022,6 +1160,9 @@ impl Viewer {
                     return;
                 };
                 layer.histogram_pending = false;
+                if layer.display.volume().id() != volume_id {
+                    return; // the layer was reloaded in the meantime
+                }
                 layer.histogram_frame = Some(frame);
                 layer.histogram = histogram.unwrap_or_else(|error| {
                     eprintln!("Illuminator: layer histogram: {error}");
@@ -1555,7 +1696,13 @@ impl Viewer {
     /// One row per layer
     fn render_layer_list(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
-        let (muted, active, hover) = (theme.muted_foreground, theme.list_active, theme.list_hover);
+        let (muted, active, hover, info) = (
+            theme.muted_foreground,
+            theme.list_active,
+            theme.list_hover,
+            theme.info,
+        );
+        let context = Some(shortcuts::CONTEXT);
         v_flex()
             .gap_0p5()
             .child(section_title("Layers", muted))
@@ -1564,8 +1711,13 @@ impl Viewer {
             })
             .children(self.layers.iter().enumerate().map(|(index, layer)| {
                 let display = &layer.display;
+                let drag = DragLayer {
+                    index,
+                    name: display.name().into(),
+                };
                 let row = h_flex()
                     .id(("layer-row", index))
+                    .group("layer-row")
                     .gap_1()
                     .h(px(26.0))
                     .px_1()
@@ -1573,6 +1725,13 @@ impl Viewer {
                     .when(index == self.selected, |row| row.bg(active))
                     .hover(|row| row.bg(hover))
                     .on_click(cx.listener(move |viewer, _, _, cx| viewer.select(index, cx)))
+                    .on_drag(drag, |drag, _, _, cx| cx.new(|_| drag.clone()))
+                    .drag_over::<DragLayer>(move |style, _, _, _| {
+                        style.border_t_2().border_color(info)
+                    })
+                    .on_drop(cx.listener(move |viewer, drag: &DragLayer, _, cx| {
+                        viewer.move_layer(drag.index, index, cx);
+                    }))
                     .child(
                         Button::new(("layer-visible", index))
                             .ghost()
@@ -1609,6 +1768,31 @@ impl Viewer {
                             .text_ellipsis_start()
                             .when(!layer.visible, |name| name.text_color(muted))
                             .child(display.name()),
+                    )
+                    .child(
+                        h_flex()
+                            .opacity(0.0)
+                            .group_hover("layer-row", |buttons| buttons.opacity(1.0))
+                            .child(
+                                Button::new(("layer-reload", index))
+                                    .ghost()
+                                    .xsmall()
+                                    .icon(Carbon::Reload)
+                                    .tooltip_with_action("Reload from disk", &ReloadLayer, context)
+                                    .on_click(cx.listener(move |viewer, _, _, _| {
+                                        viewer.reload_layer(index);
+                                    })),
+                            )
+                            .child(
+                                Button::new(("layer-close", index))
+                                    .ghost()
+                                    .xsmall()
+                                    .icon(Carbon::Close)
+                                    .tooltip_with_action("Close", &CloseLayer, context)
+                                    .on_click(cx.listener(move |viewer, _, _, cx| {
+                                        viewer.close_layer(index, cx);
+                                    })),
+                            ),
                     );
                 let details = layer_details(display);
                 HoverCard::new(("layer-card", index))
@@ -2006,6 +2190,9 @@ impl Viewer {
 
 impl Render for Viewer {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        for image in self.retired.drain(..) {
+            cx.drop_image(image, Some(window));
+        }
         self.schedule_renders(window, cx);
         self.schedule_histogram(cx);
         let theme = cx.theme();
@@ -2034,6 +2221,10 @@ impl Render for Viewer {
             .on_action(cx.listener(Self::layout_compare))
             .on_action(cx.listener(Self::layout_grid))
             .on_action(cx.listener(Self::layout_single))
+            .on_action(cx.listener(Self::close_selected))
+            .on_action(cx.listener(Self::reload_selected))
+            .on_action(cx.listener(Self::move_selected_up))
+            .on_action(cx.listener(Self::move_selected_down))
             .on_action(cx.listener(Self::toggle_layer))
             .on_action(cx.listener(Self::next_layer))
             .on_action(cx.listener(Self::previous_layer))
@@ -2068,6 +2259,19 @@ fn to_render_image(image: SliceImage) -> Arc<RenderImage> {
     let buffer = RgbaImage::from_raw(image.width as u32, image.height as u32, pixels)
         .expect("a slice image has width * height * 4 btyes");
     Arc::new(RenderImage::new(vec![Frame::new(buffer)]))
+}
+
+/// Where the item at `index` ends up when the item at `from` is moved to `to`
+fn moved(index: usize, from: usize, to: usize) -> usize {
+    if index == from {
+        to
+    } else if from < index && index <= to {
+        index - 1
+    } else if to <= index && index < from {
+        index + 1
+    } else {
+        index
+    }
 }
 
 fn view_area(window: &Window) -> Size<f32> {
@@ -2232,7 +2436,7 @@ fn opacity_slider(load_id: u64, cx: &mut Context<Viewer>) -> (Entity<SliderState
 
 #[cfg(test)]
 mod tests {
-    use super::{Layout, PRESETS, Preset, ViewPlane, format_value, grid_columns, size};
+    use super::{Layout, PRESETS, Preset, ViewPlane, format_value, grid_columns, moved, size};
 
     #[test]
     fn grids_make_cells_as_large_as_possible() {
@@ -2279,5 +2483,17 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn moving_shifts_the_items_between() {
+        let after = |from, to| {
+            (0..4)
+                .map(|index| moved(index, from, to))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(after(0, 2), [2, 0, 1, 3]);
+        assert_eq!(after(2, 0), [1, 2, 0, 3]);
+        assert_eq!(after(1, 1), [0, 1, 2, 3]);
     }
 }
