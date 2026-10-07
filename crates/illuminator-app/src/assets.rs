@@ -49,6 +49,7 @@ carbon_icons! {
     Single => "maximize.svg",
     View => "view.svg",
     ViewOff => "view--off.svg",
+    WindowPreset => "window--preset.svg",
 }
 
 const OVERRIDES: &[(&str, &[u8])] = &[

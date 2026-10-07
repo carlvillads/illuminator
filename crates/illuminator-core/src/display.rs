@@ -338,6 +338,24 @@ impl VolumeDisplay {
         }
     }
 
+    /// Values at the top and bottom of the window
+    pub fn window_limits(&self) -> (f64, f64) {
+        let half = self.window.width / 2.0;
+        (self.window.level - half, self.window.level + half)
+    }
+
+    pub fn set_window_limits(&mut self, low: f64, high: f64) {
+        if low < high
+            && let Ok(window) = IntensityWindow::spanning(low, high)
+        {
+            self.window = window;
+        }
+    }
+
+    pub fn shared_volume(&self) -> Arc<NiiVolume> {
+        Arc::clone(&self.volume)
+    }
+
     pub fn coloring(&self) -> Coloring {
         if self.label_mode {
             Coloring::Labels
@@ -522,6 +540,16 @@ mod tests {
                 clip_low: false,
             }
         );
+    }
+
+    #[test]
+    fn sets_the_window_by_its_limits() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut display = display(&dir, &Fixture::default());
+        display.set_window_limits(10.0, 30.0);
+        assert_eq!(display.window_limits(), (10.0, 30.0));
+        display.set_window_limits(30.0, 10.0);
+        assert_eq!(display.window_limits(), (10.0, 30.0));
     }
 
     #[test]

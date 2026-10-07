@@ -5,6 +5,7 @@ use futures::channel::mpsc;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::hover_card::HoverCard;
+use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
 use gpui_kit::component::progress::Progress;
 use gpui_kit::component::slider::{Slider, SliderEvent, SliderState};
 use gpui_kit::component::status_bar::StatusBar;
@@ -15,6 +16,7 @@ use gpui_kit::*;
 use illuminator_core::cache::VolumeCache;
 use illuminator_core::display::{SampleKey, VolumeDisplay};
 use illuminator_core::geometry::{Point3D, ViewPlane};
+use illuminator_core::histogram::Histogram;
 use illuminator_core::labels::label_color;
 use illuminator_core::loader::{LoadState, VolumeLoader};
 use illuminator_core::slicer::{Coloring, Colormap, SampledSlice, SliceImage, fit_size};
@@ -32,6 +34,8 @@ const OVERLAY_OPACITY: f32 = 0.5;
 const TOOLBAR_HEIGHT: f32 = 36.0;
 const STATUS_HEIGHT: f32 = 24.0;
 const CORNER_TEXT: f32 = 10.0;
+const HISTOGRAM_BINS: usize = 128;
+const HISTOGRAM_HEIGHT: f32 = 56.0;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum SyncMode {
@@ -57,9 +61,65 @@ struct Panel {
     rendering: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Preset {
+    Limits(f64, f64),
+    Percentiles(f64, f64),
+}
+
+const PRESETS: &[(&str, &[(&str, Preset)])] = &[
+    (
+        "CT (HU)",
+        &[
+            ("Brain  W 80 L 40", Preset::Limits(0.0, 80.0)),
+            ("Subdural  W 200 L 75", Preset::Limits(-25.0, 175.0)),
+            ("Stroke  W 40 L 40", Preset::Limits(20.0, 60.0)),
+            ("Soft tissue  W 400 L 50", Preset::Limits(-150.0, 250.0)),
+            ("Lung  W 1500 L -600", Preset::Limits(-1350.0, 150.0)),
+            ("Bone  W 1800 L 400", Preset::Limits(-500.0, 1300.0)),
+        ],
+    ),
+    (
+        "PET (SUV)",
+        &[
+            ("0 to 5", Preset::Limits(0.0, 5.0)),
+            ("0 to 10", Preset::Limits(0.0, 10.0)),
+        ],
+    ),
+    (
+        "Histogram",
+        &[
+            ("Full range", Preset::Percentiles(0.0, 1.0)),
+            ("1 to 99 %", Preset::Percentiles(0.01, 0.99)),
+            ("5 to 95 %", Preset::Percentiles(0.05, 0.95)),
+        ],
+    ),
+];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WindowEdge {
+    Low,
+    High,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct DragEdge {
+    load_id: u64,
+    edge: WindowEdge,
+}
+
+impl Render for DragEdge {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        Empty
+    }
+}
+
 struct Layer {
     display: VolumeDisplay,
     panels: [Panel; 3],
+    histogram: Option<Histogram>,
+    histogram_frame: Option<usize>,
+    histogram_pending: bool,
     load_id: u64,
     visible: bool,
     opacity: f32,
@@ -257,6 +317,9 @@ impl Viewer {
                         Layer {
                             display,
                             panels: Default::default(),
+                            histogram: None,
+                            histogram_frame: None,
+                            histogram_pending: false,
                             load_id,
                             visible: true,
                             opacity: OVERLAY_OPACITY,
@@ -923,6 +986,87 @@ impl Viewer {
         }
     }
 
+    /// Counts the selected layers values in the background once per frame
+    fn schedule_histogram(&mut self, cx: &mut Context<Self>) {
+        let Some(index) = self.selected() else {
+            return;
+        };
+        let layer = &mut self.layers[index];
+        let frame = layer.display.frame();
+        if layer.display.label_mode()
+            || layer.histogram_pending
+            || layer.histogram_frame == Some(frame)
+        {
+            return;
+        }
+        layer.histogram_pending = true;
+        let volume = layer.display.shared_volume();
+        let load_id = layer.load_id;
+        cx.spawn(async move |viewer, cx| {
+            let histogram = cx
+                .background_spawn(async move {
+                    let progress = illuminator_core::progress::Progress::default();
+                    Histogram::of(&volume, frame, HISTOGRAM_BINS, &progress)
+                })
+                .await;
+            let _ = viewer.update(cx, |viewer, cx| {
+                let Some(layer) = viewer.layers.iter_mut().find(|l| l.load_id == load_id) else {
+                    return;
+                };
+                layer.histogram_pending = false;
+                layer.histogram_frame = Some(frame);
+                layer.histogram = histogram.unwrap_or_else(|error| {
+                    eprintln!("Illuminator: layer histogram: {error}");
+                    None
+                });
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Moves one window edge to the value under the mouse in the histogram
+    fn drag_edge(
+        &mut self,
+        drag: DragEdge,
+        position: Point<Pixels>,
+        bounds: Bounds<Pixels>,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(layer) = self.layers.iter_mut().find(|l| l.load_id == drag.load_id) else {
+            return;
+        };
+        let Some(histogram) = &layer.histogram else {
+            return;
+        };
+        let fraction =
+            f64::from(f32::from(position.x - bounds.left()) / f32::from(bounds.size.width));
+        let value = histogram.min + fraction * (histogram.max - histogram.min);
+        let (low, high) = layer.display.window_limits();
+        match drag.edge {
+            WindowEdge::Low => layer.display.set_window_limits(value, high),
+            WindowEdge::High => layer.display.set_window_limits(low, value),
+        }
+        cx.notify();
+    }
+
+    fn apply_preset(&mut self, index: usize, preset: Preset, cx: &mut Context<Self>) {
+        let Some(layer) = self.layers.get_mut(index) else {
+            return;
+        };
+        let limits = match preset {
+            Preset::Limits(low, high) => Some((low, high)),
+            Preset::Percentiles(low, high) => layer
+                .histogram
+                .as_ref()
+                .map(|histogram| (histogram.percentile(low), histogram.percentile(high))),
+        };
+        if let Some((low, high)) = limits {
+            layer.display.set_window_limits(low, high);
+            cx.notify();
+        }
+    }
+
     fn render_panels(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
         let (muted, border, label_color) = (theme.muted_foreground, theme.border, theme.info);
@@ -1096,6 +1240,15 @@ impl Viewer {
                 format!("W {} L {}", format_value(width), format_value(level))
             }
         };
+        let colorbar = match self.layers[windowed].display.coloring() {
+            Coloring::Intensity {
+                level,
+                width,
+                colormap,
+                ..
+            } => Some(colorbar(colormap, level - width / 2.0, level + width / 2.0)),
+            Coloring::Labels => None,
+        };
         let base = &self.layers[view.base].display;
         let (slice, count) = base.slice_position(view.axis);
         let corner = || {
@@ -1124,6 +1277,18 @@ impl Viewer {
                             .child(numbered(windowed, window_text)),
                     ),
                 )
+                .when_some(colorbar, |info, colorbar| {
+                    info.child(
+                        corner()
+                            .top_0()
+                            .bottom_0()
+                            .right_2()
+                            .flex()
+                            .flex_col()
+                            .justify_center()
+                            .child(colorbar),
+                    )
+                })
             })
             .child(
                 corner()
@@ -1458,6 +1623,150 @@ impl Viewer {
             }))
     }
 
+    fn render_histogram(&self, index: usize, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.theme();
+        let (muted, foreground, info, background) = (
+            theme.muted_foreground,
+            theme.foreground,
+            theme.info,
+            theme.secondary,
+        );
+        let layer = &self.layers[index];
+        let load_id = layer.load_id;
+        let chart = div()
+            .id(("histogram", index))
+            .relative()
+            .w_full()
+            .h(px(HISTOGRAM_HEIGHT))
+            .rounded_sm()
+            .overflow_hidden()
+            .bg(background)
+            .on_drag_move(
+                cx.listener(move |viewer, event: &DragMoveEvent<DragEdge>, _, cx| {
+                    let drag = *event.drag(cx);
+                    if drag.load_id == load_id {
+                        viewer.drag_edge(drag, event.event.position, event.bounds, cx);
+                    }
+                }),
+            );
+        let Some(histogram) = &layer.histogram else {
+            return v_flex().child(
+                chart
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .text_xs()
+                    .text_color(muted)
+                    .child("Counting values\u{2026}"),
+            );
+        };
+
+        let span = histogram.max - histogram.min;
+        let at = |value: f64| {
+            if span > 0.0 {
+                ((value - histogram.min) / span) as f32
+            } else {
+                0.5
+            }
+        };
+        let (low, high) = layer.display.window_limits();
+        let peak = histogram.counts.iter().copied().max().unwrap_or(0).max(1);
+        let bins = histogram.counts.len() as f32;
+        let bars = histogram.counts.iter().enumerate().map(|(bin, &count)| {
+            let center = histogram.min + (bin as f64 + 0.5) * histogram.bin_width();
+            let inside = (low..=high).contains(&center);
+            let height = ((count as f64).ln_1p() / (peak as f64).ln_1p()) as f32;
+            div()
+                .absolute()
+                .bottom_0()
+                .left(relative(bin as f32 / bins))
+                .w(relative(1.0 / bins))
+                .h(relative(height))
+                .bg(if inside {
+                    foreground
+                } else {
+                    muted.opacity(0.5)
+                })
+        });
+        let edge = |edge: WindowEdge, value: f64| {
+            let id = match edge {
+                WindowEdge::Low => "window-low",
+                WindowEdge::High => "window-high",
+            };
+            div()
+                .id((id, index))
+                .absolute()
+                .top_0()
+                .bottom_0()
+                .left(relative(at(value).clamp(0.0, 1.0)))
+                .ml(px(-4.0))
+                .w(px(8.0))
+                .flex()
+                .justify_center()
+                .cursor_ew_resize()
+                .child(div().w(px(2.0)).h_full().bg(info))
+                .on_drag(DragEdge { load_id, edge }, |drag, _, _, cx| {
+                    cx.new(|_| *drag)
+                })
+        };
+        let shaded_left = at(low).clamp(0.0, 1.0);
+        let shaded_right = at(high).clamp(0.0, 1.0);
+
+        v_flex()
+            .gap_0p5()
+            .child(
+                chart
+                    .children(bars)
+                    .child(
+                        div()
+                            .absolute()
+                            .top_0()
+                            .bottom_0()
+                            .left(relative(shaded_left))
+                            .w(relative(shaded_right - shaded_left))
+                            .bg(info.opacity(0.15)),
+                    )
+                    .child(edge(WindowEdge::Low, low))
+                    .child(edge(WindowEdge::High, high)),
+            )
+            .child(transfer_strip(histogram, layer.display.coloring()))
+            .child(
+                h_flex()
+                    .justify_between()
+                    .text_size(px(CORNER_TEXT))
+                    .text_color(muted)
+                    .child(format_value(histogram.min))
+                    .child(format_value(histogram.max)),
+            )
+    }
+
+    /// Menu of window presets for layer index
+    fn presets_button(&self, index: usize, cx: &mut Context<Self>) -> impl IntoElement {
+        let viewer = cx.entity().downgrade();
+        Button::new(("presets", index))
+            .ghost()
+            .xsmall()
+            .icon(Carbon::WindowPreset)
+            .tooltip("Window presets")
+            .dropdown_menu(move |mut menu, _, _| {
+                for (n, (group, presets)) in PRESETS.iter().enumerate() {
+                    if n > 0 {
+                        menu = menu.separator();
+                    }
+                    menu = menu.label(*group);
+                    for &(name, preset) in *presets {
+                        let viewer = viewer.clone();
+                        menu = menu.item(PopupMenuItem::new(name).on_click(move |_, _, cx| {
+                            let _ = viewer.update(cx, |viewer, cx| {
+                                viewer.apply_preset(index, preset, cx);
+                            });
+                        }));
+                    }
+                }
+                menu
+            })
+    }
+
     /// Settings of the selected layer
     fn render_layer_settings(&self, cx: &mut Context<Self>) -> AnyElement {
         let Some(index) = self.selected() else {
@@ -1506,6 +1815,7 @@ impl Viewer {
                                 format_value(window.width),
                                 format_value(window.level)
                             )))
+                            .child(self.presets_button(index, cx))
                             .child(
                                 Button::new(id("auto"))
                                     .ghost()
@@ -1521,6 +1831,7 @@ impl Viewer {
                                     })),
                             ),
                     )
+                    .child(self.render_histogram(index, cx))
                     .child(row("Colormap").child(h_flex().flex_1().gap_1().children(
                         Colormap::ALL.into_iter().map(|colormap| {
                             let name = colormap.name();
@@ -1678,6 +1989,7 @@ impl Viewer {
 impl Render for Viewer {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.schedule_renders(window, cx);
+        self.schedule_histogram(cx);
         let theme = cx.theme();
         let (background, foreground) = (theme.background, theme.foreground);
         v_flex()
@@ -1793,6 +2105,60 @@ fn colormap_strip(colormap: Colormap, labels: bool, blocks: usize) -> Div {
         }))
 }
 
+/// The colors along the histogram's value axis, as the views show them
+fn transfer_strip(histogram: &Histogram, coloring: Coloring) -> Div {
+    const BLOCKS: usize = 64;
+    let Coloring::Intensity {
+        level,
+        width,
+        colormap,
+        clip_low,
+    } = coloring
+    else {
+        return div();
+    };
+    h_flex()
+        .w_full()
+        .h(px(6.0))
+        .rounded_sm()
+        .overflow_hidden()
+        .children((0..BLOCKS).map(|block| {
+            let fraction = (block as f64 + 0.5) / BLOCKS as f64;
+            let value = histogram.min + fraction * (histogram.max - histogram.min);
+            let t = (value - level) / width + 0.5;
+            let block = div().flex_1().h_full();
+            if clip_low && t <= 0.0 {
+                return block;
+            }
+            let [r, g, b] = colormap.color(t);
+            block.bg(rgb(u32::from_be_bytes([0, r, g, b])))
+        }))
+}
+
+/// A vertical color bar with the window's top and bottom value
+fn colorbar(colormap: Colormap, low: f64, high: f64) -> Div {
+    const BLOCKS: usize = 32;
+    v_flex()
+        .items_end()
+        .gap_0p5()
+        .child(format_value(high))
+        .child(
+            v_flex()
+                .w(px(6.0))
+                .h(px(80.0))
+                .rounded_sm()
+                .overflow_hidden()
+                .children((0..BLOCKS).rev().map(|block| {
+                    let [r, g, b] = colormap.color((block as f64 + 0.5) / BLOCKS as f64);
+                    div()
+                        .w_full()
+                        .flex_1()
+                        .bg(rgb(u32::from_be_bytes([0, r, g, b])))
+                })),
+        )
+        .child(format_value(low))
+}
+
 fn file_name(path: &Path) -> String {
     path.file_name()
         .map(|name| name.to_string_lossy().into_owned())
@@ -1847,7 +2213,7 @@ fn opacity_slider(load_id: u64, cx: &mut Context<Viewer>) -> (Entity<SliderState
 
 #[cfg(test)]
 mod tests {
-    use super::{Layout, ViewPlane, format_value, grid_columns, size};
+    use super::{Layout, PRESETS, Preset, ViewPlane, format_value, grid_columns, size};
 
     #[test]
     fn grids_make_cells_as_large_as_possible() {
@@ -1880,5 +2246,19 @@ mod tests {
     fn values_are_short() {
         assert_eq!(format_value(-1024.0), "-1024");
         assert_eq!(format_value(3.81234), "3.812");
+    }
+
+    #[test]
+    fn presets_go_from_low_to_high() {
+        for (_, presets) in PRESETS {
+            for (name, preset) in *presets {
+                match *preset {
+                    Preset::Limits(low, high) => assert!(low < high, "{name}"),
+                    Preset::Percentiles(low, high) => {
+                        assert!((0.0..high).contains(&low) && high <= 1.0, "{name}");
+                    }
+                }
+            }
+        }
     }
 }
