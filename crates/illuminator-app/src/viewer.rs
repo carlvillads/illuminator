@@ -29,7 +29,7 @@ use std::sync::Arc;
 
 use crate::assets::Carbon;
 use crate::shortcuts::{self, *};
-use crate::zoom::Zoom;
+use crate::zoom::{Visible, Zoom};
 
 const SIDEBAR_WIDTH: f32 = 240.0;
 const SCROLL_STEP: f32 = 20.0;
@@ -158,6 +158,16 @@ struct View {
     image_pixels: (usize, usize),
     image_size: Size<f32>,
     zoom: Zoom,
+    fit: (f64, f64),
+    visible: Visible,
+}
+
+#[derive(Clone, Copy)]
+struct PanDrag {
+    axis: ViewPlane,
+    last: Point<Pixels>,
+    image_size: Size<f32>,
+    fit: (f64, f64),
 }
 
 struct Hit {
@@ -167,6 +177,7 @@ struct Hit {
     t: f64,
     in_view: (f64, f64),
     image_size: Size<f32>,
+    fit: (f64, f64),
 }
 
 struct FrameSlider {
@@ -250,7 +261,7 @@ pub struct Viewer {
     frame_slider: Option<FrameSlider>,
     contrast_drag: Option<(usize, Point<Pixels>)>,
     zoom: [Zoom; 3],
-    pan_drag: Option<(ViewPlane, Point<Pixels>, Size<f32>)>,
+    pan_drag: Option<PanDrag>,
     scroll_remainder: f32,
     active_panel: (usize, ViewPlane),
     focus_handle: FocusHandle,
@@ -799,7 +810,7 @@ impl Viewer {
     fn crosshair(&self, view: &View, scale: f32) -> Option<[Div; 2]> {
         let display = &self.layers[view.base].display;
         let plane = display.plane(view.axis, self.radiological);
-        let (s, t) = view.zoom.to_view(plane.project(display.cursor()));
+        let (s, t) = view.visible.to_view(plane.project(display.cursor()));
         if !(0.0..=1.0).contains(&s) || !(0.0..=1.0).contains(&t) {
             return None;
         }
@@ -989,11 +1000,19 @@ impl Viewer {
             .enumerate()
             .map(|(n, (base, axis))| {
                 let plane = self.layers[base].display.plane(axis, self.radiological);
-                let image_pixels = fit_size(
-                    &plane,
+                let (width, height) = (
                     (cell.width * scale) as usize,
                     (cell.height * scale) as usize,
                 );
+                let whole = fit_size(&plane, width, height);
+                let fit = (
+                    whole.0 as f64 / width.max(1) as f64,
+                    whole.1 as f64 / height.max(1) as f64,
+                );
+                let zoom = self.zoom[axis.index()];
+                let visible = zoom.visible(fit);
+                // the visible part may have another shape than the whole plane so fit it again
+                let image_pixels = fit_size(&visible.apply(plane), width, height);
                 View {
                     origin: point(
                         (n % columns) as f32 * cell.width,
@@ -1005,7 +1024,9 @@ impl Viewer {
                     layers: if overlaid { 0..count } else { base..base + 1 },
                     image_pixels,
                     image_size: size(image_pixels.0 as f32 / scale, image_pixels.1 as f32 / scale),
-                    zoom: self.zoom[axis.index()],
+                    zoom,
+                    fit,
+                    visible,
                 }
             })
             .collect()
@@ -1029,7 +1050,7 @@ impl Viewer {
                 f64::from((local_x - left) / view.image_size.width),
                 f64::from(1.0 - (local_y - top) / view.image_size.height),
             );
-            let (s, t) = view.zoom.to_plane(in_view);
+            let (s, t) = view.visible.to_plane(in_view);
             Some(Hit {
                 base: view.base,
                 axis: view.axis,
@@ -1037,6 +1058,7 @@ impl Viewer {
                 t,
                 in_view,
                 image_size: view.image_size,
+                fit: view.fit,
             })
         })
     }
@@ -1063,7 +1085,7 @@ impl Viewer {
             let pixels = f64::from(f32::from(event.delta.pixel_delta(px(SCROLL_STEP)).y));
             let zoom = &mut self.zoom[hit.axis.index()];
             // 2^x should make the zooming feel even across different zooms
-            *zoom = zoom.zoom_at((pixels / ZOOM_SPEED).exp2(), hit.in_view);
+            *zoom = zoom.zoom_at((pixels / ZOOM_SPEED).exp2(), hit.in_view, hit.fit);
             cx.notify();
             return;
         }
@@ -1083,40 +1105,51 @@ impl Viewer {
     }
 
     fn start_pan(&mut self, position: Point<Pixels>, window: &Window) {
-        self.pan_drag = self
-            .hit(position, window)
-            .map(|hit| (hit.axis, position, hit.image_size));
+        self.pan_drag = self.hit(position, window).map(|hit| PanDrag {
+            axis: hit.axis,
+            last: position,
+            image_size: hit.image_size,
+            fit: hit.fit,
+        });
     }
 
     /// moves the zoomed view with mouse
     fn drag_pan(&mut self, position: Point<Pixels>, cx: &mut Context<Self>) {
-        let Some((axis, last, image)) = self.pan_drag else {
+        let Some(drag) = self.pan_drag else {
             return;
         };
-        let dx = f64::from(f32::from(position.x - last.x) / image.width);
+        let dx = f64::from(f32::from(position.x - drag.last.x) / drag.image_size.width);
         // y is downwards
-        let dy = -f64::from(f32::from(position.y - last.y) / image.height);
-        let zoom = &mut self.zoom[axis.index()];
-        *zoom = zoom.pan((dx, dy));
-        self.pan_drag = Some((axis, position, image));
+        let dy = -f64::from(f32::from(position.y - drag.last.y) / drag.image_size.height);
+        let zoom = &mut self.zoom[drag.axis.index()];
+        *zoom = zoom.pan((dx, dy), drag.fit);
+        self.pan_drag = Some(PanDrag {
+            last: position,
+            ..drag
+        });
         cx.notify();
     }
 
     /// Zooms active view plane at the middle
-    fn zoom_active(&mut self, factor: f64, cx: &mut Context<Self>) {
-        if let Some((_, axis)) = self.active() {
-            let zoom = &mut self.zoom[axis.index()];
-            *zoom = zoom.zoom_at(factor, (0.5, 0.5));
-            cx.notify();
-        }
+    fn zoom_active(&mut self, factor: f64, window: &Window, cx: &mut Context<Self>) {
+        let Some(active) = self.active() else {
+            return;
+        };
+        let views = self.views(window);
+        let Some(view) = views.iter().find(|view| (view.base, view.axis) == active) else {
+            return;
+        };
+        let zoom = &mut self.zoom[view.axis.index()];
+        *zoom = zoom.zoom_at(factor, (0.5, 0.5), view.fit);
+        cx.notify();
     }
 
-    fn zoom_in(&mut self, _: &ZoomIn, _: &mut Window, cx: &mut Context<Self>) {
-        self.zoom_active(2.0_f64.sqrt(), cx);
+    fn zoom_in(&mut self, _: &ZoomIn, window: &mut Window, cx: &mut Context<Self>) {
+        self.zoom_active(2.0_f64.sqrt(), window, cx);
     }
 
-    fn zoom_out(&mut self, _: &ZoomOut, _: &mut Window, cx: &mut Context<Self>) {
-        self.zoom_active(0.5_f64.sqrt(), cx);
+    fn zoom_out(&mut self, _: &ZoomOut, window: &mut Window, cx: &mut Context<Self>) {
+        self.zoom_active(0.5_f64.sqrt(), window, cx);
     }
 
     fn reset_zoom(&mut self, _: &ZoomReset, _: &mut Window, cx: &mut Context<Self>) {
@@ -1143,7 +1176,7 @@ impl Viewer {
             if width == 0 || height == 0 {
                 continue;
             }
-            let plane = view.zoom.apply(
+            let plane = view.visible.apply(
                 self.layers[view.base]
                     .display
                     .plane(view.axis, self.radiological),
