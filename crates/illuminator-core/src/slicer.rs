@@ -9,6 +9,7 @@ use crate::volume::NiiVolume;
 use crate::voxel::{self, Endian, Scalar, with_scalar};
 
 const INVALID_LABEL: [u8; 4] = [255, 0, 255, 255];
+const OUTLINE_WIDTH: usize = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Colormap {
@@ -62,12 +63,15 @@ pub enum Coloring {
         // below min are transparent
         clip_low: bool,
     },
-    Labels,
+    Labels {
+        /// Only outlines
+        outline: bool,
+    },
 }
 
 impl Coloring {
     pub fn is_labels(self) -> bool {
-        matches!(self, Self::Labels)
+        matches!(self, Self::Labels { .. })
     }
 }
 
@@ -204,20 +208,23 @@ impl SampledSlice {
                         }
                     });
             }
-            (Samples::Labels(labels), _) => {
-                out.par_chunks_mut(row)
-                    .zip(labels.par_chunks(row))
-                    .for_each(|(line, labels)| {
-                        for (pixel, label) in line.iter_mut().zip(labels) {
-                            *pixel = match *label {
-                                LabelSample::Outside => [0; 4],
-                                LabelSample::Invalid => INVALID_LABEL,
-                                LabelSample::Id(id) => label_color(id),
-                            };
+            (Samples::Labels(labels), coloring) => {
+                let outline = matches!(coloring, Coloring::Labels { outline: true });
+                let (width, height) = (self.width, self.height);
+                out.par_chunks_mut(row).enumerate().for_each(|(y, line)| {
+                    for (x, pixel) in line.iter_mut().enumerate() {
+                        if outline && !on_edge(labels, width, height, x, y) {
+                            continue;
                         }
-                    });
+                        *pixel = match labels[y * width + x] {
+                            LabelSample::Outside => [0; 4],
+                            LabelSample::Invalid => INVALID_LABEL,
+                            LabelSample::Id(id) => label_color(id),
+                        };
+                    }
+                });
             }
-            (Samples::Intensity(_), Coloring::Labels) => {}
+            (Samples::Intensity(_), Coloring::Labels { .. }) => {}
         }
         SliceImage {
             width: self.width,
@@ -319,6 +326,17 @@ impl<'a, T: Scalar> Voxels<'a, T> {
 /// voxel coordinate to index from 0..size-1
 fn clamp_index(coordinate: f64, size: usize) -> usize {
     (coordinate as usize).min(size - 1)
+}
+
+fn on_edge(labels: &[LabelSample], width: usize, height: usize, x: usize, y: usize) -> bool {
+    let label = labels[y * width + x];
+    let differs = |x: usize, y: usize| labels[y * width + x] != label;
+    (1..=OUTLINE_WIDTH).any(|d| {
+        (x >= d && differs(x - d, y))
+            || (x + d < width && differs(x + d, y))
+            || (y >= d && differs(x, y - d))
+            || (y + d < height && differs(x, y + d))
+    })
 }
 
 fn polynomial(coefficients: &[[f64; 3]; 7], t: f64) -> [f64; 3] {
@@ -630,14 +648,14 @@ mod tests {
             ..Fixture::default()
         };
         let volume = load(&dir, &labels, "labels.nii");
-        let frame0 = render_axial(&volume, Coloring::Labels, 0);
+        let frame0 = render_axial(&volume, Coloring::Labels { outline: false }, 0);
         let row = 2;
         assert_eq!(pixel(&frame0, 0, row), [0, 0, 0, 0]);
         assert_eq!(pixel(&frame0, 1, row), label_color(300));
         assert_eq!(pixel(&frame0, 2, row), label_color(1000));
         assert_eq!(pixel(&frame0, 3, row), label_color(16_777_217));
 
-        let frame1 = render_axial(&volume, Coloring::Labels, 1);
+        let frame1 = render_axial(&volume, Coloring::Labels { outline: false }, 1);
         assert_eq!(pixel(&frame1, 0, row), label_color(300));
     }
 
@@ -670,7 +688,7 @@ mod tests {
         // labels need their own nearest-voxel samples
         assert!(
             samples
-                .colorize(Coloring::Labels)
+                .colorize(Coloring::Labels { outline: false })
                 .pixels
                 .iter()
                 .all(|&b| b == 0)
@@ -717,5 +735,19 @@ mod tests {
         assert_eq!(fit_size(&plane, 400, 400), (400, 300));
         assert_eq!(fit_size(&plane, 400, 150), (200, 150));
         assert_eq!(fit_size(&plane, 0, 150), (0, 0));
+    }
+
+    #[test]
+    fn outlines_only_draw_edges() {
+        let dir = tempfile::tempdir().unwrap();
+        let halves = Fixture {
+            datatype: DataType::I32,
+            value: |i| if i % 4 == 0 { 0.0 } else { 1.0 },
+            ..Fixture::default()
+        };
+        let volume = load(&dir, &halves, "halves.nii");
+        let image = render_axial(&volume, Coloring::Labels { outline: true }, 0);
+        let alpha = |col| pixel(&image, col, 1)[3];
+        assert_eq!([alpha(0), alpha(1), alpha(2), alpha(3)], [0, 255, 255, 0]);
     }
 }

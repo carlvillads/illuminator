@@ -532,6 +532,14 @@ impl Viewer {
         }
     }
 
+    fn toggle_outline(&mut self, _: &ToggleOutline, _: &mut Window, cx: &mut Context<Self>) {
+        if let Some(index) = self.selected() {
+            let display = &mut self.layers[index].display;
+            display.outline = !display.outline;
+            cx.notify();
+        }
+    }
+
     fn toggle_overlay(&mut self, _: &ToggleOverlay, _: &mut Window, cx: &mut Context<Self>) {
         let layout = if self.layout.overlaid() {
             Layout::Compare
@@ -1235,7 +1243,7 @@ impl Viewer {
             view.base
         };
         let window_text = match self.layers[windowed].display.coloring() {
-            Coloring::Labels => "Labels".to_string(),
+            Coloring::Labels { .. } => "Labels".to_string(),
             Coloring::Intensity { level, width, .. } => {
                 format!("W {} L {}", format_value(width), format_value(level))
             }
@@ -1247,7 +1255,7 @@ impl Viewer {
                 colormap,
                 ..
             } => Some(colorbar(colormap, level - width / 2.0, level + width / 2.0)),
-            Coloring::Labels => None,
+            Coloring::Labels { .. } => None,
         };
         let base = &self.layers[view.base].display;
         let (slice, count) = base.slice_position(view.axis);
@@ -1804,7 +1812,17 @@ impl Viewer {
 
         settings =
             if display.label_mode() {
-                settings.child(row("Labels").child(format!("{} labels", display.label_count())))
+                settings
+                    .child(row("Labels").child(format!("{} labels", display.label_count())))
+                    .child(
+                        Checkbox::new(id("outline"))
+                            .label("Outline")
+                            .checked(display.outline)
+                            .on_click(cx.listener(move |viewer, checked: &bool, _, cx| {
+                                viewer.layers[index].display.outline = *checked;
+                                cx.notify();
+                            })),
+                    )
             } else {
                 let window = display.window;
                 settings
@@ -2010,6 +2028,7 @@ impl Render for Viewer {
             .on_action(cx.listener(Self::auto_contrast))
             .on_action(cx.listener(Self::next_colormap))
             .on_action(cx.listener(Self::toggle_segmentation))
+            .on_action(cx.listener(Self::toggle_outline))
             .on_action(cx.listener(Self::toggle_overlay))
             .on_action(cx.listener(Self::layout_ortho))
             .on_action(cx.listener(Self::layout_compare))

@@ -106,6 +106,7 @@ pub struct VolumeDisplay {
     pub window: IntensityWindow,
     pub colormap: Colormap,
     pub clip_low: bool,
+    pub outline: bool,
     pub link_world: bool,
 }
 
@@ -126,6 +127,7 @@ impl VolumeDisplay {
             window,
             colormap: Colormap::default(),
             clip_low: false,
+            outline: false,
             link_world: true,
         };
         display.reset_cursor();
@@ -358,7 +360,9 @@ impl VolumeDisplay {
 
     pub fn coloring(&self) -> Coloring {
         if self.label_mode {
-            Coloring::Labels
+            Coloring::Labels {
+                outline: self.outline,
+            }
         } else {
             Coloring::Intensity {
                 level: self.window.level,
@@ -623,7 +627,7 @@ mod tests {
         labels.set_frame(99).unwrap();
         assert_eq!(labels.frame(), 1);
         labels.set_label_mode(true).unwrap();
-        assert_eq!(labels.coloring(), Coloring::Labels);
+        assert_eq!(labels.coloring(), Coloring::Labels { outline: false });
         assert_eq!(labels.label_count(), 3);
 
         let other_dir = tempfile::tempdir().unwrap();

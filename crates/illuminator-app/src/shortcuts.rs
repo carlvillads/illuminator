@@ -31,6 +31,8 @@ actions!(
         NextColormap,
         /// Turns segmentation display on or off for the active volume
         ToggleSegmentation,
+        /// Draws the selected label map as outlines, or filled
+        ToggleOutline,
         /// Switches between overlaid layers and side by side columns
         ToggleOverlay,
         /// Shows or hides the selected layer
@@ -88,6 +90,7 @@ pub fn bind(cx: &mut App) {
         KeyBinding::new("i", ToggleInfo, viewer),
         KeyBinding::new("?", ShowHelp, viewer),
         KeyBinding::new("o", ToggleOverlay, viewer),
+        KeyBinding::new("shift-l", ToggleOutline, viewer),
         KeyBinding::new("v", ToggleLayer, viewer),
         KeyBinding::new("j", NextLayer, viewer),
         KeyBinding::new("k", PreviousLayer, viewer),
@@ -117,6 +120,7 @@ pub fn help() -> Vec<(String, &'static str)> {
         ("A".into(), "Auto contrast"),
         ("M".into(), "Next colormap"),
         ("L".into(), "Label map"),
+        ("Shift+L".into(), "Label outlines"),
         ("S/R/C/I".into(), "Sync/radiological/crosshair/corner text"),
         ("?".into(), "This list"),
         (format!("{SECONDARY}O"), "Open volumes"),
