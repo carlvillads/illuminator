@@ -131,20 +131,21 @@ impl NiiVolume {
 
     pub fn frame_range(&self, t: usize, progress: &Progress) -> Result<Option<Range>> {
         let h = &self.header;
-        let count = h.frame_voxels() as f64;
-        let mut min = f64::INFINITY;
-        let mut max = f64::NEG_INFINITY;
-        voxel::for_each_value(self.frame(t), h.datatype, h.endian, |index, raw| {
-            if index % 65_536 == 0 {
-                progress.report(index as f64 / count, "Measuring contrast")?;
-            }
-            let value = h.scaling.apply(raw);
-            if value.is_finite() {
-                min = min.min(value);
-                max = max.max(value);
-            }
-            Ok(())
-        })?;
+        let scaling = h.scaling;
+        let (min, max) = voxel::Values::new(self.frame(t), h.datatype, h.endian).fold(
+            progress,
+            "Measuring contrast",
+            || (f64::INFINITY, f64::NEG_INFINITY),
+            |(min, max), raw| {
+                let value = scaling.apply(raw);
+                if value.is_finite() {
+                    (min.min(value), max.max(value))
+                } else {
+                    (min, max)
+                }
+            },
+            |(a_min, a_max), (b_min, b_max)| (a_min.min(b_min), a_max.max(b_max)),
+        )?;
         progress.report(1.0, "Measured contrast")?;
         Ok((min <= max).then_some(Range { min, max }))
     }

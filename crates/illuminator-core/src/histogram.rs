@@ -22,26 +22,33 @@ impl Histogram {
             return Ok(None);
         };
         let h = volume.header();
-        let mut counts = vec![0u64; bins.max(1)];
-        let last = counts.len() - 1;
+        let bins = bins.max(1);
+        let last = bins - 1;
         let per_value = if range.max > range.min {
-            counts.len() as f64 / (range.max - range.min)
+            bins as f64 / (range.max - range.min)
         } else {
             0.0
         };
-        let total = h.frame_voxels() as f64;
-        let progress = progress.part(0.5, 0.5);
-        voxel::for_each_value(volume.frame(t), h.datatype, h.endian, |index, raw| {
-            if index % 65_536 == 0 {
-                progress.report(index as f64 / total, "Counting values")?;
-            }
-            let value = h.scaling.apply(raw);
-            if value.is_finite() {
-                let bin = ((value - range.min) * per_value) as usize;
-                counts[bin.min(last)] += 1;
-            }
-            Ok(())
-        })?;
+        let scaling = h.scaling;
+        let counts = voxel::Values::new(volume.frame(t), h.datatype, h.endian).fold(
+            &progress.part(0.5, 0.5),
+            "Counting values",
+            || vec![0u64; bins],
+            |mut counts, raw| {
+                let value = scaling.apply(raw);
+                if value.is_finite() {
+                    let bin = ((value - range.min) * per_value) as usize;
+                    counts[bin.min(last)] += 1;
+                }
+                counts
+            },
+            |mut a, b| {
+                for (a, b) in a.iter_mut().zip(b) {
+                    *a += b;
+                }
+                a
+            },
+        )?;
         progress.report(1.0, "Counted values")?;
         Ok(Some(Self {
             min: range.min,

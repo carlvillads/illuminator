@@ -196,13 +196,14 @@ impl SampledSlice {
                     clip_low,
                 },
             ) => {
+                let table = ColorTable::new(colormap);
                 out.par_chunks_mut(row)
                     .zip(values.par_chunks(row))
                     .for_each(|(line, values)| {
                         for (pixel, &value) in line.iter_mut().zip(values) {
                             let t = (f64::from(value) - level) / width + 0.5;
                             if !value.is_nan() && !(clip_low && t <= 0.0) {
-                                let [r, g, b] = colormap.color(t);
+                                let [r, g, b] = table.color(t);
                                 *pixel = [r, g, b, 255];
                             }
                         }
@@ -326,6 +327,35 @@ impl<'a, T: Scalar> Voxels<'a, T> {
 /// voxel coordinate to index from 0..size-1
 fn clamp_index(coordinate: f64, size: usize) -> usize {
     (coordinate as usize).min(size - 1)
+}
+
+enum ColorTable {
+    Gray,
+    Sampled(Vec<[u8; 3]>),
+}
+
+impl ColorTable {
+    const SIZE: usize = 1024;
+
+    fn new(colormap: Colormap) -> Self {
+        match colormap {
+            Colormap::Grayscale => Self::Gray,
+            _ => Self::Sampled(
+                (0..Self::SIZE)
+                    .map(|i| colormap.color(i as f64 / (Self::SIZE - 1) as f64))
+                    .collect(),
+            ),
+        }
+    }
+
+    fn color(&self, t: f64) -> [u8; 3] {
+        match self {
+            Self::Gray => Colormap::Grayscale.color(t),
+            Self::Sampled(colors) => {
+                colors[(t.clamp(0.0, 1.0) * (Self::SIZE - 1) as f64).round() as usize]
+            }
+        }
+    }
 }
 
 fn on_edge(labels: &[LabelSample], width: usize, height: usize, x: usize, y: usize) -> bool {
@@ -713,6 +743,23 @@ mod tests {
         let image = render_axial(&volume, clipped, 0);
         let alpha = |col| pixel(&image, col, 0)[3];
         assert_eq!([alpha(0), alpha(1), alpha(2), alpha(3)], [0, 0, 255, 255]);
+    }
+
+    #[test]
+    fn color_tables_match_the_colormaps() {
+        for colormap in Colormap::ALL {
+            let table = ColorTable::new(colormap);
+            for step in 0..=1000 {
+                let t = step as f64 / 1000.0;
+                let (sampled, exact) = (table.color(t), colormap.color(t));
+                let off = (0..3).map(|c| sampled[c].abs_diff(exact[c])).max().unwrap();
+                assert!(
+                    off <= 1,
+                    "{} at {t}: {sampled:?} vs {exact:?}",
+                    colormap.name()
+                );
+            }
+        }
     }
 
     #[test]

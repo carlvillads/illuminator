@@ -1,6 +1,10 @@
 //! Voxel datatypes, intensity scaling, raw reading.
 
+use rayon::prelude::*;
+use std::sync::atomic::{AtomicUsize, Ordering};
+
 use crate::error::{Error, Result};
+use crate::progress::Progress;
 
 // Scalar voxeltype support
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -222,9 +226,102 @@ where
     Ok(())
 }
 
+const PIECE: usize = 1 << 16;
+
+pub struct Values<'a> {
+    bytes: &'a [u8],
+    data_type: DataType,
+    endian: Endian,
+}
+
+impl<'a> Values<'a> {
+    pub fn new(bytes: &'a [u8], data_type: DataType, endian: Endian) -> Self {
+        Self {
+            bytes,
+            data_type,
+            endian,
+        }
+    }
+
+    pub fn fold<A, I, F, M>(
+        &self,
+        progress: &Progress,
+        stage: &str,
+        init: I,
+        add: F,
+        merge: M,
+    ) -> Result<A>
+    where
+        A: Send,
+        I: Fn() -> A + Sync + Send,
+        F: Fn(A, f64) -> A + Sync + Send,
+        M: Fn(A, A) -> A + Sync + Send,
+    {
+        with_scalar!(self.data_type, |T| {
+            self.fold_typed::<T, A, I, F, M>(progress, stage, init, add, merge)
+        })
+    }
+
+    fn fold_typed<T: Scalar, A, I, F, M>(
+        &self,
+        progress: &Progress,
+        stage: &str,
+        init: I,
+        add: F,
+        merge: M,
+    ) -> Result<A>
+    where
+        A: Send,
+        I: Fn() -> A + Sync + Send,
+        F: Fn(A, f64) -> A + Sync + Send,
+        M: Fn(A, A) -> A + Sync + Send,
+    {
+        let piece_types = T::SIZE * PIECE;
+        let pieces = self.bytes.len().div_ceil(piece_types).max(1);
+        let done = AtomicUsize::new(0);
+        self.bytes
+            .par_chunks(piece_types)
+            .try_fold(&init, |sum, piece| {
+                let sum = piece
+                    .chunks_exact(T::SIZE)
+                    .fold(sum, |sum, raw| add(sum, T::read(raw, self.endian)));
+                let done = done.fetch_add(1, Ordering::Relaxed) + 1;
+                progress.report(done as f64 / pieces as f64, stage)?;
+                Ok(sum)
+            })
+            .try_reduce(&init, |a, b| Ok(merge(a, b)))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
+
+    #[test]
+    fn folds_many_pieces_on_all_cores() {
+        let count = 5 * PIECE + 123;
+        let bytes: Vec<u8> = (0..count)
+            .flat_map(|i| ((i % 1000) as u16).to_le_bytes())
+            .collect();
+        let values = Values::new(&bytes, DataType::U16, Endian::Little);
+        let sum = values
+            .fold(
+                &Progress::default(),
+                "",
+                || 0.0,
+                |sum, v| sum + v,
+                |a, b| a + b,
+            )
+            .unwrap();
+        let expected: f64 = (0..count).map(|i| (i % 1000) as f64).sum();
+        assert_eq!(sum, expected);
+
+        let cancelled = Progress::new(Arc::new(AtomicBool::new(true)), |_, _| {});
+        let result = values.fold(&cancelled, "", || 0.0, |sum, v| sum + v, |a, b| a + b);
+        assert!(matches!(result, Err(Error::Cancelled)));
+    }
 
     #[test]
     fn datatype_codes() {

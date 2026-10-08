@@ -545,8 +545,24 @@ impl Viewer {
     }
 
     fn auto_contrast(&mut self, _: &AutoContrast, _: &mut Window, cx: &mut Context<Self>) {
-        if let Some(column) = self.selected() {
-            self.change(column, VolumeDisplay::auto_window, cx);
+        if let Some(index) = self.selected() {
+            self.auto_window(index, cx);
+        }
+    }
+
+    fn auto_window(&mut self, index: usize, cx: &mut Context<Self>) {
+        let layer = &mut self.layers[index];
+        let frame = layer.display.frame();
+        let counted = layer.histogram.as_ref().filter(|histogram| {
+            layer.histogram_frame == Some(frame) && histogram.max > histogram.min
+        });
+        match counted {
+            Some(histogram) => {
+                let (low, high) = (histogram.min, histogram.max);
+                layer.display.set_window_limits(low, high);
+                cx.notify();
+            }
+            None => self.change(index, VolumeDisplay::auto_window, cx),
         }
     }
 
@@ -2169,7 +2185,7 @@ impl Viewer {
                                         Some(shortcuts::CONTEXT),
                                     )
                                     .on_click(cx.listener(move |viewer, _, _, cx| {
-                                        viewer.change(index, VolumeDisplay::auto_window, cx);
+                                        viewer.auto_window(index, cx);
                                     })),
                             ),
                     )
