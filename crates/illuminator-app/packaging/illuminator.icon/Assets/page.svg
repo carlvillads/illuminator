@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="617px" height="688px" viewBox="0 0 617 688" version="1.1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+    <title>XRay</title>
+    <defs>
+        <path d="M6.4,12 L566.6,12 C568.84021,12 569.960315,12 570.815962,12.4359739 C571.56861,12.8194674 572.180533,13.4313896 572.564026,14.184038 C573,15.039685 573,16.15979 573,18.4 L573,652.6 C573,654.84021 573,655.960315 572.564026,656.815962 C572.180533,657.56861 571.56861,658.180533 570.815962,658.564026 C569.960315,659 568.84021,659 566.6,659 L6.4,659 C4.15978998,659 3.03968496,659 2.184038,658.564026 C1.43138963,658.180533 0.819467403,657.56861 0.435973903,656.815962 C0,655.960315 0,654.84021 0,652.6 L0,18.4 C0,16.15979 0,15.039685 0.435973903,14.184038 C0.819467403,13.4313896 1.43138963,12.8194674 2.184038,12.4359739 C3.03968496,12 4.15978998,12 6.4,12 Z" id="path-1"></path>
+        <filter x="-3.8%" y="-1.9%" width="106.1%" height="105.4%" filterUnits="objectBoundingBox" id="filter-2">
+            <feMorphology radius="1" operator="dilate" in="SourceAlpha" result="shadowSpreadOuter1"></feMorphology>
+            <feOffset dx="-4" dy="5" in="shadowSpreadOuter1" result="shadowOffsetOuter1"></feOffset>
+            <feGaussianBlur stdDeviation="4" in="shadowOffsetOuter1" result="shadowBlurOuter1"></feGaussianBlur>
+            <feComposite in="shadowBlurOuter1" in2="SourceAlpha" operator="out" result="shadowBlurOuter1"></feComposite>
+            <feColorMatrix values="0 0 0 0 0   0 0 0 0 0   0 0 0 0 0  0 0 0 0.25 0" type="matrix" in="shadowBlurOuter1"></feColorMatrix>
+        </filter>
+    </defs>
+    <g id="Symbols" stroke="none" stroke-width="1" fill="none" fill-rule="evenodd">
+        <g id="Artwork" transform="translate(-100, -74)">
+            <g id="XRay" transform="translate(412.5352, 410.0168) rotate(-2) translate(-412.5352, -410.0168)translate(126.0352, 77.0168)">
+                <g id="Page">
+                    <use fill="black" fill-opacity="1" filter="url(#filter-2)" xlink:href="#path-1"></use>
+                    <use fill-opacity="0.979738" fill="#242424" fill-rule="evenodd" xlink:href="#path-1"></use>
+                </g>
+                <g id="Body" transform="translate(0, 12)"></g>
+            </g>
+        </g>
+    </g>
+</svg>

@@ -273,12 +273,14 @@ pub struct Viewer {
     reloads: HashMap<u64, u64>,
     retired: Vec<Arc<RenderImage>>,
     _loader_events: Task<()>,
+    _open_requests: Task<()>,
 }
 
 impl Viewer {
     pub fn new(
         cache: Arc<VolumeCache>,
         files: Vec<PathBuf>,
+        mut opened: mpsc::UnboundedReceiver<Vec<PathBuf>>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -297,6 +299,23 @@ impl Viewer {
                     .is_err()
                 {
                     break; // viewer is gone here
+                }
+            }
+        });
+        let open_requests = cx.spawn_in(window, async move |this, cx| {
+            while let Some(paths) = opened.next().await {
+                let delivered = this.update_in(cx, |viewer, window, _| {
+                    for path in paths {
+                        viewer.loader.enqueue(path);
+                    }
+                    // brings the window to the front.
+                    // macOS note: it does that itself for files from Finder and the Dock, we shouldnt force it
+                    if cfg!(not(target_os = "macos")) {
+                        window.activate_window();
+                    }
+                });
+                if delivered.is_err() {
+                    break;
                 }
             }
         });
@@ -326,6 +345,7 @@ impl Viewer {
             reloads: HashMap::new(),
             retired: Vec::new(),
             _loader_events: loader_events,
+            _open_requests: open_requests,
         }
     }
 
