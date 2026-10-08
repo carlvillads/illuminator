@@ -13,6 +13,13 @@ gpui-kit.workspace = true
 futures.workspace = true
 image.workspace = true
 url.workspace = true
+interprocess.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys.workspace = true
+
+[build-dependencies]
+embed-resource.workspace = true
 
 [package.metadata.packager]
 product-name = "Illuminator"
@@ -20,6 +27,7 @@ identifier = "io.github.carlvillads.illuminator"
 description = "A viewer for medical nifti files"
 category = "Medical"
 authors = ["Carl Villads Priisholm"]
+publisher = "Carl Villads Priisholm"
 binaries = [{ path = "illuminator", main = true }]
 before-packaging-command = "cargo build --release -p illuminator-app"
 out-dir = "../../target/packages"
@@ -29,3 +37,30 @@ resources = [{ src = "packaging/macos/Assets.car", target = "Assets.car" }]
 [package.metadata.packager.macos]
 info-plist-path = "packaging/macos/Info.plist"
 minimum-system-version = "11.0"
+
+# Per-user windows installer
+[package.metadata.packager.nsis]
+installer-icon = "packaging/windows/illuminator.ico"
+preinstall-section = '''
+Section FileTypes
+  WriteRegStr SHCTX "Software\Classes\Illuminator.NIfTI" "" "NIfTI image"
+  WriteRegStr SHCTX "Software\Classes\Illuminator.NIfTI\DefaultIcon" ""
+"$INSTDIR\${MAINBINARYNAME}.exe,0"
+  WriteRegStr SHCTX "Software\Classes\Illuminator.NIfTI\shell\open\command" ""
+'"$INSTDIR\${MAINBINARYNAME}.exe" "%1"'
+WriteRegStr SHCTX "Software\Classes\.nii" "" "Illuminator.NIfTI"
+  WriteRegStr SHCTX "Software\Classes\.nii\OpenWithProgids" "Illuminator.NIfTI" ""
+  WriteRegStr SHCTX "Software\Classes\.gz\OpenWithProgids" "Illuminator.NIfTI" ""
+  System::Call "shell32::SHChangeNotify(i 0x08000000, i 0, p 0, p 0)"
+SectionEnd
+
+Section un.FileTypes
+  DeleteRegKey SHCTX "Software\Classes\Illuminator.NIfTI"
+  DeleteRegValue SHCTX "Software\Classes\.nii\OpenWithProgids" "Illuminator.NIfTI"
+  DeleteRegValue SHCTX "Software\Classes\.gz\OpenWithProgids" "Illuminator.NIfTI"
+  ReadRegStr $0 SHCTX "Software\Classes\.nii" ""
+  StrCmp $0 "Illuminator.NIfTI" 0 +2
+    DeleteRegValue SHCTX "Software\Classes\.nii" ""
+  System::Call "shell32::SHChangeNotify(i 0x08000000, i 0, p 0, p 0)"
+SectionEnd
+'''

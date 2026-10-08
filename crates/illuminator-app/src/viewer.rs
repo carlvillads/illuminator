@@ -280,7 +280,7 @@ impl Viewer {
     pub fn new(
         cache: Arc<VolumeCache>,
         files: Vec<PathBuf>,
-        mut opened: mpsc::UnboundedReceiver<PathBuf>,
+        mut opened: mpsc::UnboundedReceiver<Vec<PathBuf>>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -302,12 +302,17 @@ impl Viewer {
                 }
             }
         });
-        let open_requests = cx.spawn(async move |this, cx| {
-            while let Some(path) = opened.next().await {
-                let delivered = this.update(cx, |viewer, cx| {
-                    viewer.loader.enqueue(path);
-                    // brings window to the front
-                    cx.activate(true);
+        let open_requests = cx.spawn_in(window, async move |this, cx| {
+            while let Some(paths) = opened.next().await {
+                let delivered = this.update_in(cx, |viewer, window, _| {
+                    for path in paths {
+                        viewer.loader.enqueue(path);
+                    }
+                    // brings the window to the front.
+                    // macOS note: it does that itself for files from Finder and the Dock, we shouldnt force it
+                    if cfg!(not(target_os = "macos")) {
+                        window.activate_window();
+                    }
                 });
                 if delivered.is_err() {
                     break;
