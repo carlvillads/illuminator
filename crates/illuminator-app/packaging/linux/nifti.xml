@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
+  <mime-type type="image/x-nifti">
+    <comment>NIfTI image</comment>
+    <generic-icon name="image-x-generic" />
+    <glob pattern="*.nii" />
+    <glob pattern="*.nii.gz" />
+  </mime-type>
+</mime-info>

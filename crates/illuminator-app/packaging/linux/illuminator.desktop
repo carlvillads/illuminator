@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name={{ name }}
+{{ #if comment }}
+Comment={{ comment }}
+{{ /if }}
+Categories={{ categories }}
+Icon={{ icon }}
+Exec={{ exec }}  %F
+Terminal=false
+MimeType=image/x-nifti;
+StartupWMClass=illuminator
