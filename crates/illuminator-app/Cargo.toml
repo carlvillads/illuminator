@@ -78,4 +78,4 @@ depends = [
     "libxkbcommon-x11-0",
 ]
 desktop-template = "packaging/linux/illuminator.desktop"
-file = { "packaging/linux/nifti.xml" = "usr/share/mime/packages/illuminator.xml" }
+files = { "packaging/linux/nifti.xml" = "usr/share/mime/packages/illuminator.xml" }
