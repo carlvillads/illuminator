@@ -18,3 +18,4 @@ png = "0.18.1"
 gpui-kit = "=0.7.1"
 futures = "0.3"
 image = { version = "0.25", default-features = false }
+url = "2"
