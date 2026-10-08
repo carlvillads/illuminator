@@ -44,7 +44,6 @@ installer-icon = "packaging/windows/illuminator.ico"
 preinstall-section = '''
 Section FileTypes
   WriteRegStr SHCTX "Software\Classes\Illuminator.NIfTI" "" "NIfTI image"
-  WriteRegStr SHCTX "Software\Classes\Illuminator.NIfTI\DefaultIcon" ""
   WriteRegStr SHCTX "Software\Classes\Illuminator.NIfTI\DefaultIcon" "" "$INSTDIR\${MAINBINARYNAME}.exe,0"
   WriteRegStr SHCTX "Software\Classes\Illuminator.NIfTI\shell\open\command" "" '"$INSTDIR\${MAINBINARYNAME}.exe" "%1"'
   WriteRegStr SHCTX "Software\Classes\.nii" "" "Illuminator.NIfTI"
