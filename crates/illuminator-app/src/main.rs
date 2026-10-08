@@ -74,6 +74,7 @@ fn main() {
                 title: Some("Illuminator".into()),
                 ..Default::default()
             }),
+            app_id: Some("illuminator".into()),
             ..Default::default()
         };
         gpui_kit::open_window(options, cx, |window, cx| {

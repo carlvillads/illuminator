@@ -31,7 +31,7 @@ publisher = "Carl Villads Priisholm"
 binaries = [{ path = "illuminator", main = true }]
 before-packaging-command = "cargo build --release -p illuminator-app"
 out-dir = "../../target/packages"
-icons = ["packaging/macos/illuminator.icns"]
+icons = ["packaging/macos/illuminator.icns", "packaging/linux/icons/*.png"]
 resources = [{ src = "packaging/macos/Assets.car", target = "Assets.car" }]
 
 [package.metadata.packager.macos]
@@ -45,10 +45,9 @@ preinstall-section = '''
 Section FileTypes
   WriteRegStr SHCTX "Software\Classes\Illuminator.NIfTI" "" "NIfTI image"
   WriteRegStr SHCTX "Software\Classes\Illuminator.NIfTI\DefaultIcon" ""
-"$INSTDIR\${MAINBINARYNAME}.exe,0"
-  WriteRegStr SHCTX "Software\Classes\Illuminator.NIfTI\shell\open\command" ""
-'"$INSTDIR\${MAINBINARYNAME}.exe" "%1"'
-WriteRegStr SHCTX "Software\Classes\.nii" "" "Illuminator.NIfTI"
+  WriteRegStr SHCTX "Software\Classes\Illuminator.NIfTI\DefaultIcon" "" "$INSTDIR\${MAINBINARYNAME}.exe,0"
+  WriteRegStr SHCTX "Software\Classes\Illuminator.NIfTI\shell\open\command" "" '"$INSTDIR\${MAINBINARYNAME}.exe" "%1"'
+  WriteRegStr SHCTX "Software\Classes\.nii" "" "Illuminator.NIfTI"
   WriteRegStr SHCTX "Software\Classes\.nii\OpenWithProgids" "Illuminator.NIfTI" ""
   WriteRegStr SHCTX "Software\Classes\.gz\OpenWithProgids" "Illuminator.NIfTI" ""
   System::Call "shell32::SHChangeNotify(i 0x08000000, i 0, p 0, p 0)"
@@ -64,3 +63,19 @@ Section un.FileTypes
   System::Call "shell32::SHChangeNotify(i 0x08000000, i 0, p 0, p 0)"
 SectionEnd
 '''
+
+# Debian, Ubuntu
+[package.metadata.packager.deb]
+section = "science"
+depends = [
+    "libfontconfig1",
+    "libfreetype6",
+    "libvulkan1",
+    "libwayland-client0",
+    "libwayland-cursor0",
+    "libx11-xcb1",
+    "libxkbcommon0",
+    "libxkbcommon-x11-0",
+]
+desktop-template = "packaging/linux/illuminator.desktop"
+file = { "packaging/linux/nifti.xml" = "usr/share/mime/packages/illuminator.xml" }
