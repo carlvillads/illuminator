@@ -23,3 +23,42 @@ jobs:
           name: illuminator-windows
           path: target/packages/*-setup.exe
           if-no-files-found: error
+
+  debian:
+    name: Debian package
+    runs-on: ubuntu-latest
+    container: ubuntu:22.04
+    steps:
+      - name: Install build tools and libraries
+        run: |
+          apt-get update
+          apt-get install -y curl build-essential pkg-config libfontconfig-dev libfreetype-dev \
+            libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev libx11-xcb-dev
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo install cargo-packager --version 0.11.8 --locked
+      - run: cargo packager --release -p illuminator-app
+      - uses: actions/upload-artifact@v4
+        with:
+          name: illuminator-debian
+          path: target/packages/*.deb
+          if-no-files-found: error
+
+  debian-install:
+    name: Install on Debian 12
+    needs: debian
+    runs-on: ubuntu-latest
+    container: debian:12
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: illuminator-debian
+      - name: Install the package and check it
+        run: |
+          apt-get update
+          apt-get install -y shared-mime-info ./*.deb
+          # every library the program links to must have come with the dependencies
+          if ldd /usr/bin/illuminator | grep "not found"; then exit 1; fi
+          grep "nii.gz" /usr/share/mime/globs2
+          cat /usr/share/applications/illuminator.desktop
