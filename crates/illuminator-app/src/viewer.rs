@@ -273,12 +273,14 @@ pub struct Viewer {
     reloads: HashMap<u64, u64>,
     retired: Vec<Arc<RenderImage>>,
     _loader_events: Task<()>,
+    _open_requests: Task<()>,
 }
 
 impl Viewer {
     pub fn new(
         cache: Arc<VolumeCache>,
         files: Vec<PathBuf>,
+        mut opened: mpsc::UnboundedReceiver<PathBuf>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -297,6 +299,18 @@ impl Viewer {
                     .is_err()
                 {
                     break; // viewer is gone here
+                }
+            }
+        });
+        let open_requests = cx.spawn(async move |this, cx| {
+            while let Some(path) = opened.next().await {
+                let delivered = this.update(cx, |viewer, cx| {
+                    viewer.loader.enqueue(path);
+                    // brings window to the front
+                    cx.activate(true);
+                });
+                if delivered.is_err() {
+                    break;
                 }
             }
         });
@@ -326,6 +340,7 @@ impl Viewer {
             reloads: HashMap::new(),
             retired: Vec::new(),
             _loader_events: loader_events,
+            _open_requests: open_requests,
         }
     }
 

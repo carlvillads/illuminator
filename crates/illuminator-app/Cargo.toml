@@ -3,8 +3,29 @@ name = "illuminator-app"
 version.workspace = true
 edition.workspace = true
 
+[[bin]]
+name = "illuminator"
+path = "src/main.rs"
+
 [dependencies]
 illuminator-core = { path = "../illuminator-core" }
 gpui-kit.workspace = true
 futures.workspace = true
 image.workspace = true
+url.workspace = true
+
+[package.metadata.packager]
+product-name = "Illuminator"
+identifier = "io.github.carlvillads.illuminator"
+description = "A viewer for medical nifti files"
+category = "Medical"
+authors = ["Carl Villads Priisholm"]
+binaries = [{ path = "illuminator", main = true }]
+before-packaging-command = "cargo build --release -p illuminator-app"
+out-dir = "../../target/packages"
+icons = ["packaging/macos/illuminator.icns"]
+resources = [{ src = "packaging/macos/Assets.car", target = "Assets.car" }]
+
+[package.metadata.packager.macos]
+info-plist-path = "packaging/macos/Info.plist"
+minimum-system-version = "11.0"
