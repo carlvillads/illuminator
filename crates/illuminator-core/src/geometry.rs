@@ -408,6 +408,7 @@ mod tests {
                 offset: 352,
                 bytes: 4 * 3 * 4 * 2,
                 gzip: false,
+                start: 0,
             },
         }
     }

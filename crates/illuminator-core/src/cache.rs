@@ -2,7 +2,7 @@ use flate2::read::MultiGzDecoder;
 use std::collections::{HashMap, HashSet};
 use std::env::VarError;
 use std::fs::{self, File};
-use std::io::{BufReader, Read, Write};
+use std::io::{BufReader, Read, Seek, SeekFrom, Write};
 #[cfg(unix)]
 use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
@@ -98,10 +98,23 @@ impl VolumeCache {
         min_bytes: u64,
         progress: &Progress,
     ) -> Result<Arc<CacheLease>> {
+        self.acquire_from(source, 0, min_bytes, progress)
+    }
+
+    pub fn acquire_from(
+        &self,
+        source: &Path,
+        start: u64,
+        min_bytes: u64,
+        progress: &Progress,
+    ) -> Result<Arc<CacheLease>> {
         progress.check()?;
         let source = fs::canonicalize(source)?;
         let stamp = file_stamp(&source)?;
-        let key = cache_key(&source, stamp);
+        let mut key = cache_key(&source, stamp);
+        if start > 0 {
+            key.push_str(&format!("\nfrom {start}"));
+        }
         let target = self.directory.join(format!("{}.nii", cache_name(&key)));
         let meta = target.with_extension("nii.meta");
 
@@ -145,8 +158,14 @@ impl VolumeCache {
         let mut output = tempfile::Builder::new()
             .prefix("work-")
             .tempfile_in(&self.directory)?;
-        let total =
-            self.decompress_into(&source, &mut output, &mut writing, min_bytes, progress)?;
+        let total = self.decompress_into(
+            &source,
+            start,
+            &mut output,
+            &mut writing,
+            min_bytes,
+            progress,
+        )?;
         if total < min_bytes {
             return Err(Error::invalid("Decompressed NIfTI payload is truncated"));
         }
@@ -176,12 +195,15 @@ impl VolumeCache {
     fn decompress_into(
         &self,
         source: &Path,
+        start: u64,
         output: &mut impl Write,
         writing: &mut Writing<'_>,
         min_bytes: u64,
         progress: &Progress,
     ) -> Result<u64> {
-        let mut input = MultiGzDecoder::new(BufReader::new(File::open(source)?));
+        let mut file = File::open(source)?;
+        file.seek(SeekFrom::Start(start))?;
+        let mut input = MultiGzDecoder::new(BufReader::new(file));
         let mut buffer = vec![0u8; 1024 * 1024];
         let mut total = 0u64;
         loop {
@@ -437,6 +459,22 @@ mod tests {
                 .any(|s| s == "Using cached volume")
         );
         assert_eq!(cache_entries(cache.directory()), 1);
+    }
+
+    #[test]
+    fn decompresses_from_partway_into_a_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = VolumeCache::new(dir.path().join("cache"), 1 << 20).unwrap();
+        let source = dir.path().join("a.nrrd");
+        let bytes = data(5000, 0);
+        write_gz(&source, &bytes);
+        let gzip = fs::read(&source).unwrap();
+        fs::write(&source, [b"NRRD0004\n\n".as_slice(), &gzip].concat()).unwrap();
+
+        let none = Progress::default();
+        let lease = cache.acquire_from(&source, 10, 5000, &none).unwrap();
+        assert_eq!(fs::read(lease.path()).unwrap(), bytes);
+        assert!(cache.acquire(&source, 5000, &none).is_err());
     }
 
     #[test]

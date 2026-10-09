@@ -43,14 +43,17 @@ impl Volume {
         VolumeGeometry::new(&meta, assume_mm)?;
 
         let data = &meta.data;
-        let offset =
-            usize::try_from(data.offset).map_err(|_| Error::invalid("Data offset too large"))?;
+        let start = if data.gzip { 0 } else { data.start };
+        let offset = start
+            .checked_add(data.offset)
+            .and_then(|offset| usize::try_from(offset).ok())
+            .ok_or_else(|| Error::invalid("Data offset too large"))?;
         let needed = offset
             .checked_add(data.bytes)
             .ok_or_else(|| Error::invalid("Volume size overflow!"))?;
 
         let (data_path, lease) = if data.gzip {
-            let lease = cache.acquire(&data.path, needed as u64, progress)?;
+            let lease = cache.acquire_from(&data.path, data.start, needed as u64, progress)?;
             (lease.path().to_path_buf(), Some(lease))
         } else {
             (data.path.clone(), None)

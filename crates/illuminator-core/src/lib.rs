@@ -9,6 +9,7 @@ pub mod labels;
 pub mod loader;
 pub mod meta;
 pub mod nifti1;
+pub mod nrrd;
 pub mod progress;
 pub mod slicer;
 pub mod volume;

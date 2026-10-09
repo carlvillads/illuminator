@@ -124,6 +124,7 @@ fn from_nifti(raw: &NiftiHeader, analyze: bool, path: &Path) -> Result<VolumeMet
             path: data_path,
             offset,
             bytes: data_bytes,
+            start: 0,
         },
     })
 }
@@ -281,6 +282,7 @@ mod tests {
                 offset: 352,
                 bytes: 4 * 3 * 2 * 2,
                 gzip: false,
+                start: 0,
             }
         );
     }

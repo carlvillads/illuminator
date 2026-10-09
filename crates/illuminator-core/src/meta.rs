@@ -1,8 +1,8 @@
 use std::path::{Path, PathBuf};
 
 use crate::error::Result;
-use crate::nifti1;
 use crate::voxel::{DataType, Endian, Scaling};
+use crate::{nifti1, nrrd};
 
 pub type Mat3x4 = [[f64; 4]; 3];
 
@@ -11,6 +11,7 @@ pub enum Format {
     Nifti1,
     Nifti1Pair,
     Analyze75,
+    Nrrd,
 }
 
 impl Format {
@@ -19,6 +20,7 @@ impl Format {
             Self::Nifti1 => "NIfTI-1",
             Self::Nifti1Pair => "NIfTI-1 pair",
             Self::Analyze75 => "Analyze 7.5",
+            Self::Nrrd => "NRRD",
         }
     }
 }
@@ -40,6 +42,7 @@ pub struct Transform {
 #[derive(Debug, Clone, PartialEq)]
 pub struct DataFile {
     pub path: PathBuf,
+    pub start: u64,
     pub offset: u64,
     pub bytes: usize,
     pub gzip: bool,
@@ -61,7 +64,15 @@ pub struct VolumeMeta {
 
 impl VolumeMeta {
     pub fn read(path: &Path) -> Result<Self> {
-        nifti1::read(path)
+        let name = path
+            .file_name()
+            .map(|name| name.to_string_lossy().to_ascii_lowercase())
+            .unwrap_or_default();
+        if name.ends_with(".nrrd") || name.ends_with(".nhdr") {
+            nrrd::read(path)
+        } else {
+            nifti1::read(path)
+        }
     }
 
     pub fn width(&self) -> usize {
