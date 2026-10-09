@@ -7,13 +7,13 @@ use std::thread::JoinHandle;
 use crate::cache::VolumeCache;
 use crate::error::{Error, Result};
 use crate::progress::Progress;
-use crate::volume::{NiiVolume, Range};
+use crate::volume::{Range, Volume};
 
 const MAX_WORKERS: usize = 4;
 
 pub struct LoadedVolume {
     pub id: u64,
-    pub volume: NiiVolume,
+    pub volume: Volume,
     pub range: Option<Range>,
 }
 
@@ -233,12 +233,8 @@ fn run(inner: &Arc<Inner>) {
     }
 }
 
-fn load(
-    path: &Path,
-    cache: &VolumeCache,
-    progress: &Progress,
-) -> Result<(NiiVolume, Option<Range>)> {
-    let volume = NiiVolume::load(path, cache, &progress.part(0.0, 0.8))?;
+fn load(path: &Path, cache: &VolumeCache, progress: &Progress) -> Result<(Volume, Option<Range>)> {
+    let volume = Volume::load(path, cache, &progress.part(0.0, 0.8))?;
     let range = volume.frame_range(0, &progress.part(0.8, 0.2))?;
     Ok((volume, range))
 }

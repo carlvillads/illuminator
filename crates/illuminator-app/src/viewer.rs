@@ -969,7 +969,7 @@ impl Viewer {
         let frames = self
             .layers
             .iter()
-            .map(|column| column.display.volume().header().timepoints())
+            .map(|column| column.display.volume().meta().timepoints())
             .max()
             .unwrap_or(1);
         let last_frame = frames - 1;
@@ -2573,7 +2573,7 @@ fn tabular_nums() -> FontFeatures {
 }
 
 fn layer_details(display: &VolumeDisplay) -> Vec<(&'static str, String)> {
-    let h = display.volume().header();
+    let h = display.volume().meta();
     let geometry = display.geometry();
     vec![
         ("File", display.name()),
@@ -2585,16 +2585,16 @@ fn layer_details(display: &VolumeDisplay) -> Vec<(&'static str, String)> {
             "Voxel",
             format!(
                 "{} x {} x {} {}",
-                format_value(f64::from(h.pixdim[1])),
-                format_value(f64::from(h.pixdim[2])),
-                format_value(f64::from(h.pixdim[3])),
+                format_value(h.spacing[0]),
+                format_value(h.spacing[1]),
+                format_value(h.spacing[2]),
                 geometry.unit_name
             ),
         ),
         ("Frames", h.timepoints().to_string()),
         ("Type", h.datatype.name().to_string()),
+        ("Format", h.format.name().to_string()),
         ("Transform", geometry.transform_name.to_string()),
-        ("sform/qform", format!("{}/{}", h.sform_code, h.qform_code)),
         ("Path", display.volume().path().display().to_string()),
     ]
 }

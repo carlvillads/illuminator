@@ -1,193 +1,151 @@
-//! Reads NIfTI-1 headers
-//!
+//! Reads NIfTI-1 and Analyze 7.5 headers
 //! Should support `.nii`, `.nii.gz` files and `.hdr` + `.img` pairs.
 
+use flate2::read::MultiGzDecoder;
 use nifti::{Endianness, NiftiHeader};
+use std::fs::File;
+use std::io::{BufReader, Read};
 use std::path::{Path, PathBuf};
 
 use crate::error::{Error, Result};
+use crate::meta::{DataFile, Format, Mat3x4, SpatialUnits, Transform, VolumeMeta};
 use crate::voxel::{self, DataType, Endian, Scaling};
 
-/// Top three rows of a 4x4 affine mmtrix
-pub type Mat3x4 = [[f64; 4]; 3];
+const MAGIC: usize = 344;
 
-/// Spatial units from `xyzt_units`
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SpatialUnits {
-    Unknown,
-    Meter,
-    Millimeter,
-    Micron,
+pub fn read(path: &Path) -> Result<VolumeMeta> {
+    let header_path = header_path_for(path)?;
+    let (raw, analyze) = read_header(&header_path).map_err(|reason| {
+        Error::invalid(format!(
+            "Cannot read header {}: {reason}",
+            header_path.display()
+        ))
+    })?;
+    from_nifti(&raw, analyze, &header_path)
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum NiiKind {
-    /// `.nii`, `.nii.gz`. magic: `n+1`
-    Single,
-    /// `.hdr` + `.img`. magic: `ni1`
-    Pair,
+fn read_header(path: &Path) -> std::result::Result<(NiftiHeader, bool), String> {
+    let mut bytes = [0u8; 348];
+    let mut file = BufReader::new(File::open(path).map_err(|error| error.to_string())?);
+    let read = if is_gzip(path) {
+        MultiGzDecoder::new(file).read_exact(&mut bytes)
+    } else {
+        file.read_exact(&mut bytes)
+    };
+    read.map_err(|error| error.to_string())?;
+    let analyze = !matches!(&bytes[MAGIC..MAGIC + 4], b"n+1\0" | b"ni1\0");
+    if analyze {
+        bytes[MAGIC..MAGIC + 4].copy_from_slice(b"ni1\0");
+    }
+    let raw = NiftiHeader::from_reader(&bytes[..]).map_err(|error| match error {
+        nifti::NiftiError::Io(error) => error.to_string(),
+        other => other.to_string(),
+    })?;
+    Ok((raw, analyze))
 }
 
-#[derive(Debug, Clone)]
-pub struct Header {
-    pub kind: NiiKind,
-    pub endian: Endian,
-    pub datatype: DataType,
-    pub dim: [u16; 8], // raw dim! `dim[0]` is n dimensions
-    pub pixdim: [f32; 8],
-    pub scaling: Scaling,
-    pub cal_min: f32,
-    pub cal_max: f32,
-    pub units: SpatialUnits,
-    pub qform_code: i16,
-    pub sform_code: i16,
-    /// Voxel to world matrix from quaternion if `qform_code > 0`
-    pub qform: Option<Mat3x4>,
-    /// Voxel-to-world matrix from `srow_x/y/z` if `sform_code > 0`
-    pub sform: Option<Mat3x4>,
-    pub data_path: PathBuf,
-    pub data_offset: u64,
-    pub data_bytes: usize,
-}
-
-impl Header {
-    pub fn read(path: &Path) -> Result<Self> {
-        let raw = NiftiHeader::from_file(path).map_err(|error| {
-            let reason = match error {
-                nifti::NiftiError::Io(error) => error.to_string(),
-                other => other.to_string(),
-            };
-            Error::invalid(format!(
-                "Cannot read nifti-1 header {}: {reason}",
-                path.display()
-            ))
-        })?;
-        Self::from_nifti(&raw, path)
+fn from_nifti(raw: &NiftiHeader, analyze: bool, path: &Path) -> Result<VolumeMeta> {
+    if raw.sizeof_hdr != 348 {
+        return Err(Error::invalid("Wrong header: sizeof_hdr is not 348"));
     }
+    let format = match (&raw.magic, analyze) {
+        (_, true) => Format::Analyze75,
+        (b"n+1\0", false) => Format::Nifti1,
+        _ => Format::Nifti1Pair,
+    };
+    let endian = match raw.endianness {
+        Endianness::Big => Endian::Big,
+        Endianness::Little => Endian::Little,
+    };
+    let datatype = DataType::from_code(raw.datatype)?;
 
-    pub fn axis_size(&self, axis: usize) -> usize {
-        debug_assert!((1..=7).contains(&axis));
-        if axis > self.dim[0] as usize {
-            1
-        } else {
-            self.dim[axis] as usize
-        }
+    let ndim = usize::from(raw.dim[0]);
+    if !(2..=7).contains(&ndim) {
+        return Err(Error::invalid("Expected a scalar 2D, 3D, or 4D image"));
     }
-
-    pub fn width(&self) -> usize {
-        self.axis_size(1)
+    let axes = &raw.dim[1..=ndim];
+    if axes.iter().any(|&size| size == 0 || size > i16::MAX as u16) {
+        return Err(Error::invalid("Invalid dimension"));
     }
-
-    pub fn height(&self) -> usize {
-        self.axis_size(2)
+    if axes.iter().skip(4).any(|&size| size != 1) {
+        return Err(Error::invalid(
+            "Vector and higher dimensional images are not supported. (yet)",
+        ));
     }
+    let dims: [usize; 4] = std::array::from_fn(|i| axes.get(i).map_or(1, |&size| size.into()));
+    let data_bytes = dims.iter().try_fold(datatype.size(), |count, &size| {
+        voxel::checked_mul(count, size)
+    })?;
 
-    pub fn depth(&self) -> usize {
-        self.axis_size(3)
-    }
+    let spacing = [1, 2, 3].map(|axis| f64::from(raw.pixdim[axis]));
+    let (cal_min, cal_max) = (finite(raw.cal_min), finite(raw.cal_max));
+    let display_range = (cal_max > cal_min).then(|| (f64::from(cal_min), f64::from(cal_max)));
 
-    pub fn timepoints(&self) -> usize {
-        self.axis_size(4)
-    }
-
-    /// Voxels in one 3D frame
-    pub fn frame_voxels(&self) -> usize {
-        self.width() * self.height() * self.depth()
-    }
-
-    /// True if voxel data has to be decompreseed
-    pub fn is_gzipped(&self) -> bool {
-        is_gzip(&self.data_path)
-    }
-
-    fn from_nifti(raw: &NiftiHeader, path: &Path) -> Result<Self> {
-        if raw.sizeof_hdr != 348 {
-            return Err(Error::invalid("Wrong header: sizeof_hdr is not 348"));
-        }
-        let kind = match &raw.magic {
-            b"n+1\0" => NiiKind::Single,
-            b"ni1\0" => NiiKind::Pair,
-            _ => {
-                return Err(Error::invalid("Only nifti-1 images are supported"));
-            }
-        };
-        let endian = match raw.endianness {
-            Endianness::Little => Endian::Little,
-            Endianness::Big => Endian::Big,
-        };
-        let datatype = DataType::from_code(raw.datatype)?;
-
-        let scaling = Scaling::from_header(finite(raw.scl_slope), finite(raw.scl_inter))?;
+    // account for the different header structure of analyze
+    let (units, scaling, transform) = if analyze {
+        // analyze is always in mm
+        let scaling = Scaling::from_header(finite(raw.scl_slope), 0.0)?;
+        (SpatialUnits::Millimeter, scaling, None)
+    } else {
         let units = match raw.xyzt_units & 0x07 {
             1 => SpatialUnits::Meter,
             2 => SpatialUnits::Millimeter,
             3 => SpatialUnits::Micron,
             _ => SpatialUnits::Unknown,
         };
-        let qform_code = raw.qform_code.max(0);
-        let sform_code = raw.sform_code.max(0);
+        let scaling = Scaling::from_header(finite(raw.scl_slope), finite(raw.scl_inter))?;
+        (units, scaling, transform(raw))
+    };
 
-        let qform = (qform_code > 0).then(|| {
-            quaternion_to_matrix(
-                [raw.quatern_b, raw.quatern_c, raw.quatern_d].map(finite),
-                [raw.quatern_x, raw.quatern_y, raw.quatern_z].map(finite),
-                [raw.pixdim[1], raw.pixdim[2], raw.pixdim[3]],
-                raw.pixdim[0] < 0.0,
-            )
-        });
-        let sform = (sform_code > 0)
-            .then(|| [raw.srow_x, raw.srow_y, raw.srow_z].map(|row| row.map(f64::from)));
-
-        let ndim = usize::from(raw.dim[0]);
-        if !(2..=7).contains(&ndim) {
-            return Err(Error::invalid("Expected a scalar 2D, 3D, or 4D image"));
-        }
-        let axes = &raw.dim[1..=ndim];
-        if axes.iter().any(|&size| size == 0 || size > i16::MAX as u16) {
-            return Err(Error::invalid("Invalid dimension"));
-        }
-        if axes.iter().skip(4).any(|&size| size != 1) {
-            return Err(Error::invalid(
-                "Vector and higher dimensional images aren't supported (yet)",
-            ));
-        }
-        let voxel_count = axes.iter().try_fold(1usize, |count, &size| {
-            voxel::checked_mul(count, usize::from(size))
-        })?;
-        let data_bytes = voxel::checked_mul(voxel_count, datatype.size())?;
-
-        if !raw.vox_offset.is_finite() || raw.vox_offset < 0.0 {
-            return Err(Error::invalid("Invalid nifti data offset"));
-        }
-        let data_offset = raw.vox_offset as u64;
-        if kind == NiiKind::Single && data_offset < 352 {
-            return Err(Error::invalid("Invalid nifti data offset"));
-        }
-
-        let data_path = match kind {
-            NiiKind::Pair => image_path_for(path)?,
-            NiiKind::Single => path.to_path_buf(),
-        };
-
-        Ok(Self {
-            kind,
-            endian,
-            datatype,
-            dim: raw.dim,
-            pixdim: raw.pixdim,
-            scaling,
-            cal_min: finite(raw.cal_min),
-            cal_max: finite(raw.cal_max),
-            units,
-            qform_code,
-            sform_code,
-            qform,
-            sform,
-            data_path,
-            data_offset,
-            data_bytes,
-        })
+    if !raw.vox_offset.is_finite() || raw.vox_offset < 0.0 {
+        return Err(Error::invalid("Invalid nifti data offset"));
     }
+    let offset = raw.vox_offset as u64;
+    if format == Format::Nifti1 && offset < 352 {
+        return Err(Error::invalid("Invalid nifti data offset"));
+    }
+    let data_path = match format {
+        Format::Nifti1 => path.to_path_buf(),
+        _ => image_path_for(path)?,
+    };
+
+    Ok(VolumeMeta {
+        format,
+        dims,
+        spacing,
+        units,
+        transform,
+        datatype,
+        endian,
+        scaling,
+        display_range,
+        data: DataFile {
+            gzip: is_gzip(&data_path),
+            path: data_path,
+            offset,
+            bytes: data_bytes,
+        },
+    })
+}
+
+/// sform if possible, else qform
+fn transform(raw: &NiftiHeader) -> Option<Transform> {
+    if raw.sform_code > 0 {
+        let rows = [raw.srow_x, raw.srow_y, raw.srow_z];
+        return Some(Transform {
+            name: "sform",
+            matrix: rows.map(|row| row.map(f64::from)),
+        });
+    }
+    (raw.qform_code > 0).then(|| Transform {
+        name: "qform",
+        matrix: quaternion_to_matrix(
+            [raw.quatern_b, raw.quatern_c, raw.quatern_d].map(finite),
+            [raw.quatern_x, raw.quatern_y, raw.quatern_z].map(finite),
+            [raw.pixdim[1], raw.pixdim[2], raw.pixdim[3]],
+            raw.pixdim[0] < 0.0,
+        ),
+    })
 }
 
 /// Copy nifti_clib behaviour: 'FIXED_FLOAT' -> non finite values become 0
@@ -243,34 +201,45 @@ fn is_gzip(path: &Path) -> bool {
         .is_some_and(|ext| ext.eq_ignore_ascii_case("gz"))
 }
 
-/// finds the image file that belongs to the header file if NiiType::Pair
-fn image_path_for(header: &Path) -> Result<PathBuf> {
-    let name = header
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or_default();
-    let lower = name.to_ascii_lowercase();
-    let suffix = [".hdr.gz", ".hdr"]
-        .into_iter()
-        .find(|suffix| lower.ends_with(suffix))
-        .ok_or_else(|| Error::invalid("A two-file nifti header must use the .hdr extension"))?;
-    let stem = &name[..name.len() - suffix.len()];
-    for extension in ["img", "img.gz"] {
-        let candidate = header.with_file_name(format!("{stem}.{extension}"));
-        if candidate.is_file() {
-            return Ok(candidate);
-        }
+fn header_path_for(path: &Path) -> Result<PathBuf> {
+    match split_name(path, &[".img.gz", ".img"]) {
+        Some(stem) => find_sibling(path, stem, &["hdr", "hdr.gz"]),
+        None => Ok(path.to_path_buf()),
     }
+}
 
-    Err(Error::invalid(format!(
-        "Cannot find the .img file for {}",
-        header.display()
-    )))
+fn image_path_for(header: &Path) -> Result<PathBuf> {
+    let stem = split_name(header, &[".hdr.gz", ".hdr"]).ok_or_else(|| {
+        Error::invalid("The header of a two-file image must use the .hdr/.hdr.gz extension")
+    })?;
+    find_sibling(header, stem, &["img", "img.gz"])
+}
+
+fn split_name<'a>(path: &'a Path, suffixes: &[&str]) -> Option<&'a str> {
+    let name = path.file_name()?.to_str()?;
+    let lower = name.to_ascii_lowercase();
+    let suffix = suffixes.iter().find(|suffix| lower.ends_with(*suffix))?;
+    Some(&name[..name.len() - suffix.len()])
+}
+
+fn find_sibling(path: &Path, stem: &str, extensions: &[&str]) -> Result<PathBuf> {
+    extensions
+        .iter()
+        .map(|extension| path.with_file_name(format!("{stem}.{extension}")))
+        .find(|candidate| candidate.is_file())
+        .ok_or_else(|| {
+            Error::invalid(format!(
+                "Cannot find the {} file for {}",
+                extensions[0],
+                path.display()
+            ))
+        })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_util::Fixture;
 
     fn test_header() -> NiftiHeader {
         NiftiHeader {
@@ -289,39 +258,37 @@ mod tests {
         }
     }
 
-    fn convert(edit: impl FnOnce(&mut NiftiHeader)) -> Result<Header> {
+    fn convert(edit: impl FnOnce(&mut NiftiHeader)) -> Result<VolumeMeta> {
         let mut raw = test_header();
         edit(&mut raw);
-        Header::from_nifti(&raw, Path::new("test.nii"))
+        from_nifti(&raw, false, Path::new("test.nii"))
     }
 
     #[test]
     fn converts_valid_header() {
-        let header = convert(|_| {}).unwrap();
-        assert_eq!(header.kind, NiiKind::Single);
-        assert_eq!(header.endian, Endian::Little);
-        assert_eq!(header.datatype, DataType::I16);
+        let meta = convert(|_| {}).unwrap();
+        assert_eq!(meta.format, Format::Nifti1);
+        assert_eq!(meta.endian, Endian::Little);
+        assert_eq!(meta.datatype, DataType::I16);
+        assert_eq!(meta.dims, [4, 3, 2, 1]);
+        assert_eq!(meta.spacing, [2.0, 3.0, 4.0]);
+        assert_eq!(meta.units, SpatialUnits::Millimeter);
+        assert_eq!(meta.transform, None);
         assert_eq!(
-            (
-                header.width(),
-                header.height(),
-                header.depth(),
-                header.timepoints()
-            ),
-            (4, 3, 2, 1)
+            meta.data,
+            DataFile {
+                path: PathBuf::from("test.nii"),
+                offset: 352,
+                bytes: 4 * 3 * 2 * 2,
+                gzip: false,
+            }
         );
-        assert_eq!(header.data_bytes, 4 * 3 * 2 * 2);
-        assert_eq!(header.data_offset, 352);
-        assert_eq!(header.data_path, Path::new("test.nii"));
-        assert_eq!(header.units, SpatialUnits::Millimeter);
-        assert_eq!(header.qform, None);
-        assert_eq!(header.sform, None);
     }
 
     #[test]
     fn keeps_byte_order() {
-        let header = convert(|h| h.endianness = Endianness::Big).unwrap();
-        assert_eq!(header.endian, Endian::Big);
+        let meta = convert(|h| h.endianness = Endianness::Big).unwrap();
+        assert_eq!(meta.endian, Endian::Big);
     }
 
     #[test]
@@ -331,14 +298,14 @@ mod tests {
         let mut raw = test_header();
         raw.magic = *b"ni1\0";
         raw.vox_offset = 0.0;
-        assert!(Header::from_nifti(&raw, &path).is_err());
+        assert!(from_nifti(&raw, false, &path).is_err());
 
         let image = dir.path().join("brain.img");
         std::fs::write(&image, []).unwrap();
-        let header = Header::from_nifti(&raw, &path).unwrap();
-        assert_eq!(header.kind, NiiKind::Pair);
-        assert_eq!(header.data_path, image);
-        assert_eq!(header.data_offset, 0);
+        let meta = from_nifti(&raw, false, &path).unwrap();
+        assert_eq!(meta.format, Format::Nifti1Pair);
+        assert_eq!(meta.data.path, image);
+        assert_eq!(meta.data.offset, 0);
     }
 
     #[test]
@@ -355,30 +322,30 @@ mod tests {
 
     #[test]
     fn dimensions_past_dim0_are_ignored() {
-        let header = convert(|h| h.dim = [3, 4, 3, 2, 0, 0, 0, 0]).unwrap();
-        assert_eq!(header.timepoints(), 1);
+        let meta = convert(|h| h.dim = [3, 4, 3, 2, 0, 0, 0, 0]).unwrap();
+        assert_eq!(meta.timepoints(), 1);
 
-        let header = convert(|h| h.dim = [4, 4, 3, 2, 5, 1, 1, 1]).unwrap();
-        assert_eq!(header.timepoints(), 5);
-        assert_eq!(header.data_bytes, 4 * 3 * 2 * 5 * 2);
+        let meta = convert(|h| h.dim = [4, 4, 3, 2, 5, 1, 1, 1]).unwrap();
+        assert_eq!(meta.timepoints(), 5);
+        assert_eq!(meta.data.bytes, 4 * 3 * 2 * 5 * 2);
     }
 
     #[test]
     fn non_finite_scaling_is_ignored() {
-        let header = convert(|h| {
+        let meta = convert(|h| {
             h.scl_slope = f32::NAN;
             h.scl_inter = 5.0;
         })
         .unwrap();
-        assert_eq!(header.scaling, Scaling::default());
+        assert_eq!(meta.scaling, Scaling::default());
 
-        let header = convert(|h| {
+        let meta = convert(|h| {
             h.scl_slope = 2.0;
             h.scl_inter = f32::INFINITY;
         })
         .unwrap();
         assert_eq!(
-            header.scaling,
+            meta.scaling,
             Scaling {
                 slope: 2.0,
                 intercept: 0.0
@@ -388,7 +355,7 @@ mod tests {
 
     #[test]
     fn qform_from_quaternion() {
-        let header = convert(|h| {
+        let meta = convert(|h| {
             h.qform_code = 1;
             h.quatern_x = 10.0;
             h.quatern_y = 20.0;
@@ -396,58 +363,91 @@ mod tests {
         })
         .unwrap();
         assert_eq!(
-            header.qform,
-            Some([
-                [2.0, 0.0, 0.0, 10.0],
-                [0.0, 3.0, 0.0, 20.0],
-                [0.0, 0.0, 4.0, 30.0]
-            ])
+            meta.transform,
+            Some(Transform {
+                name: "qform",
+                matrix: [
+                    [2.0, 0.0, 0.0, 10.0],
+                    [0.0, 3.0, 0.0, 20.0],
+                    [0.0, 0.0, 4.0, 30.0]
+                ],
+            })
         );
 
-        let header = convert(|h| {
+        let meta = convert(|h| {
             h.qform_code = 1;
             h.quatern_d = 1.0;
             h.pixdim[0] = -1.0;
         })
         .unwrap();
         assert_eq!(
-            header.qform,
-            Some([
+            meta.transform.unwrap().matrix,
+            [
                 [-2.0, 0.0, 0.0, 0.0],
                 [0.0, -3.0, 0.0, 0.0],
                 [0.0, 0.0, -4.0, 0.0]
-            ])
+            ]
         );
 
-        let header = convert(|h| {
+        let meta = convert(|h| {
             h.qform_code = 1;
             h.pixdim[1] = -2.0;
         })
         .unwrap();
-        assert_eq!(header.qform.unwrap()[0][0], 1.0);
+        assert_eq!(meta.transform.unwrap().matrix[0][0], 1.0);
 
-        let header = convert(|h| h.qform_code = -1).unwrap();
-        assert_eq!(header.qform_code, 0);
-        assert_eq!(header.qform, None);
+        assert_eq!(convert(|h| h.qform_code = -1).unwrap().transform, None);
     }
 
     #[test]
-    fn sform_rows() {
-        let header = convert(|h| {
+    fn prefers_sform_to_qform() {
+        let meta = convert(|h| {
+            h.qform_code = 1;
             h.sform_code = 2;
             h.srow_x = [1.0, 0.0, 0.0, -90.0];
             h.srow_y = [0.0, 1.0, 0.0, -126.0];
             h.srow_z = [0.0, 0.0, 1.0, -72.0];
         })
         .unwrap();
-        assert_eq!(header.sform_code, 2);
         assert_eq!(
-            header.sform,
-            Some([
-                [1.0, 0.0, 0.0, -90.0],
-                [0.0, 1.0, 0.0, -126.0],
-                [0.0, 0.0, 1.0, -72.0]
-            ])
+            meta.transform,
+            Some(Transform {
+                name: "sform",
+                matrix: [
+                    [1.0, 0.0, 0.0, -90.0],
+                    [0.0, 1.0, 0.0, -126.0],
+                    [0.0, 0.0, 1.0, -72.0]
+                ],
+            })
         );
+    }
+
+    #[test]
+    fn reads_analyze_headers() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("brain.hdr");
+        let analyze = Fixture {
+            analyze: true,
+            intercept: 5.0,
+            ..Fixture::default()
+        };
+        analyze.write(&path);
+        let meta = read(&path).unwrap();
+        assert_eq!(meta.format, Format::Analyze75);
+        assert_eq!(meta.transform, None);
+        assert_eq!(meta.scaling, Scaling::default());
+        assert_eq!(meta.units, SpatialUnits::Millimeter);
+        assert_eq!(meta.data.path, dir.path().join("brain.img"));
+    }
+
+    #[test]
+    fn opens_pairs_from_either_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let header = dir.path().join("pair.hdr");
+        Fixture::default().write(&header);
+        let from_header = read(&header).unwrap();
+        assert_eq!(from_header.format, Format::Nifti1Pair);
+        assert_eq!(read(&dir.path().join("pair.img")).unwrap(), from_header);
+        assert!(read(&dir.path().join("lonely.img")).is_err());
     }
 }
