@@ -1,5 +1,6 @@
 use memmap2::Mmap;
 use std::fs::File;
+use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -24,6 +25,7 @@ pub struct Volume {
     path: PathBuf,
     id: u64,
     map: Mmap,
+    data_path: PathBuf,
     offset: usize,
     /// Keeps a decompressed cache file from being evicted.
     _lease: Option<Arc<CacheLease>>,
@@ -83,6 +85,7 @@ impl Volume {
             path: path.to_path_buf(),
             id: NEXT_ID.fetch_add(1, Ordering::Relaxed),
             map,
+            data_path,
             offset,
             _lease: lease,
         })
@@ -131,6 +134,30 @@ impl Volume {
         let index = x + h.width() * (y + h.height() * z);
         let raw = voxel::read_value(self.frame(t), index, h.datatype, h.endian)?;
         Some(h.scaling.apply(raw))
+    }
+
+    pub fn read_ahead(&self, t: usize) -> std::io::Result<u64> {
+        const BLOCK: usize = 8 << 20;
+        let frame_bytes = self.frame(0).len();
+        let start = self.offset + self.clamp_frame(t) * frame_bytes;
+        let mut file = File::open(&self.data_path)?;
+        file.seek(SeekFrom::Start(start as u64))?;
+        let mut buffer = vec![0; BLOCK.min(frame_bytes)];
+        let mut left = frame_bytes;
+        while left > 0 {
+            let read = file.read(&mut buffer[..BLOCK.min(left)])?;
+            if read == 0 {
+                break;
+            }
+            left -= read;
+        }
+        Ok((frame_bytes - left) as u64)
+    }
+
+    pub fn time_curve(&self, voxel: [usize; 3]) -> Option<Vec<f64>> {
+        (0..self.meta.timepoints())
+            .map(|t| self.sample_value(voxel, t))
+            .collect()
     }
 
     pub fn frame_range(&self, t: usize, progress: &Progress) -> Result<Option<Range>> {
@@ -248,6 +275,10 @@ mod tests {
             ..Fixture::default()
         };
         let volume = load(&dir, &four_d, "4d.nii").unwrap();
+        assert_eq!(volume.time_curve([1, 0, 0]), Some(vec![1.0, 49.0]));
+        assert_eq!(volume.time_curve([4, 0, 0]), None);
+        assert_eq!(volume.read_ahead(1).unwrap(), 4 * 3 * 4 * 2);
+        assert_eq!(volume.read_ahead(999).unwrap(), 4 * 3 * 4 * 2);
         assert_eq!(volume.sample_value([0, 0, 0], 0), Some(0.0));
         assert_eq!(volume.sample_value([0, 0, 0], 999), Some(48.0));
         assert_eq!(

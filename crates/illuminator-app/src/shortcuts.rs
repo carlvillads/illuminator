@@ -23,6 +23,8 @@ actions!(
         NextFrame,
         /// Shows the previous frame of 4D volumes
         PreviousFrame,
+        /// Plays the frames of 4D volumes
+        TogglePlay,
         /// Puts the active volume's cursor back on its center voxel
         CenterCursor,
         /// Fits the active volume's contrast to its current frame
@@ -99,6 +101,7 @@ pub fn bind(cx: &mut App) {
         KeyBinding::new("shift-down", PreviousSlices, viewer),
         KeyBinding::new("right", NextFrame, viewer),
         KeyBinding::new("left", PreviousFrame, viewer),
+        KeyBinding::new("space", TogglePlay, viewer),
         KeyBinding::new("h", CenterCursor, viewer),
         KeyBinding::new("a", AutoContrast, viewer),
         KeyBinding::new("m", NextColormap, viewer),
@@ -139,6 +142,7 @@ pub fn help() -> Vec<(String, &'static str)> {
         ("Doubleclick".into(), "Focus/unfocus view"),
         ("Hover".into(), "Values in the status bar"),
         ("1-4".into(), "Layouts"),
+        ("Space".into(), "Play/pause frames"),
         ("O".into(), "Overlay/side by side"),
         ("J/K".into(), "Next/previous layer"),
         ("V".into(), "Show/hide layer"),
