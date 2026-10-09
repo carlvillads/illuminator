@@ -1,6 +1,6 @@
 use crate::error::Result;
 use crate::progress::Progress;
-use crate::volume::NiiVolume;
+use crate::volume::Volume;
 use crate::voxel;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -12,16 +12,11 @@ pub struct Histogram {
 
 impl Histogram {
     /// Histogram of the values in frame t. None if there are none
-    pub fn of(
-        volume: &NiiVolume,
-        t: usize,
-        bins: usize,
-        progress: &Progress,
-    ) -> Result<Option<Self>> {
+    pub fn of(volume: &Volume, t: usize, bins: usize, progress: &Progress) -> Result<Option<Self>> {
         let Some(range) = volume.frame_range(t, &progress.part(0.0, 0.5))? else {
             return Ok(None);
         };
-        let h = volume.header();
+        let h = volume.meta();
         let bins = bins.max(1);
         let last = bins - 1;
         let per_value = if range.max > range.min {
@@ -86,11 +81,11 @@ mod tests {
     use crate::test_util::Fixture;
     use crate::voxel::DataType;
 
-    fn load(dir: &TempDir, fixture: &Fixture, name: &str) -> NiiVolume {
+    fn load(dir: &TempDir, fixture: &Fixture, name: &str) -> Volume {
         let path = dir.path().join(name);
         fixture.write(&path);
         let cache = VolumeCache::new(dir.path().join("cache"), 1 << 20).unwrap();
-        NiiVolume::load(&path, &cache, &Progress::default()).unwrap()
+        Volume::load(&path, &cache, &Progress::default()).unwrap()
     }
 
     #[test]

@@ -1,5 +1,6 @@
 use memmap2::Mmap;
 use std::fs::File;
+use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -7,7 +8,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use crate::cache::{CacheLease, VolumeCache};
 use crate::error::{Error, Result};
 use crate::geometry::{GeometryOptions, VolumeGeometry};
-use crate::header::Header;
+use crate::meta::VolumeMeta;
 use crate::progress::Progress;
 use crate::voxel;
 
@@ -19,40 +20,45 @@ pub struct Range {
 }
 
 /// Loaded nifti volume
-pub struct NiiVolume {
-    header: Header,
+pub struct Volume {
+    meta: VolumeMeta,
     path: PathBuf,
     id: u64,
     map: Mmap,
+    data_path: PathBuf,
     offset: usize,
     /// Keeps a decompressed cache file from being evicted.
     _lease: Option<Arc<CacheLease>>,
 }
 
-impl NiiVolume {
+impl Volume {
     pub fn load(path: &Path, cache: &VolumeCache, progress: &Progress) -> Result<Self> {
         static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
         progress.check()?;
-        let header = Header::read(path)?;
+        let meta = VolumeMeta::read(path)?;
         let assume_mm = GeometryOptions {
             // Allow unknown units, as the viewer lets the user assume mm.
             assume_mm: true,
             ..Default::default()
         };
-        VolumeGeometry::new(&header, assume_mm)?;
+        VolumeGeometry::new(&meta, assume_mm)?;
 
-        let offset = usize::try_from(header.data_offset)
-            .map_err(|_| Error::invalid("Nifti data offset too large"))?;
+        let data = &meta.data;
+        let start = if data.gzip { 0 } else { data.start };
+        let offset = start
+            .checked_add(data.offset)
+            .and_then(|offset| usize::try_from(offset).ok())
+            .ok_or_else(|| Error::invalid("Data offset too large"))?;
         let needed = offset
-            .checked_add(header.data_bytes)
-            .ok_or_else(|| Error::invalid("Nifti size overflow!"))?;
+            .checked_add(data.bytes)
+            .ok_or_else(|| Error::invalid("Volume size overflow!"))?;
 
-        let (data_path, lease) = if header.is_gzipped() {
-            let lease = cache.acquire(&header.data_path, needed as u64, progress)?;
+        let (data_path, lease) = if data.gzip {
+            let lease = cache.acquire_from(&data.path, data.start, needed as u64, progress)?;
             (lease.path().to_path_buf(), Some(lease))
         } else {
-            (header.data_path.clone(), None)
+            (data.path.clone(), None)
         };
 
         let file = File::open(&data_path)?;
@@ -62,7 +68,7 @@ impl NiiVolume {
         }
         let file_bytes = usize::try_from(info.len())
             .map_err(|_| Error::invalid("Volume data file is too large"))?;
-        voxel::validate_region(file_bytes, offset, header.data_bytes)?;
+        voxel::validate_region(file_bytes, offset, data.bytes)?;
 
         // NOTE: I haven't done anything about what happens if someone changes a uncompressed file while open.
 
@@ -75,17 +81,18 @@ impl NiiVolume {
         progress.check()?;
 
         Ok(Self {
-            header,
+            meta,
             path: path.to_path_buf(),
             id: NEXT_ID.fetch_add(1, Ordering::Relaxed),
             map,
+            data_path,
             offset,
             _lease: lease,
         })
     }
 
-    pub fn header(&self) -> &Header {
-        &self.header
+    pub fn meta(&self) -> &VolumeMeta {
+        &self.meta
     }
 
     pub fn path(&self) -> &Path {
@@ -97,30 +104,30 @@ impl NiiVolume {
     }
 
     pub fn geometry(&self, options: GeometryOptions) -> Result<VolumeGeometry> {
-        VolumeGeometry::new(&self.header, options)
+        VolumeGeometry::new(&self.meta, options)
     }
 
     /// ALL voxel bytes
     pub fn data(&self) -> &[u8] {
-        &self.map[self.offset..self.offset + self.header.data_bytes]
+        &self.map[self.offset..self.offset + self.meta.data.bytes]
     }
 
     /// Frames > available t just show the last available frame
     pub fn clamp_frame(&self, t: usize) -> usize {
-        t.min(self.header.timepoints() - 1)
+        t.min(self.meta.timepoints() - 1)
     }
 
     /// Bytes from one 3D frame
     pub fn frame(&self, t: usize) -> &[u8] {
         // Should not be able to overflow?
-        let frame_bytes = self.header.frame_voxels() * self.header.datatype.size();
+        let frame_bytes = self.meta.frame_voxels() * self.meta.datatype.size();
         let start = self.clamp_frame(t) * frame_bytes;
         &self.data()[start..start + frame_bytes]
     }
 
     /// Scaled value for one voxel, None if outside volume
     pub fn sample_value(&self, [x, y, z]: [usize; 3], t: usize) -> Option<f64> {
-        let h = &self.header;
+        let h = &self.meta;
         if x >= h.width() || y >= h.height() || z >= h.depth() {
             return None;
         }
@@ -129,8 +136,32 @@ impl NiiVolume {
         Some(h.scaling.apply(raw))
     }
 
+    pub fn read_ahead(&self, t: usize) -> std::io::Result<u64> {
+        const BLOCK: usize = 8 << 20;
+        let frame_bytes = self.frame(0).len();
+        let start = self.offset + self.clamp_frame(t) * frame_bytes;
+        let mut file = File::open(&self.data_path)?;
+        file.seek(SeekFrom::Start(start as u64))?;
+        let mut buffer = vec![0; BLOCK.min(frame_bytes)];
+        let mut left = frame_bytes;
+        while left > 0 {
+            let read = file.read(&mut buffer[..BLOCK.min(left)])?;
+            if read == 0 {
+                break;
+            }
+            left -= read;
+        }
+        Ok((frame_bytes - left) as u64)
+    }
+
+    pub fn time_curve(&self, voxel: [usize; 3]) -> Option<Vec<f64>> {
+        (0..self.meta.timepoints())
+            .map(|t| self.sample_value(voxel, t))
+            .collect()
+    }
+
     pub fn frame_range(&self, t: usize, progress: &Progress) -> Result<Option<Range>> {
-        let h = &self.header;
+        let h = &self.meta;
         let scaling = h.scaling;
         let (min, max) = voxel::Values::new(self.frame(t), h.datatype, h.endian).fold(
             progress,
@@ -159,14 +190,14 @@ mod tests {
     use crate::test_util::Fixture;
     use crate::voxel::DataType;
 
-    fn load(dir: &TempDir, fixture: &Fixture, name: &str) -> Result<NiiVolume> {
+    fn load(dir: &TempDir, fixture: &Fixture, name: &str) -> Result<Volume> {
         let path = dir.path().join(name);
         fixture.write(&path);
         let cache = VolumeCache::new(dir.path().join("cache"), 1 << 20)?;
-        NiiVolume::load(&path, &cache, &Progress::default())
+        Volume::load(&path, &cache, &Progress::default())
     }
 
-    fn range(volume: &NiiVolume, t: usize) -> Option<Range> {
+    fn range(volume: &Volume, t: usize) -> Option<Range> {
         volume.frame_range(t, &Progress::default()).unwrap()
     }
 
@@ -244,6 +275,10 @@ mod tests {
             ..Fixture::default()
         };
         let volume = load(&dir, &four_d, "4d.nii").unwrap();
+        assert_eq!(volume.time_curve([1, 0, 0]), Some(vec![1.0, 49.0]));
+        assert_eq!(volume.time_curve([4, 0, 0]), None);
+        assert_eq!(volume.read_ahead(1).unwrap(), 4 * 3 * 4 * 2);
+        assert_eq!(volume.read_ahead(999).unwrap(), 4 * 3 * 4 * 2);
         assert_eq!(volume.sample_value([0, 0, 0], 0), Some(0.0));
         assert_eq!(volume.sample_value([0, 0, 0], 999), Some(48.0));
         assert_eq!(
@@ -263,10 +298,7 @@ mod tests {
             ..Fixture::default()
         };
         let volume = load(&dir, &flat, "2d.nii").unwrap();
-        assert_eq!(
-            (volume.header().depth(), volume.header().timepoints()),
-            (1, 1)
-        );
+        assert_eq!((volume.meta().depth(), volume.meta().timepoints()), (1, 1));
         assert_eq!(volume.sample_value([3, 2, 0], 0), Some(11.0));
 
         let pair = load(&dir, &Fixture::default(), "pair.hdr").unwrap();
@@ -323,7 +355,7 @@ mod tests {
             .set_len(352)
             .unwrap();
         let cache = VolumeCache::new(dir.path().join("cache"), 1 << 20).unwrap();
-        assert!(NiiVolume::load(&path, &cache, &Progress::default()).is_err());
+        assert!(Volume::load(&path, &cache, &Progress::default()).is_err());
     }
 
     #[test]

@@ -5,7 +5,7 @@ use std::path::Path;
 use flate2::Compression;
 use flate2::write::GzEncoder;
 
-use crate::header::Mat3x4;
+use crate::meta::Mat3x4;
 use crate::voxel::DataType;
 
 pub struct Fixture {
@@ -17,6 +17,7 @@ pub struct Fixture {
     pub sform: Mat3x4,
     /// The stored (unscaled) value of voxel number `i`.
     pub value: fn(usize) -> f64,
+    pub analyze: bool,
 }
 
 impl Default for Fixture {
@@ -33,6 +34,7 @@ impl Default for Fixture {
                 [0.0, 0.0, 1.0, 0.0],
             ],
             value: |i| i as f64,
+            analyze: false,
         }
     }
 }
@@ -112,7 +114,12 @@ impl Fixture {
                 put(280 + 16 * row + 4 * col, &f32_bytes(value as f32));
             }
         }
-        put(344, if pair { b"ni1\0" } else { b"n+1\0" });
+        let magic = match (self.analyze, pair) {
+            (true, _) => &[0; 4],
+            (false, true) => b"ni1\0",
+            (false, false) => b"n+1\0",
+        };
+        put(344, magic);
         bytes
     }
 

@@ -4,12 +4,12 @@ use std::sync::Arc;
 
 use crate::error::{Error, Result};
 use crate::geometry::{GeometryOptions, Point3D, SlicePlane, ViewPlane, VolumeGeometry};
-use crate::header::{Header, SpatialUnits};
 use crate::labels::LabelTable;
 use crate::loader::LoadedVolume;
+use crate::meta::{SpatialUnits, VolumeMeta};
 use crate::progress::Progress;
 use crate::slicer::{Coloring, Colormap, SampledSlice, Slice};
-use crate::volume::{NiiVolume, Range};
+use crate::volume::{Range, Volume};
 
 const LABEL_LIMIT: usize = 1 << 20;
 
@@ -25,7 +25,7 @@ pub struct SampleKey {
 }
 
 pub struct SliceJob {
-    pub volume: Arc<NiiVolume>,
+    pub volume: Arc<Volume>,
     pub key: SampleKey,
 }
 
@@ -74,9 +74,9 @@ impl IntensityWindow {
         })
     }
 
-    fn initial(header: &Header, range: Option<Range>) -> Result<Self> {
-        let (low, high) = if header.cal_max > header.cal_min {
-            (f64::from(header.cal_min), f64::from(header.cal_max))
+    fn initial(meta: &VolumeMeta, range: Option<Range>) -> Result<Self> {
+        let (low, high) = if let Some(suggested) = meta.display_range {
+            suggested
         } else if let Some(range) = range {
             (range.min, range.max)
         } else {
@@ -96,7 +96,7 @@ pub struct PanelLabels {
 }
 
 pub struct VolumeDisplay {
-    volume: Arc<NiiVolume>,
+    volume: Arc<Volume>,
     geometry: VolumeGeometry,
     options: GeometryOptions,
     cursor: Point3D,
@@ -115,7 +115,7 @@ impl VolumeDisplay {
     pub fn new(loaded: LoadedVolume) -> Result<Self> {
         let options = GeometryOptions::default();
         let geometry = loaded.volume.geometry(options)?;
-        let window = IntensityWindow::initial(loaded.volume.header(), loaded.range)?;
+        let window = IntensityWindow::initial(loaded.volume.meta(), loaded.range)?;
         let mut display = Self {
             volume: Arc::new(loaded.volume),
             geometry,
@@ -135,7 +135,7 @@ impl VolumeDisplay {
         Ok(display)
     }
 
-    pub fn volume(&self) -> &NiiVolume {
+    pub fn volume(&self) -> &Volume {
         &self.volume
     }
 
@@ -177,12 +177,11 @@ impl VolumeDisplay {
     }
 
     pub fn units_unknown(&self) -> bool {
-        self.volume.header().units == SpatialUnits::Unknown
+        self.volume.meta().units == SpatialUnits::Unknown
     }
 
     pub fn can_be_anatomical(&self) -> bool {
-        let h = self.volume.header();
-        (h.sform.is_some() || h.qform.is_some()) && self.geometry.units_known
+        self.volume.meta().transform.is_some() && self.geometry.units_known
     }
 
     pub fn world_linked(&self) -> bool {
@@ -190,7 +189,7 @@ impl VolumeDisplay {
     }
 
     pub fn reset_cursor(&mut self) {
-        let h = self.volume.header();
+        let h = self.volume.meta();
         let center = Point3D::new(
             ((h.width() - 1) / 2) as f64,
             ((h.height() - 1) / 2) as f64,
@@ -367,7 +366,7 @@ impl VolumeDisplay {
         }
     }
 
-    pub fn shared_volume(&self) -> Arc<NiiVolume> {
+    pub fn shared_volume(&self) -> Arc<Volume> {
         Arc::clone(&self.volume)
     }
 
@@ -503,7 +502,7 @@ mod tests {
         let path = dir.path().join("display.nii");
         fixture.write(&path);
         let cache = VolumeCache::new(dir.path().join("cache"), 1 << 20).unwrap();
-        let volume = NiiVolume::load(&path, &cache, &Progress::default()).unwrap();
+        let volume = Volume::load(&path, &cache, &Progress::default()).unwrap();
         let range = volume.frame_range(0, &Progress::default()).unwrap();
         VolumeDisplay::new(LoadedVolume {
             id: 1,
@@ -526,21 +525,14 @@ mod tests {
     fn calibration_overrides_the_measured_range() {
         let dir = tempfile::tempdir().unwrap();
         let display = display(&dir, &Fixture::default());
-        let mut header = display.volume().header().clone();
+        let mut meta = display.volume().meta().clone();
         let range = Some(Range {
             min: 0.0,
             max: 47.0,
         });
-        assert_eq!(
-            IntensityWindow::initial(&header, range).unwrap().level,
-            23.5
-        );
-        header.cal_min = 10.0;
-        header.cal_max = 20.0;
-        assert_eq!(
-            IntensityWindow::initial(&header, range).unwrap().level,
-            15.0
-        );
+        assert_eq!(IntensityWindow::initial(&meta, range).unwrap().level, 23.5);
+        meta.display_range = Some((10.0, 20.0));
+        assert_eq!(IntensityWindow::initial(&meta, range).unwrap().level, 15.0);
     }
 
     #[test]

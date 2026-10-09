@@ -45,6 +45,8 @@ carbon_icons! {
     Help => "help.svg",
     Link => "sync-settings.svg",
     Ortho => "3D-MPR-Toggle.svg",
+    Pause => "pause.svg",
+    Play => "play.svg",
     Radiological => "reflect--horizontal.svg",
     Single => "array-users.svg",
     View => "view.svg",

@@ -3,7 +3,7 @@
 use std::ops::{Add, Index, IndexMut, Mul, Neg, Sub};
 
 use crate::error::{Error, Result};
-use crate::header::{Header, Mat3x4, SpatialUnits};
+use crate::meta::{Mat3x4, SpatialUnits, VolumeMeta};
 
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct Point3D {
@@ -251,8 +251,8 @@ pub struct VolumeGeometry {
 }
 
 impl VolumeGeometry {
-    pub fn new(header: &Header, options: GeometryOptions) -> Result<Self> {
-        let (factor, units_known, unit_name) = match header.units {
+    pub fn new(meta: &VolumeMeta, options: GeometryOptions) -> Result<Self> {
+        let (factor, units_known, unit_name) = match meta.units {
             SpatialUnits::Meter => (1000.0, true, "meters"),
             SpatialUnits::Millimeter => (1.0, true, "mm"),
             SpatialUnits::Micron => (0.001, true, "microns"),
@@ -264,21 +264,18 @@ impl VolumeGeometry {
         let transform = if options.native || !units_known {
             None
         } else {
-            header
-                .sform
-                .map(|matrix| (matrix, "sform"))
-                .or_else(|| header.qform.map(|matrix| (matrix, "qform")))
+            meta.transform.as_ref()
         };
         let anatomical = transform.is_some();
         let (voxel_to_world, transform_name) = match transform {
-            Some((matrix, name)) => {
-                let m = matrix.map(|row| row.map(|value| value * factor));
-                (Affine { m }, name)
+            Some(transform) => {
+                let m = transform.matrix.map(|row| row.map(|value| value * factor));
+                (Affine { m }, transform.name)
             }
             None => {
                 let mut affine = Affine::IDENTITY;
                 for (axis, row) in affine.m.iter_mut().enumerate() {
-                    let spacing = f64::from(header.pixdim[axis + 1]).abs();
+                    let spacing = meta.spacing[axis].abs();
                     let spacing = if spacing.is_finite() && spacing > 0.0 {
                         spacing
                     } else {
@@ -291,7 +288,7 @@ impl VolumeGeometry {
             }
         };
         let world_to_voxel = voxel_to_world.inverse()?;
-        let dimensions = [header.width(), header.height(), header.depth()];
+        let dimensions = [meta.width(), meta.height(), meta.depth()];
 
         let mut bounds = Bounds3D::EMPTY;
         let mut cursor_bounds = Bounds3D::EMPTY;
@@ -381,7 +378,7 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
-    use crate::header::NiiKind;
+    use crate::meta::{DataFile, Format, Transform};
     use crate::voxel::{DataType, Endian, Scaling};
 
     fn near(a: f64, b: f64) -> bool {
@@ -392,30 +389,32 @@ mod tests {
         (a - b).length() <= 1e-6
     }
 
-    /// A 4x3x4 INT16 header in millimeters (like the C++ test fixture) with this sform.
-    fn header(sform: Option<Mat3x4>) -> Header {
-        Header {
-            kind: NiiKind::Single,
-            endian: Endian::Little,
-            datatype: DataType::I16,
-            dim: [3, 4, 3, 4, 1, 1, 1, 1],
-            pixdim: [1.0; 8],
-            scaling: Scaling::default(),
-            cal_min: 0.0,
-            cal_max: 0.0,
+    fn header(sform: Option<Mat3x4>) -> VolumeMeta {
+        VolumeMeta {
+            format: Format::Nifti1,
+            dims: [4, 3, 4, 1],
+            spacing: [1.0; 3],
             units: SpatialUnits::Millimeter,
-            qform_code: 0,
-            sform_code: if sform.is_some() { 1 } else { 0 },
-            qform: None,
-            sform,
-            data_path: PathBuf::from("test.nii"),
-            data_offset: 352,
-            data_bytes: 4 * 3 * 4 * 2,
+            transform: sform.map(|matrix| Transform {
+                name: "sform",
+                matrix,
+            }),
+            datatype: DataType::I16,
+            endian: Endian::Little,
+            scaling: Scaling::default(),
+            display_range: None,
+            data: DataFile {
+                path: PathBuf::from("test.nii"),
+                offset: 352,
+                bytes: 4 * 3 * 4 * 2,
+                gzip: false,
+                start: 0,
+            },
         }
     }
 
-    fn geometry(header: &Header) -> VolumeGeometry {
-        VolumeGeometry::new(header, GeometryOptions::default()).unwrap()
+    fn geometry(meta: &VolumeMeta) -> VolumeGeometry {
+        VolumeGeometry::new(meta, GeometryOptions::default()).unwrap()
     }
 
     const FLIP: Mat3x4 = [
@@ -518,28 +517,6 @@ mod tests {
     }
 
     #[test]
-    fn prefers_sform_then_qform() {
-        let flip_z = [
-            [1.0, 0.0, 0.0, 0.0],
-            [0.0, 1.0, 0.0, 0.0],
-            [0.0, 0.0, -1.0, 0.0],
-        ];
-        let mut h = header(None);
-        h.qform = Some(flip_z);
-        h.qform_code = 1;
-        let geo = geometry(&h);
-        assert_eq!(geo.transform_name, "qform");
-        assert_eq!(
-            geo.voxel_to_world.point(Point3D::new(0.0, 0.0, 1.0)).z,
-            -1.0
-        );
-
-        h.sform = Some(FLIP);
-        h.sform_code = 1;
-        assert_eq!(geometry(&h).transform_name, "sform");
-    }
-
-    #[test]
     fn unknown_units_are_not_assumed() {
         let assume_mm = GeometryOptions {
             assume_mm: true,
@@ -556,15 +533,14 @@ mod tests {
         assert_eq!(assumed.unit_name, "assumed mm");
 
         // Without any transform, assuming millimeters still gives native axes.
-        h.sform = None;
-        h.sform_code = 0;
+        h.transform = None;
         assert!(!VolumeGeometry::new(&h, assume_mm).unwrap().anatomical);
     }
 
     #[test]
     fn native_axes_use_voxel_spacing() {
         let mut h = header(Some(FLIP));
-        h.pixdim = [1.0, -2.0, 3.0, 0.0, 1.0, 1.0, 1.0, 1.0];
+        h.spacing = [-2.0, 3.0, 0.0];
         let native = GeometryOptions {
             native: true,
             ..Default::default()

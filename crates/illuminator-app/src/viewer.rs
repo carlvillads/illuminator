@@ -3,6 +3,7 @@
 use futures::StreamExt;
 use futures::channel::mpsc;
 use gpui_kit::component::button::{Button, ButtonVariants};
+use gpui_kit::component::chart::LineChart;
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::hover_card::HoverCard;
 use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
@@ -20,12 +21,16 @@ use illuminator_core::histogram::Histogram;
 use illuminator_core::labels::label_color;
 use illuminator_core::loader::{LoadState, VolumeLoader};
 use illuminator_core::slicer::{Coloring, Colormap, SampledSlice, SliceImage, fit_size};
+use illuminator_core::volume::Volume;
 use image::{Frame, RgbaImage};
+use std::cell::Cell;
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::sync::Arc;
+use std::time::Duration;
 
 use crate::assets::Carbon;
 use crate::shortcuts::{self, *};
@@ -40,6 +45,8 @@ const CORNER_TEXT: f32 = 10.0;
 const HISTOGRAM_BINS: usize = 128;
 const HISTOGRAM_HEIGHT: f32 = 56.0;
 const ZOOM_SPEED: f64 = 200.0;
+const CHART_CURVE_HEIGHT: f32 = 64.0;
+const TIMEPOINT_FRAME_RATES: [u32; 5] = [1, 2, 5, 10, 20];
 const PRESETS: &[(&str, &[(&str, Preset)])] = &[
     (
         "CT (HU)",
@@ -141,6 +148,8 @@ struct Layer {
     histogram: Option<Histogram>,
     histogram_frame: Option<usize>,
     histogram_pending: bool,
+    curve: Option<TimeCurve>,
+    curve_pending: bool,
     load_id: u64,
     visible: bool,
     opacity: f32,
@@ -160,6 +169,12 @@ struct View {
     zoom: Zoom,
     fit: (f64, f64),
     visible: Visible,
+}
+
+struct TimeCurve {
+    volume: u64,
+    voxel: [usize; 3],
+    values: Vec<f64>,
 }
 
 #[derive(Clone, Copy)]
@@ -259,6 +274,9 @@ pub struct Viewer {
     show_crosshair: bool,
     frame: usize,
     frame_slider: Option<FrameSlider>,
+    time_playing: Option<Task<()>>,
+    time_fps: u32,
+    time_curve_bounds: Rc<Cell<Bounds<Pixels>>>,
     contrast_drag: Option<(usize, Point<Pixels>)>,
     zoom: [Zoom; 3],
     pan_drag: Option<PanDrag>,
@@ -331,6 +349,9 @@ impl Viewer {
             show_crosshair: true,
             frame: 0,
             frame_slider: None,
+            time_playing: None,
+            time_fps: 5,
+            time_curve_bounds: Rc::default(),
             contrast_drag: None,
             zoom: Default::default(),
             pan_drag: None,
@@ -380,6 +401,8 @@ impl Viewer {
                             histogram: None,
                             histogram_frame: None,
                             histogram_pending: false,
+                            curve: None,
+                            curve_pending: false,
                             load_id,
                             visible: true,
                             opacity: OVERLAY_OPACITY,
@@ -508,15 +531,128 @@ impl Viewer {
     }
 
     fn step_frame(&mut self, delta: isize, window: &mut Window, cx: &mut Context<Self>) {
+        self.go_to_frame(self.frame.saturating_add_signed(delta), window, cx);
+    }
+
+    fn go_to_frame(&mut self, frame: usize, window: &mut Window, cx: &mut Context<Self>) {
         let Some(slider) = &self.frame_slider else {
             return;
         };
-        let (state, last_frame) = (slider.state.clone(), slider.last_frame);
-        let frame = self.frame.saturating_add_signed(delta).min(last_frame);
+        let frame = frame.min(slider.last_frame);
         if frame != self.frame {
+            let state = slider.state.clone();
             state.update(cx, |state, cx| state.set_value(frame as f32, window, cx));
             self.set_frame(frame, cx);
         }
+    }
+
+    fn toggle_play(&mut self, _: &TogglePlay, window: &mut Window, cx: &mut Context<Self>) {
+        if self.time_playing.take().is_none() {
+            self.play(window, cx);
+        }
+        cx.notify();
+    }
+
+    fn play(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.frame_slider.is_none() {
+            return;
+        }
+        let interval = Duration::from_secs_f64(1.0 / f64::from(self.time_fps));
+        self.time_playing = Some(cx.spawn_in(window, async move |this, cx| {
+            loop {
+                let Ok((next, volumes)) =
+                    this.update_in(cx, |viewer, window, _| viewer.next_movie_frame(window))
+                else {
+                    break; // viewer is gone here
+                };
+                let timer = cx.background_executor().timer(interval);
+                let read_ahead = cx.background_spawn(async move {
+                    for volume in volumes {
+                        if let Err(error) = volume.read_ahead(next) {
+                            eprintln!("Illuminator: reading frame {}: {error}", next + 1);
+                        }
+                    }
+                });
+                loop {
+                    cx.background_executor()
+                        .timer(Duration::from_millis(5))
+                        .await;
+                    match this.update_in(cx, |viewer, window, _| viewer.frame_drawn(window)) {
+                        Ok(true) => break,
+                        Ok(false) => continue,
+                        Err(_) => return, // viewer is gone here
+                    }
+                }
+                futures::join!(timer, read_ahead);
+                let stepped = this.update_in(cx, |viewer, window, cx| {
+                    viewer.go_to_frame(next, window, cx);
+                });
+                if stepped.is_err() {
+                    break;
+                }
+            }
+        }));
+    }
+
+    fn next_movie_frame(&self, window: &Window) -> (usize, Vec<Arc<Volume>>) {
+        let last = self.frame_slider.as_ref().map_or(0, |s| s.last_frame);
+        let next = if self.frame >= last {
+            0
+        } else {
+            self.frame + 1
+        };
+        let mut shown_sagittally: Vec<usize> = self
+            .views(window)
+            .iter()
+            .filter(|view| view.axis == ViewPlane::Sagittal)
+            .flat_map(|view| view.layers.clone())
+            .collect();
+        shown_sagittally.sort_unstable();
+        shown_sagittally.dedup();
+        let volumes = shown_sagittally
+            .into_iter()
+            .map(|index| &self.layers[index])
+            .filter(|layer| layer.visible && layer.display.volume().meta().timepoints() > 1)
+            .map(|layer| layer.display.shared_volume())
+            .collect();
+        (next, volumes)
+    }
+
+    fn frame_drawn(&self, window: &Window) -> bool {
+        self.views(window).iter().all(|view| {
+            view.layers.clone().all(|index| {
+                let layer = &self.layers[index];
+                let panel = &layer.panels[view.axis.index()];
+                !layer.visible
+                    || (!panel.rendering
+                        && panel
+                            .image
+                            .as_ref()
+                            .is_some_and(|image| image.key.sample.frame == layer.display.frame()))
+            })
+        })
+    }
+
+    fn set_frames_per_second(&mut self, rate: u32, window: &mut Window, cx: &mut Context<Self>) {
+        self.time_fps = rate;
+        if self.time_playing.is_some() {
+            self.play(window, cx);
+        }
+        cx.notify();
+    }
+
+    fn pick_frame(&mut self, x: Pixels, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(index) = self.selected() else {
+            return;
+        };
+        let bounds = self.time_curve_bounds.get();
+        let frames = self.layers[index].display.volume().meta().timepoints();
+        if bounds.size.width <= px(0.0) || frames < 2 {
+            return;
+        }
+        let fraction = ((x - bounds.left()) / bounds.size.width).clamp(0.0, 1.0);
+        let frame = (fraction * (frames - 1) as f32).round() as usize;
+        self.go_to_frame(frame, window, cx);
     }
 
     fn close_window(&mut self, _: &CloseWindow, window: &mut Window, _: &mut Context<Self>) {
@@ -969,13 +1105,14 @@ impl Viewer {
         let frames = self
             .layers
             .iter()
-            .map(|column| column.display.volume().header().timepoints())
+            .map(|column| column.display.volume().meta().timepoints())
             .max()
             .unwrap_or(1);
         let last_frame = frames - 1;
         if last_frame == 0 {
             // no 4d layers left
             self.frame_slider = None;
+            self.time_playing = None;
             return;
         }
         if self
@@ -1276,7 +1413,9 @@ impl Viewer {
         };
         let layer = &mut self.layers[index];
         let frame = layer.display.frame();
-        if layer.display.label_mode()
+        // counting all voxels of every frame would slow a movie down; it counts when it stops
+        if self.time_playing.is_some()
+            || layer.display.label_mode()
             || layer.histogram_pending
             || layer.histogram_frame == Some(frame)
         {
@@ -1307,6 +1446,50 @@ impl Viewer {
                     None
                 });
                 cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn schedule_curve(&mut self, cx: &mut Context<Self>) {
+        let Some(index) = self.selected() else {
+            return;
+        };
+        let layer = &mut self.layers[index];
+        let volume = layer.display.shared_volume();
+        if volume.meta().timepoints() < 2 || layer.curve_pending {
+            return;
+        }
+        let Some((voxel, _)) = layer.display.cursor_sample() else {
+            layer.curve = None;
+            return;
+        };
+        if layer
+            .curve
+            .as_ref()
+            .is_some_and(|curve| curve.volume == volume.id() && curve.voxel == voxel)
+        {
+            return;
+        }
+        layer.curve_pending = true;
+        let load_id = layer.load_id;
+        cx.spawn(async move |viewer, cx| {
+            let curve = cx
+                .background_spawn(async move {
+                    let values = volume.time_curve(voxel)?;
+                    Some(TimeCurve {
+                        volume: volume.id(),
+                        voxel,
+                        values,
+                    })
+                })
+                .await;
+            let _ = viewer.update(cx, |viewer, cx| {
+                if let Some(layer) = viewer.layers.iter_mut().find(|l| l.load_id == load_id) {
+                    layer.curve_pending = false;
+                    layer.curve = curve;
+                    cx.notify();
+                }
             });
         })
         .detach();
@@ -2108,6 +2291,119 @@ impl Viewer {
             )
     }
 
+    fn render_time_curve(&self, index: usize, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let layer = &self.layers[index];
+        let frames = layer.display.volume().meta().timepoints();
+        if frames < 2 {
+            return None;
+        }
+        let theme = cx.theme();
+        let (muted, info, background, stroke) = (
+            theme.muted_foreground,
+            theme.info,
+            theme.secondary,
+            theme.foreground,
+        );
+        let title = section_title("Curve at cursor", muted);
+        let Some(curve) = &layer.curve else {
+            return Some(
+                v_flex()
+                    .gap_1()
+                    .child(title)
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(muted)
+                            .child("Cursor is outside the volume"),
+                    )
+                    .into_any_element(),
+            );
+        };
+
+        let finite = curve
+            .values
+            .iter()
+            .copied()
+            .filter(|value| value.is_finite());
+        let low = finite.clone().fold(0.0, f64::min);
+        let high = finite.fold(low, f64::max);
+        let high = if high > low { high } else { low + 1.0 };
+        let points: Vec<(usize, f64)> = curve
+            .values
+            .iter()
+            .map(|&value| if value.is_finite() { value } else { low })
+            .enumerate()
+            .collect();
+        let frame = layer.display.frame();
+        let value = points.get(frame).map_or(0.0, |&(_, value)| value);
+        let bounds = Rc::clone(&self.time_curve_bounds);
+        let chart = LineChart::new(points)
+            .x(|&(frame, _)| SharedString::from((frame + 1).to_string()))
+            .y(|&(_, value)| value)
+            .y_domain(low, high)
+            .y_padding(4.0, 0.0)
+            .x_axis(false)
+            .grid(false)
+            .appear(false)
+            .linear()
+            .stroke(stroke)
+            .tooltip_title(|&(frame, _)| format!("Frame {}", frame + 1).into())
+            .tooltip_value(|_, value| format_value(value).into());
+        let plot = div()
+            .id(("time-curve", index))
+            .relative()
+            .w_full()
+            .h(px(CHART_CURVE_HEIGHT))
+            .rounded_sm()
+            .bg(background)
+            .cursor_pointer()
+            .child(
+                canvas(move |area, _, _| bounds.set(area), |_, _, _, _| {})
+                    .absolute()
+                    .size_full(),
+            )
+            .child(chart)
+            .child(
+                div()
+                    .absolute()
+                    .top_0()
+                    .bottom_0()
+                    .left(relative(frame as f32 / (frames - 1) as f32))
+                    .w(px(1.0))
+                    .bg(info),
+            )
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|viewer, event: &MouseDownEvent, window, cx| {
+                    viewer.pick_frame(event.position.x, window, cx);
+                }),
+            )
+            .on_mouse_move(cx.listener(|viewer, event: &MouseMoveEvent, window, cx| {
+                if event.pressed_button == Some(MouseButton::Left) {
+                    viewer.pick_frame(event.position.x, window, cx);
+                }
+            }));
+        Some(
+            v_flex()
+                .gap_1()
+                .child(title)
+                .child(plot)
+                .child(
+                    h_flex()
+                        .justify_between()
+                        .text_xs()
+                        .text_color(muted)
+                        .child(format!(
+                            "{} \u{2013} {}",
+                            format_value(low),
+                            format_value(high)
+                        ))
+                        .child(format!("frame {}: {}", frame + 1, format_value(value))),
+                )
+                .into_any_element(),
+        )
+    }
+
     /// Menu of window presets for layer index
     fn presets_button(&self, index: usize, cx: &mut Context<Self>) -> impl IntoElement {
         let viewer = cx.entity().downgrade();
@@ -2252,6 +2548,7 @@ impl Viewer {
             };
 
         settings
+            .children(self.render_time_curve(index, cx))
             .child(
                 Checkbox::new(id("labels"))
                     .label("Label map")
@@ -2340,12 +2637,66 @@ impl Viewer {
                     h_flex()
                         .gap_2()
                         .child(div().w(px(64.0)).text_xs().text_color(muted).child("Frame"))
-                        .child(div().flex_1().child(Slider::new(&slider.state)))
+                        .child(
+                            v_flex()
+                                .flex_1()
+                                .gap_0p5()
+                                .child(Slider::new(&slider.state))
+                                .child(frame_ticks(slider.last_frame, muted)),
+                        )
                         .child(div().w(px(48.0)).text_xs().child(format!(
                             "{} / {}",
                             self.frame + 1,
                             slider.last_frame + 1
                         ))),
+                )
+            })
+            .when(self.frame_slider.is_some(), |settings| {
+                let playing = self.time_playing.is_some();
+                let viewer = cx.entity().downgrade();
+                settings.child(
+                    h_flex()
+                        .gap_2()
+                        .child(div().w(px(64.0)).text_xs().text_color(muted).child("Movie"))
+                        .child(
+                            Button::new("play")
+                                .xsmall()
+                                .icon(if playing { Carbon::Pause } else { Carbon::Play })
+                                .label(if playing { "Pause" } else { "Play" })
+                                .selected(playing)
+                                .tooltip_with_action(
+                                    "Play the frames",
+                                    &TogglePlay,
+                                    Some(shortcuts::CONTEXT),
+                                )
+                                .on_click(cx.listener(|viewer, _, window, cx| {
+                                    viewer.toggle_play(&TogglePlay, window, cx);
+                                })),
+                        )
+                        .child(
+                            Button::new("frame-rate")
+                                .ghost()
+                                .xsmall()
+                                .label(format!("{} fps", self.time_fps))
+                                .tooltip("Frames per second")
+                                .dropdown_menu(move |mut menu, _, _| {
+                                    for rate in TIMEPOINT_FRAME_RATES {
+                                        let viewer = viewer.clone();
+                                        menu = menu.item(
+                                            PopupMenuItem::new(format!("{rate} fps")).on_click(
+                                                move |_, window, cx| {
+                                                    let _ = viewer.update(cx, |viewer, cx| {
+                                                        viewer.set_frames_per_second(
+                                                            rate, window, cx,
+                                                        );
+                                                    });
+                                                },
+                                            ),
+                                        );
+                                    }
+                                    menu
+                                }),
+                        ),
                 )
             })
             .when(sync_modes, |settings| {
@@ -2371,6 +2722,8 @@ impl Render for Viewer {
         }
         self.schedule_renders(window, cx);
         self.schedule_histogram(cx);
+        self.schedule_curve(cx);
+
         let theme = cx.theme();
         let (background, foreground) = (theme.background, theme.foreground);
         v_flex()
@@ -2388,6 +2741,7 @@ impl Render for Viewer {
             .on_action(cx.listener(Self::previous_slices))
             .on_action(cx.listener(Self::next_frame))
             .on_action(cx.listener(Self::previous_frame))
+            .on_action(cx.listener(Self::toggle_play))
             .on_action(cx.listener(Self::center_cursor))
             .on_action(cx.listener(Self::auto_contrast))
             .on_action(cx.listener(Self::next_colormap))
@@ -2488,6 +2842,22 @@ fn section_title(text: impl Into<SharedString>, color: Hsla) -> Div {
         .child(text.into())
 }
 
+fn frame_ticks(last_frame: usize, color: Hsla) -> impl IntoElement {
+    div()
+        .relative()
+        .w_full()
+        .h(px(4.0))
+        .children((0..=last_frame).map(move |frame| {
+            div()
+                .absolute()
+                .top_0()
+                .h_full()
+                .w(px(1.0))
+                .left(relative(frame as f32 / last_frame as f32))
+                .bg(color)
+        }))
+}
+
 fn colormap_strip(colormap: Colormap, labels: bool, blocks: usize) -> Div {
     h_flex()
         .w_full()
@@ -2573,7 +2943,7 @@ fn tabular_nums() -> FontFeatures {
 }
 
 fn layer_details(display: &VolumeDisplay) -> Vec<(&'static str, String)> {
-    let h = display.volume().header();
+    let h = display.volume().meta();
     let geometry = display.geometry();
     vec![
         ("File", display.name()),
@@ -2585,16 +2955,16 @@ fn layer_details(display: &VolumeDisplay) -> Vec<(&'static str, String)> {
             "Voxel",
             format!(
                 "{} x {} x {} {}",
-                format_value(f64::from(h.pixdim[1])),
-                format_value(f64::from(h.pixdim[2])),
-                format_value(f64::from(h.pixdim[3])),
+                format_value(h.spacing[0]),
+                format_value(h.spacing[1]),
+                format_value(h.spacing[2]),
                 geometry.unit_name
             ),
         ),
         ("Frames", h.timepoints().to_string()),
         ("Type", h.datatype.name().to_string()),
+        ("Format", h.format.name().to_string()),
         ("Transform", geometry.transform_name.to_string()),
-        ("sform/qform", format!("{}/{}", h.sform_code, h.qform_code)),
         ("Path", display.volume().path().display().to_string()),
     ]
 }

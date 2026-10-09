@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use crate::error::{Error, Result};
 use crate::progress::Progress;
-use crate::volume::NiiVolume;
+use crate::volume::Volume;
 use crate::voxel;
 
 /// Label IDs to pallette indices
@@ -30,12 +30,12 @@ impl LabelTable {
     /// Converts frame t into palette index per voxel
     pub fn encode(
         &mut self,
-        volume: &NiiVolume,
+        volume: &Volume,
         t: usize,
         limit: usize,
         progress: &Progress,
     ) -> Result<Vec<u32>> {
-        let h = volume.header();
+        let h = volume.meta();
         let count = h.frame_voxels();
         let mut indices = Vec::with_capacity(count);
         // Skip hash map if the voxel label repeats
@@ -111,11 +111,11 @@ mod tests {
     use crate::test_util::Fixture;
     use crate::voxel::DataType;
 
-    fn load(dir: &tempfile::TempDir, fixture: &Fixture) -> NiiVolume {
+    fn load(dir: &tempfile::TempDir, fixture: &Fixture) -> Volume {
         let path = dir.path().join("labels.nii");
         fixture.write(&path);
         let cache = VolumeCache::new(dir.path().join("cache"), 1 << 20).unwrap();
-        NiiVolume::load(&path, &cache, &Progress::default()).unwrap()
+        Volume::load(&path, &cache, &Progress::default()).unwrap()
     }
 
     #[test]

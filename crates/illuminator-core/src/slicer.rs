@@ -5,7 +5,7 @@ use std::marker::PhantomData;
 
 use crate::geometry::{Point3D, SlicePlane, VolumeGeometry, aspect_scale};
 use crate::labels::label_color;
-use crate::volume::NiiVolume;
+use crate::volume::Volume;
 use crate::voxel::{self, Endian, Scalar, with_scalar};
 
 const INVALID_LABEL: [u8; 4] = [255, 0, 255, 255];
@@ -84,7 +84,7 @@ pub struct SliceImage {
 
 #[derive(Clone, Copy)]
 pub struct Slice<'a> {
-    pub volume: &'a NiiVolume,
+    pub volume: &'a Volume,
     pub geometry: &'a VolumeGeometry,
     pub plane: SlicePlane,
     pub frame: usize,
@@ -113,7 +113,7 @@ enum LabelSample {
 
 impl Slice<'_> {
     pub fn sample(&self, width: usize, height: usize) -> SampledSlice {
-        let samples = with_scalar!(self.volume.header().datatype, |T| {
+        let samples = with_scalar!(self.volume.meta().datatype, |T| {
             self.sample_typed::<T>(width, height)
         });
         SampledSlice {
@@ -125,7 +125,7 @@ impl Slice<'_> {
 
     fn sample_typed<T: Scalar>(&self, width: usize, height: usize) -> Samples {
         let voxels = Voxels::<T>::new(self.volume, self.frame);
-        let scaling = self.volume.header().scaling;
+        let scaling = self.volume.meta().scaling;
         if self.labels {
             Samples::Labels(
                 self.sample_pixels(width, height, LabelSample::Outside, |voxel| {
@@ -236,7 +236,7 @@ impl SampledSlice {
 }
 
 pub fn sample_linear(
-    volume: &NiiVolume,
+    volume: &Volume,
     geometry: &VolumeGeometry,
     frame: usize,
     p: Point3D,
@@ -245,10 +245,10 @@ pub fn sample_linear(
     if !geometry.contains_voxel(voxel) {
         return None;
     }
-    let raw = with_scalar!(volume.header().datatype, |T| {
+    let raw = with_scalar!(volume.meta().datatype, |T| {
         Voxels::<T>::new(volume, frame).linear(voxel)
     });
-    raw.is_finite().then(|| volume.header().scaling.apply(raw))
+    raw.is_finite().then(|| volume.meta().scaling.apply(raw))
 }
 
 pub fn fit_size(plane: &SlicePlane, panel_width: usize, panel_height: usize) -> (usize, usize) {
@@ -273,8 +273,8 @@ struct Voxels<'a, T> {
 }
 
 impl<'a, T: Scalar> Voxels<'a, T> {
-    fn new(volume: &'a NiiVolume, frame: usize) -> Self {
-        let h = volume.header();
+    fn new(volume: &'a Volume, frame: usize) -> Self {
+        let h = volume.meta();
         Self {
             bytes: volume.frame(frame),
             endian: h.endian,
@@ -431,19 +431,19 @@ mod tests {
     use super::*;
     use crate::cache::VolumeCache;
     use crate::geometry::{Affine, GeometryOptions, ViewPlane};
-    use crate::header::Mat3x4;
+    use crate::meta::Mat3x4;
     use crate::progress::Progress;
     use crate::test_util::Fixture;
     use crate::voxel::DataType;
 
-    fn load(dir: &TempDir, fixture: &Fixture, name: &str) -> NiiVolume {
+    fn load(dir: &TempDir, fixture: &Fixture, name: &str) -> Volume {
         let path = dir.path().join(name);
         fixture.write(&path);
         let cache = VolumeCache::new(dir.path().join("cache"), 1 << 20).unwrap();
-        NiiVolume::load(&path, &cache, &Progress::default()).unwrap()
+        Volume::load(&path, &cache, &Progress::default()).unwrap()
     }
 
-    fn geometry_of(volume: &NiiVolume) -> VolumeGeometry {
+    fn geometry_of(volume: &Volume) -> VolumeGeometry {
         volume.geometry(GeometryOptions::default()).unwrap()
     }
 
@@ -465,7 +465,7 @@ mod tests {
         image.pixels[start..start + 4].try_into().unwrap()
     }
 
-    fn render_axial(volume: &NiiVolume, coloring: Coloring, frame: usize) -> SliceImage {
+    fn render_axial(volume: &Volume, coloring: Coloring, frame: usize) -> SliceImage {
         let geometry = geometry_of(volume);
         let slice = Slice {
             volume,
