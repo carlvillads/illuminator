@@ -7,6 +7,7 @@
 mod assets;
 mod shortcuts;
 mod single_instance;
+mod statistics;
 mod viewer;
 mod zoom;
 

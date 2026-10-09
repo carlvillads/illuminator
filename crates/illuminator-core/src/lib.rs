@@ -12,6 +12,7 @@ pub mod nifti1;
 pub mod nrrd;
 pub mod progress;
 pub mod slicer;
+pub mod stats;
 pub mod volume;
 pub mod voxel;
 

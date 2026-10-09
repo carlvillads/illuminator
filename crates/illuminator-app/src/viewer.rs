@@ -34,6 +34,7 @@ use std::time::Duration;
 
 use crate::assets::Carbon;
 use crate::shortcuts::{self, *};
+use crate::statistics::{Snapshot, StatisticsView};
 use crate::zoom::{Visible, Zoom};
 
 const SIDEBAR_WIDTH: f32 = 240.0;
@@ -971,6 +972,30 @@ impl Viewer {
                             .child(cache.clone()),
                     ),
             )
+        });
+    }
+
+    fn show_statistics(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let snapshot = |layer: &Layer| Snapshot {
+            name: layer.display.name().into(),
+            volume: layer.display.shared_volume(),
+            geometry: layer.display.geometry().clone(),
+            frame: layer.display.frame(),
+        };
+        let labels = snapshot(&self.layers[index]);
+        let candidates = self
+            .layers
+            .iter()
+            .enumerate()
+            .filter(|&(other, layer)| other != index && !layer.display.label_mode())
+            .map(|(_, layer)| snapshot(layer))
+            .collect();
+        let view = cx.new(|cx| StatisticsView::new(labels, candidates, cx));
+        window.open_dialog(cx, move |dialog, _, _| {
+            dialog
+                .title("Label statistics")
+                .width(px(700.0))
+                .child(view.clone())
         });
     }
 
@@ -2558,6 +2583,22 @@ impl Viewer {
                         viewer.change(index, |display| display.set_label_mode(checked), cx);
                     })),
             )
+            .child(
+                row("Labels")
+                    .child(
+                        div()
+                            .flex_1()
+                            .child(format!("{} labels", display.label_count())),
+                    )
+                    .child(
+                        Button::new(id("statistics"))
+                            .xsmall()
+                            .label("Statistics\u{2026}")
+                            .on_click(cx.listener(move |viewer, _, window, cx| {
+                                viewer.show_statistics(index, window, cx);
+                            })),
+                    ),
+            )
             .when(display.can_be_anatomical(), |settings| {
                 settings.child(
                     Checkbox::new(id("native"))
@@ -2826,7 +2867,7 @@ fn grid_columns(count: usize, area: Size<f32>) -> usize {
         .unwrap_or(1)
 }
 
-fn format_value(value: f64) -> String {
+pub(crate) fn format_value(value: f64) -> String {
     if value.fract() == 0.0 && value.abs() < 1e9 {
         format!("{value:.0}")
     } else {
