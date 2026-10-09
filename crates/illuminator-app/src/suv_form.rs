@@ -1,0 +1,160 @@
+use gpui_kit::component::button::{Button, ButtonVariants};
+use gpui_kit::component::input::{Input, InputState};
+use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
+use gpui_kit::component::{ActiveTheme, Sizable, WindowExt, h_flex, v_flex};
+use gpui_kit::*;
+use illuminator_core::suv::{SuvInputs, TRACERS};
+
+use crate::viewer::Viewer;
+
+pub struct SuvForm {
+    load_id: u64,
+    viewer: WeakEntity<Viewer>,
+    weight: Entity<InputState>,
+    dose: Entity<InputState>,
+    minutes: Entity<InputState>,
+    tracer: usize,
+    bq_ml_per_unit: f64,
+    error: Option<SharedString>,
+}
+
+impl SuvForm {
+    pub fn new(
+        load_id: u64,
+        known: Option<SuvInputs>,
+        viewer: WeakEntity<Viewer>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let mut input = |value: Option<f64>| {
+            let text = value.map(|value| value.to_string()).unwrap_or_default();
+            cx.new(|cx| InputState::new(window, cx).default_value(text))
+        };
+        let weight = input(known.map(|k| k.weight_kg));
+        let dose = input(known.map(|k| k.dose_mbq));
+        let minutes = input(known.map(|k| k.minutes_after_injection));
+        let tracer = known
+            .and_then(|k| {
+                TRACERS
+                    .iter()
+                    .position(|&(_, minutes)| minutes == k.half_life_minutes)
+            })
+            .unwrap_or(0);
+        Self {
+            load_id,
+            viewer,
+            weight,
+            dose,
+            minutes,
+            tracer,
+            bq_ml_per_unit: known.map_or(1.0, |k| k.bq_ml_per_unit),
+            error: None,
+        }
+    }
+
+    fn apply(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let number = |state: &Entity<InputState>| {
+            state
+                .read(cx)
+                .value()
+                .trim()
+                .replace(',', ".")
+                .parse::<f64>()
+                .ok()
+        };
+        let inputs = match (
+            number(&self.weight),
+            number(&self.dose),
+            number(&self.minutes),
+        ) {
+            (Some(weight_kg), Some(dose_mbq), Some(minutes_after_injection)) => SuvInputs {
+                weight_kg,
+                dose_mbq,
+                minutes_after_injection,
+                half_life_minutes: TRACERS[self.tracer].1,
+                bq_ml_per_unit: self.bq_ml_per_unit,
+            },
+            _ => {
+                self.error = Some("Please enter all numbers".into());
+                cx.notify();
+                return;
+            }
+        };
+        if let Err(error) = inputs.factor() {
+            self.error = Some(error.to_string().into());
+            cx.notify();
+            return;
+        }
+        let load_id = self.load_id;
+        let _ = self.viewer.update(cx, |viewer, cx| {
+            viewer.set_suv_inputs(load_id, inputs, cx);
+        });
+        window.close_dialog(cx);
+    }
+
+    fn tracer_button(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let form = cx.entity().downgrade();
+        Button::new("tracer")
+            .xsmall()
+            .label(TRACERS[self.tracer].0)
+            .dropdown_menu(move |mut menu, _, _| {
+                for (index, (name, minutes)) in TRACERS.iter().enumerate() {
+                    let form = form.clone();
+                    let item = PopupMenuItem::new(format!("{name} ({minutes} min)"));
+                    menu = menu.item(item.on_click(move |_, _, cx| {
+                        let _ = form.update(cx, |form, cx| {
+                            form.tracer = index;
+                            cx.notify();
+                        });
+                    }));
+                }
+                menu
+            })
+    }
+}
+
+impl Render for SuvForm {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.theme();
+        let (muted, danger) = (theme.muted_foreground, theme.danger);
+        let row = |label: &'static str, input: &Entity<InputState>, unit: &'static str| {
+            h_flex()
+                .gap_2()
+                .child(div().w(px(150.0)).child(label))
+                .child(div().flex_1().child(Input::new(input).small()))
+                .child(div().w(px(32.0)).text_color(muted).child(unit))
+        };
+        v_flex()
+            .gap_2()
+            .text_sm()
+            .child(row("Body weight", &self.weight, "kg"))
+            .child(row("Injected dose", &self.dose, "MBq"))
+            .child(row("Injection to scan", &self.minutes, "min"))
+            .child(
+                h_flex()
+                    .gap_2()
+                    .child(div().w(px(150.0)).child("Tracer"))
+                    .child(self.tracer_button(cx)),
+            )
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(muted)
+                    .child(div().pt_1().child("The image must be in Bq/mL")),
+            )
+            .children(
+                self.error
+                    .clone()
+                    .map(|error| div().text_xs().text_color(danger).child(error)),
+            )
+            .child(
+                h_flex().justify_end().child(
+                    Button::new("apply")
+                        .small()
+                        .primary()
+                        .label("Show SUV")
+                        .on_click(cx.listener(|form, _, window, cx| form.apply(window, cx))),
+                ),
+            )
+    }
+}

@@ -96,7 +96,9 @@ pub struct PanelLabels {
 }
 
 pub struct VolumeDisplay {
+    raw: Arc<Volume>,
     volume: Arc<Volume>,
+    scale: f64,
     geometry: VolumeGeometry,
     options: GeometryOptions,
     cursor: Point3D,
@@ -116,8 +118,11 @@ impl VolumeDisplay {
         let options = GeometryOptions::default();
         let geometry = loaded.volume.geometry(options)?;
         let window = IntensityWindow::initial(loaded.volume.meta(), loaded.range)?;
+        let raw = Arc::new(loaded.volume);
         let mut display = Self {
-            volume: Arc::new(loaded.volume),
+            volume: Arc::clone(&raw),
+            raw,
+            scale: 1.0,
             geometry,
             options,
             cursor: Point3D::default(),
@@ -219,6 +224,7 @@ impl VolumeDisplay {
     }
 
     pub fn keep_settings_of(&mut self, old: &VolumeDisplay) -> Result<()> {
+        self.set_scale(old.scale)?;
         self.window = old.window;
         self.colormap = old.colormap;
         self.clip_low = old.clip_low;
@@ -350,6 +356,33 @@ impl VolumeDisplay {
             window.width = width;
             window.level = level;
         }
+    }
+
+    pub fn scale(&self) -> f64 {
+        self.scale
+    }
+
+    pub fn set_scale(&mut self, scale: f64) -> Result<()> {
+        if !scale.is_finite() || scale <= 0.0 {
+            return Err(Error::invalid("The scale must be a positive number"));
+        }
+        if self.label_mode {
+            return Err(Error::invalid("Label maps keep their values"));
+        }
+        let ratio = scale / self.scale;
+        self.volume = if scale == 1.0 {
+            Arc::clone(&self.raw)
+        } else {
+            Arc::new(self.raw.rescaled(scale))
+        };
+        let (low, high) = self.window_limits();
+        self.window = IntensityWindow::spanning(low * ratio, high * ratio)?;
+        self.range = self.range.map(|range| Range {
+            min: range.min * ratio,
+            max: range.max * ratio,
+        });
+        self.scale = scale;
+        Ok(())
     }
 
     /// Values at the top and bottom of the window
@@ -533,6 +566,21 @@ mod tests {
         assert_eq!(IntensityWindow::initial(&meta, range).unwrap().level, 23.5);
         meta.display_range = Some((10.0, 20.0));
         assert_eq!(IntensityWindow::initial(&meta, range).unwrap().level, 15.0);
+    }
+
+    #[test]
+    fn rescaling_follows_values_window_and_range() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut display = display(&dir, &Fixture::default());
+        let (low, high) = display.window_limits();
+        display.set_scale(0.5).unwrap();
+        assert_eq!(display.cursor_sample(), Some(([1, 1, 1], 8.5)));
+        assert_eq!(display.window_limits(), (low * 0.5, high * 0.5));
+        assert_eq!(display.range().unwrap().max, 23.5);
+        display.set_scale(1.0).unwrap();
+        assert_eq!(display.cursor_sample(), Some(([1, 1, 1], 17.0)));
+        assert_eq!(display.window_limits(), (low, high));
+        assert!(display.set_scale(0.0).is_err());
     }
 
     #[test]

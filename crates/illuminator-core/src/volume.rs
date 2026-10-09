@@ -19,12 +19,17 @@ pub struct Range {
     pub max: f64,
 }
 
+fn next_id() -> u64 {
+    static NEXT_ID: AtomicU64 = AtomicU64::new(1);
+    NEXT_ID.fetch_add(1, Ordering::Relaxed)
+}
+
 /// Loaded nifti volume
 pub struct Volume {
     meta: VolumeMeta,
     path: PathBuf,
     id: u64,
-    map: Mmap,
+    map: Arc<Mmap>,
     data_path: PathBuf,
     offset: usize,
     /// Keeps a decompressed cache file from being evicted.
@@ -33,8 +38,6 @@ pub struct Volume {
 
 impl Volume {
     pub fn load(path: &Path, cache: &VolumeCache, progress: &Progress) -> Result<Self> {
-        static NEXT_ID: AtomicU64 = AtomicU64::new(1);
-
         progress.check()?;
         let meta = VolumeMeta::read(path)?;
         let assume_mm = GeometryOptions {
@@ -83,8 +86,8 @@ impl Volume {
         Ok(Self {
             meta,
             path: path.to_path_buf(),
-            id: NEXT_ID.fetch_add(1, Ordering::Relaxed),
-            map,
+            id: next_id(),
+            map: Arc::new(map),
             data_path,
             offset,
             _lease: lease,
@@ -97,6 +100,21 @@ impl Volume {
 
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    pub fn rescaled(&self, factor: f64) -> Self {
+        let mut meta = self.meta.clone();
+        meta.scaling.slope *= factor;
+        meta.scaling.intercept *= factor;
+        Self {
+            meta,
+            path: self.path.clone(),
+            id: next_id(),
+            map: Arc::clone(&self.map),
+            data_path: self.data_path.clone(),
+            offset: self.offset,
+            _lease: self._lease.clone(),
+        }
     }
 
     pub fn id(&self) -> u64 {
@@ -250,6 +268,9 @@ mod tests {
         };
         let volume = load(&dir, &zero_slope, "zero.nii").unwrap();
         assert_eq!(volume.sample_value([3, 0, 0], 0), Some(3.0));
+        let doubled = volume.rescaled(2.0);
+        assert_eq!(doubled.sample_value([3, 0, 0], 0), Some(6.0));
+        assert_ne!(doubled.id(), volume.id());
 
         let negative = Fixture {
             slope: -2.0,

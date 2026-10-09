@@ -11,7 +11,9 @@ use gpui_kit::component::progress::Progress;
 use gpui_kit::component::slider::{Slider, SliderEvent, SliderState};
 use gpui_kit::component::status_bar::StatusBar;
 use gpui_kit::component::tooltip::Tooltip;
-use gpui_kit::component::{ActiveTheme, Selectable, Sizable, WindowExt, h_flex, v_flex};
+use gpui_kit::component::{
+    ActiveTheme, Disableable, Selectable, Sizable, WindowExt, h_flex, v_flex,
+};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use illuminator_core::cache::VolumeCache;
@@ -21,6 +23,7 @@ use illuminator_core::histogram::Histogram;
 use illuminator_core::labels::label_color;
 use illuminator_core::loader::{LoadState, VolumeLoader};
 use illuminator_core::slicer::{Coloring, Colormap, SampledSlice, SliceImage, fit_size};
+use illuminator_core::suv::SuvInputs;
 use illuminator_core::volume::Volume;
 use image::{Frame, RgbaImage};
 use std::cell::Cell;
@@ -35,6 +38,7 @@ use std::time::Duration;
 use crate::assets::Carbon;
 use crate::shortcuts::{self, *};
 use crate::statistics::{Snapshot, StatisticsView};
+use crate::suv_form::SuvForm;
 use crate::zoom::{Visible, Zoom};
 
 const SIDEBAR_WIDTH: f32 = 240.0;
@@ -151,6 +155,7 @@ struct Layer {
     histogram_pending: bool,
     curve: Option<TimeCurve>,
     curve_pending: bool,
+    suv: Option<(SuvInputs, &'static str)>,
     load_id: u64,
     visible: bool,
     opacity: f32,
@@ -393,6 +398,14 @@ impl Viewer {
                         .rposition(|layer| layer.load_id < load_id)
                         .map_or(0, |index| index + 1);
                     self.reindex(|index| Some(if index >= at { index + 1 } else { index }));
+                    let suv = match SuvInputs::from_sidecar(display.volume().path()) {
+                        Some(Ok(inputs)) => Some((inputs, "BIDS sidecar")),
+                        Some(Err(error)) => {
+                            eprintln!("Illuminator: {error}");
+                            None
+                        }
+                        None => None,
+                    };
                     let (opacity_slider, opacity_changes) = opacity_slider(load_id, cx);
                     self.layers.insert(
                         at,
@@ -404,6 +417,7 @@ impl Viewer {
                             histogram_pending: false,
                             curve: None,
                             curve_pending: false,
+                            suv,
                             load_id,
                             visible: true,
                             opacity: OVERLAY_OPACITY,
@@ -972,6 +986,55 @@ impl Viewer {
                             .child(cache.clone()),
                     ),
             )
+        });
+    }
+
+    fn set_suv(&mut self, index: usize, on: bool, cx: &mut Context<Self>) {
+        let layer = &mut self.layers[index];
+        let scale = match (on, layer.suv) {
+            (false, _) => 1.0,
+            (true, Some((inputs, _))) => match inputs.factor() {
+                Ok(factor) => factor,
+                Err(error) => {
+                    eprintln!("Illuminator: {error}");
+                    return;
+                }
+            },
+            (true, None) => return,
+        };
+        if let Err(error) = layer.display.set_scale(scale) {
+            eprintln!("Illuminator: {}: {error}", layer.display.name());
+        }
+        layer.histogram_frame = None;
+        cx.notify();
+    }
+
+    pub(crate) fn set_suv_inputs(
+        &mut self,
+        load_id: u64,
+        inputs: SuvInputs,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(index) = self
+            .layers
+            .iter()
+            .position(|layer| layer.load_id == load_id)
+        {
+            self.layers[index].suv = Some((inputs, "manual entry"));
+            self.set_suv(index, true, cx);
+        }
+    }
+
+    fn edit_suv(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let layer = &self.layers[index];
+        let (load_id, known) = (layer.load_id, layer.suv.map(|(inputs, _)| inputs));
+        let viewer = cx.entity().downgrade();
+        let form = cx.new(|cx| SuvForm::new(load_id, known, viewer, window, cx));
+        window.open_dialog(cx, move |dialog, _, _| {
+            dialog
+                .title("SUV (bw)")
+                .width(px(420.0))
+                .child(form.clone())
         });
     }
 
@@ -2494,7 +2557,22 @@ impl Viewer {
         settings =
             if display.label_mode() {
                 settings
-                    .child(row("Labels").child(format!("{} labels", display.label_count())))
+                    .child(
+                        row("Labels")
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .child(format!("{} labels", display.label_count())),
+                            )
+                            .child(
+                                Button::new(id("statistics"))
+                                    .xsmall()
+                                    .label("Statistics\u{2026}")
+                                    .on_click(cx.listener(move |viewer, _, window, cx| {
+                                        viewer.show_statistics(index, window, cx);
+                                    })),
+                            ),
+                    )
                     .child(
                         Checkbox::new(id("outline"))
                             .label("Outline")
@@ -2562,6 +2640,36 @@ impl Viewer {
                                 cx.notify();
                             })),
                     )
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .child(
+                                Checkbox::new(id("suv"))
+                                    .label("SUV")
+                                    .checked(display.scale() != 1.0)
+                                    .disabled(layer.suv.is_none())
+                                    .on_click(cx.listener(move |viewer, checked: &bool, _, cx| {
+                                        viewer.set_suv(index, *checked, cx);
+                                    })),
+                            )
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .text_xs()
+                                    .text_color(muted)
+                                    .child(layer.suv.map_or("no sidecar", |(_, source)| source)),
+                            )
+                            .child(
+                                Button::new(id("suv-edit"))
+                                    .ghost()
+                                    .xsmall()
+                                    .label("Edit\u{2026}")
+                                    .tooltip("Weight, dose and timing for SUV")
+                                    .on_click(cx.listener(move |viewer, _, window, cx| {
+                                        viewer.edit_suv(index, window, cx);
+                                    })),
+                            ),
+                    )
                     .when(display.range().is_none(), |settings| {
                         settings.child(
                             div()
@@ -2582,22 +2690,6 @@ impl Viewer {
                         let checked = *checked;
                         viewer.change(index, |display| display.set_label_mode(checked), cx);
                     })),
-            )
-            .child(
-                row("Labels")
-                    .child(
-                        div()
-                            .flex_1()
-                            .child(format!("{} labels", display.label_count())),
-                    )
-                    .child(
-                        Button::new(id("statistics"))
-                            .xsmall()
-                            .label("Statistics\u{2026}")
-                            .on_click(cx.listener(move |viewer, _, window, cx| {
-                                viewer.show_statistics(index, window, cx);
-                            })),
-                    ),
             )
             .when(display.can_be_anatomical(), |settings| {
                 settings.child(
