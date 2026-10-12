@@ -28,7 +28,7 @@ use illuminator_core::volume::Volume;
 use image::{Frame, RgbaImage};
 use std::cell::Cell;
 use std::cmp::Ordering;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -36,6 +36,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::assets::Carbon;
+use crate::cli::{Cli, LayoutName};
 use crate::picture::{Picture, Rect};
 use crate::shortcuts::{self, *};
 use crate::statistics::{Snapshot, StatisticsView};
@@ -327,6 +328,8 @@ pub struct Viewer {
     selected: usize,
     info: InfoLevel,
     reloads: HashMap<u64, u64>,
+    label_loads: HashSet<u64>,
+    load_colormaps: HashMap<u64, Colormap>,
     retired: Vec<Arc<RenderImage>>,
     _loader_events: Task<()>,
     _open_requests: Task<()>,
@@ -335,7 +338,7 @@ pub struct Viewer {
 impl Viewer {
     pub fn new(
         cache: Arc<VolumeCache>,
-        files: Vec<PathBuf>,
+        cli: Cli,
         mut opened: mpsc::UnboundedReceiver<Vec<PathBuf>>,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -344,9 +347,26 @@ impl Viewer {
         let loader = VolumeLoader::new(Arc::clone(&cache), move || {
             let _ = sender.unbounded_send(());
         });
-        for file in files {
-            loader.enqueue(file);
+        let mut load_colormaps = HashMap::new();
+        for (file, colormap) in cli.files.into_iter().zip(cli.colormaps) {
+            let load_id = loader.enqueue(file);
+            if let Some(colormap) = colormap {
+                load_colormaps.insert(load_id, colormap);
+            }
         }
+        let label_loads = cli
+            .labels
+            .into_iter()
+            .map(|file| loader.enqueue(file))
+            .collect();
+        let axis = cli.plane.map_or(ViewPlane::Axial, ViewPlane::from);
+        let layout = match cli.layout.unwrap_or(LayoutName::Ortho) {
+            LayoutName::Ortho => Layout::Ortho,
+            LayoutName::Compare => Layout::Compare,
+            LayoutName::Grid => Layout::Grid(axis),
+            LayoutName::Single => Layout::Single { axis, layer: None },
+            LayoutName::Lightbox => Layout::Lightbox(axis),
+        };
         let loader_events = cx.spawn(async move |this, cx| {
             while changes.next().await.is_some() {
                 while changes.try_recv().is_ok() {}
@@ -385,7 +405,7 @@ impl Viewer {
             sync_mode: SyncMode::World,
             radiological: false,
             show_crosshair: true,
-            show_mip: false,
+            show_mip: cli.mip,
             frame: 0,
             frame_slider: None,
             time_playing: None,
@@ -397,14 +417,16 @@ impl Viewer {
             zoom: Default::default(),
             pan_drag: None,
             scroll_remainder: 0.0,
-            active_panel: (0, ViewPlane::Axial),
+            active_panel: (0, axis),
             focus_handle,
-            layout: Layout::Ortho,
+            layout,
             previous_layout: Layout::Ortho,
             hover: None,
             selected: 0,
             info: InfoLevel::Minimal,
             reloads: HashMap::new(),
+            label_loads,
+            load_colormaps,
             retired: Vec::new(),
             _loader_events: loader_events,
             _open_requests: open_requests,
@@ -424,6 +446,14 @@ impl Viewer {
                         continue;
                     }
                     if let Err(error) = display.set_frame(self.frame) {
+                        eprintln!("Illuminator: {}: {error}", display.name());
+                    }
+                    if let Some(colormap) = self.load_colormaps.remove(&load_id) {
+                        display.colormap = colormap;
+                    }
+                    if self.label_loads.remove(&load_id)
+                        && let Err(error) = display.set_label_mode(true)
+                    {
                         eprintln!("Illuminator: {}: {error}", display.name());
                     }
                     display.clip_low = true;

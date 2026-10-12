@@ -1,10 +1,11 @@
 //! Illuminator viwer application
-//! Usage: illuminator [FILE...]
+//! Usage: illuminate [OPTIONS] [FILE]... (see illuminate --help)
 
 // no console on windows in release builds
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod assets;
+mod cli;
 mod picture;
 mod shortcuts;
 mod single_instance;
@@ -20,18 +21,23 @@ use illuminator_core::cache::VolumeCache;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use crate::cli::Cli;
 use crate::single_instance::Instance;
 use crate::viewer::Viewer;
 
 fn main() {
     attach_console();
-    let files: Vec<PathBuf> = std::env::args_os().skip(1).map(PathBuf::from).collect();
+    let cli = Cli::read();
     let (opened, opened_files) = mpsc::unbounded::<Vec<PathBuf>>();
-    match single_instance::claim(&single_instance::socket_name(), &files) {
-        Ok(Instance::Forwarded) => return,
-        Ok(Instance::First(listener)) => single_instance::listen(listener, opened.clone()),
-        Err(error) => eprintln!("Illuminator: cannot listen for other instances: {error}"),
+    if cli.only_files() {
+        // if only plain files are passed, add them to the current open instance of Illuminator
+        match single_instance::claim(&single_instance::socket_name(), &cli.files) {
+            Ok(Instance::Forwarded) => return,
+            Ok(Instance::First(listener)) => single_instance::listen(listener, opened.clone()),
+            Err(error) => eprintln!("Illuminator: cannot listen for other instances: {error}"),
+        }
     }
+    let (width, height) = cli.size.unwrap_or((1440.0, 900.0));
 
     let cache = match VolumeCache::from_env() {
         Ok(cache) => Arc::new(cache),
@@ -70,7 +76,7 @@ fn main() {
         let options = WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
                 None,
-                size(px(1440.0), px(900.0)),
+                size(px(width), px(height)),
                 cx,
             ))),
             titlebar: Some(TitlebarOptions {
@@ -81,7 +87,7 @@ fn main() {
             ..Default::default()
         };
         gpui_kit::open_window(options, cx, |window, cx| {
-            cx.new(|cx| Viewer::new(cache, files, opened_files, window, cx))
+            cx.new(|cx| Viewer::new(cache, cli, opened_files, window, cx))
         })
         .expect("cannot open main window");
         cx.activate(true);

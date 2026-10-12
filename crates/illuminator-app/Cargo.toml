@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 
 [[bin]]
-name = "illuminator"
+name = "illuminate"
 path = "src/main.rs"
 
 [dependencies]
@@ -14,6 +14,7 @@ futures.workspace = true
 image = { workspace = true, features = ["png"] }
 url.workspace = true
 interprocess.workspace = true
+clap.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 windows-sys.workspace = true
@@ -28,7 +29,7 @@ description = "A viewer for medical nifti files"
 category = "Medical"
 authors = ["Carl Villads Priisholm"]
 publisher = "Carl Villads Priisholm"
-binaries = [{ path = "illuminator", main = true }]
+binaries = [{ path = "illuminate", main = true }]
 before-packaging-command = "cargo build --release -p illuminator-app"
 out-dir = "../../target/packages"
 icons = ["packaging/macos/illuminator.icns", "packaging/linux/icons/*.png"]
