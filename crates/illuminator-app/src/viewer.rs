@@ -399,7 +399,7 @@ impl Viewer {
                         .map_or(0, |index| index + 1);
                     self.reindex(|index| Some(if index >= at { index + 1 } else { index }));
                     let suv = match SuvInputs::from_sidecar(display.volume().path()) {
-                        Some(Ok(inputs)) => Some((inputs, "BIDS sidecar")),
+                        Some(Ok(inputs)) => Some((inputs, "from sidecar")),
                         Some(Err(error)) => {
                             eprintln!("Illuminator: {error}");
                             None
