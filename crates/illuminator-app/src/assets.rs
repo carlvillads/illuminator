@@ -42,6 +42,7 @@ carbon_icons! {
     Crosshair => "3D-cursor--alt.svg",
     FolderOpen => "folder--open.svg",
     Grid => "grid.svg",
+    Lightbox => "thumbnail--2.svg",
     Help => "help.svg",
     Link => "sync-settings.svg",
     Ortho => "3D-MPR-Toggle.svg",
