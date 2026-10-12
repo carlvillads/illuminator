@@ -11,12 +11,12 @@ mod shortcuts;
 mod single_instance;
 mod statistics;
 mod suv_form;
+mod theme;
 mod ui;
 mod viewer;
 mod zoom;
 
 use futures::channel::mpsc;
-use gpui_kit::component::{Theme, ThemeMode};
 use gpui_kit::*;
 use illuminator_core::cache::VolumeCache;
 use std::path::PathBuf;
@@ -64,7 +64,7 @@ fn main() {
     });
     app.run(move |cx| {
         gpui_kit::init(cx);
-        Theme::change(ThemeMode::Dark, None, cx);
+        theme::init(cx);
         shortcuts::bind(cx);
         // quit when the last window closes
         cx.on_window_closed(|cx, _| {

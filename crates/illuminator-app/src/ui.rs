@@ -1,7 +1,9 @@
-use gpui_kit::component::h_flex;
+use gpui_kit::component::{h_flex, v_flex};
 use gpui_kit::*;
 
 const CAPTION_WIDTH: f32 = 64.0;
+pub(crate) const ORIENTATION_COLOR: u32 = 0xe8c547;
+pub(crate) const ACTIVE_VIEW_COLOR: u32 = 0xc86b98;
 
 pub trait AppStyle: Styled + Sized {
     fn truncate_start(self) -> Self {
@@ -23,4 +25,11 @@ pub fn setting_row(caption: &'static str, color: Hsla) -> Div {
             .text_color(color)
             .child(caption),
     )
+}
+
+pub fn readout(text: impl Into<SharedString>, template: &'static str) -> Div {
+    v_flex()
+        .items_end()
+        .child(text.into())
+        .child(div().h_0().overflow_hidden().child(template))
 }
