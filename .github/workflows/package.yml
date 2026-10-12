@@ -39,8 +39,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo install cargo-packager --version 0.11.8 --locked
-      - run: cargo packager --release -p illuminator-app --formats deb
       - run: cargo install cargo-about --version 0.9.2 --locked --features cli
+      - run: cargo packager --release -p illuminator-app --formats deb
       - uses: actions/upload-artifact@v4
         with:
           name: illuminator-debian
