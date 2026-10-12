@@ -36,6 +36,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::assets::Carbon;
+use crate::picture::{Picture, Rect};
 use crate::shortcuts::{self, *};
 use crate::statistics::{Snapshot, StatisticsView};
 use crate::suv_form::SuvForm;
@@ -1135,7 +1136,10 @@ impl Viewer {
         cx.notify();
     }
 
-    fn crosshair(&self, view: &View, scale: f32) -> Option<[Div; 2]> {
+    fn crosshair_at(&self, view: &View, scale: f32) -> Option<(f32, f32)> {
+        if !self.show_crosshair || !view.current {
+            return None;
+        }
         let display = &self.layers[view.base].display;
         let (s, t) = view.visible.to_view(view.plane.project(display.cursor()));
         if !(0.0..=1.0).contains(&s) || !(0.0..=1.0).contains(&t) {
@@ -1146,8 +1150,17 @@ impl Viewer {
         let top = (view.size.height - image.height) / 2.0;
         // "snap" to device screen pixels for sharp lines
         let snap = |value: f32| (value * scale).floor() / scale;
-        let x = snap(left + s as f32 * image.width);
-        let y = snap(top + (1.0 - t as f32) * image.height);
+        Some((
+            snap(left + s as f32 * image.width),
+            snap(top + (1.0 - t as f32) * image.height),
+        ))
+    }
+
+    fn crosshair(&self, view: &View, scale: f32) -> Option<[Div; 2]> {
+        let (x, y) = self.crosshair_at(view, scale)?;
+        let image = view.image_size;
+        let left = (view.size.width - image.width) / 2.0;
+        let top = (view.size.height - image.height) / 2.0;
         let line = || div().absolute().bg(rgba(0x00ccffb3));
         Some([
             line()
@@ -1836,36 +1849,21 @@ impl Viewer {
                 .justify_center()
                 .overflow_hidden()
                 .text_sm();
-            let mut stack = div()
+            let shown = self.shown(&view);
+            let stack = div()
                 .relative()
                 .w(px(view.image_size.width))
-                .h(px(view.image_size.height));
-            let mut bottom = true;
-            for layer in view.layers.clone() {
-                let entry = &self.layers[layer];
-                let Some(image) = entry
-                    .panel(view.slot)
-                    .and_then(|panel| panel.image.as_ref())
-                    .filter(|_| entry.visible)
-                else {
-                    continue;
-                };
-                // the bottom layer covers the black background so it is always opaque
-                let opacity = if bottom { 1.0 } else { entry.opacity };
-                bottom = false;
-                stack = stack.child(
-                    img(image.image.clone())
+                .h(px(view.image_size.height))
+                .children(shown.iter().map(|(image, opacity)| {
+                    img(image.clone())
                         .absolute()
                         .top_0()
                         .left_0()
                         .size_full()
-                        .opacity(opacity),
-                );
-            }
+                        .opacity(*opacity)
+                }));
             panel = panel.child(stack);
-            if !bottom
-                && view.current
-                && self.show_crosshair
+            if !shown.is_empty()
                 && let Some(lines) = self.crosshair(&view, scale)
             {
                 panel = panel.children(lines);
@@ -1905,6 +1903,117 @@ impl Viewer {
             area = area.child(panel);
         }
         area
+    }
+
+    fn shown(&self, view: &View) -> Vec<(Arc<RenderImage>, f32)> {
+        let mut shown = Vec::new();
+        for layer in view.layers.clone() {
+            let entry = &self.layers[layer];
+            let Some(image) = entry
+                .panel(view.slot)
+                .and_then(|panel| panel.image.as_ref())
+                .filter(|_| entry.visible)
+            else {
+                continue;
+            };
+            let opacity = if shown.is_empty() { 1.0 } else { entry.opacity };
+            shown.push((Arc::clone(&image.image), opacity));
+        }
+        shown
+    }
+
+    fn picture(&self, window: &Window) -> Option<Picture> {
+        let views = self.views(window);
+        if views.is_empty() {
+            return None;
+        }
+        let scale = window.scale_factor();
+        let device = |value: f32| (value * scale).round().max(0.0) as u32;
+        let area = view_area(window);
+        let mut picture = Picture {
+            width: device(area.width),
+            height: device(area.height),
+            images: Vec::new(),
+            lines: Vec::new(),
+        };
+        for view in &views {
+            let shown = self.shown(view);
+            if shown.is_empty() {
+                continue;
+            }
+            let image = view.image_size;
+            let rect = Rect {
+                left: device(view.origin.x + (view.size.width - image.width) / 2.0),
+                top: device(view.origin.y + (view.size.height - image.height) / 2.0),
+                width: device(image.width),
+                height: device(image.height),
+            };
+            picture.images.extend(
+                shown
+                    .into_iter()
+                    .map(|(image, opacity)| (image, rect, opacity)),
+            );
+            if let Some((x, y)) = self.crosshair_at(view, scale) {
+                picture.lines.push(Rect {
+                    left: device(view.origin.x + x),
+                    width: device(1.0),
+                    ..rect
+                });
+                picture.lines.push(Rect {
+                    top: device(view.origin.y + y),
+                    height: device(1.0),
+                    ..rect
+                });
+            }
+        }
+        Some(picture)
+    }
+
+    fn copy_image(&mut self, _: &CopyImage, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(picture) = self.picture(window) else {
+            return;
+        };
+        cx.spawn(async move |_, cx| {
+            match cx.background_spawn(async move { picture.png() }).await {
+                Ok(png) => cx.update(|cx| {
+                    let image = Image::from_bytes(ImageFormat::Png, png);
+                    cx.write_to_clipboard(ClipboardItem::new_image(&image));
+                }),
+                Err(error) => eprintln!("Illuminator: could not copy the image: {error}"),
+            }
+        })
+        .detach();
+    }
+
+    fn save_image(&mut self, _: &SaveImage, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(picture) = self.picture(window) else {
+            return;
+        };
+        // save the image next to the base layer and name it after it
+        let base = &self.layers[0].display;
+        let path = base.volume().path();
+        let directory = path.parent().map(PathBuf::from).unwrap_or_default();
+        let name = base.name();
+        let stem = name.split('.').next().unwrap_or("illuminator");
+        let chosen = cx.prompt_for_new_path(&directory, Some(&format!("{stem}.png")));
+        cx.spawn(async move |_, cx| {
+            let Ok(Ok(Some(path))) = chosen.await else {
+                return; // cancelled
+            };
+            let file = path.clone();
+            let saved = cx
+                .background_spawn(async move {
+                    match picture.png() {
+                        Ok(png) => std::fs::write(&file, png),
+                        Err(error) => Err(std::io::Error::other(error)),
+                    }
+                })
+                .await;
+            if let Err(error) = saved {
+                eprintln!("Illuminator: saving {}: {error}", path.display());
+            }
+        })
+        .detach();
     }
 
     fn corner_info(&self, view: &View, color: Hsla) -> Div {
@@ -2069,6 +2178,7 @@ impl Viewer {
         let (border, background) = (theme.border, theme.sidebar);
         let context = Some(shortcuts::CONTEXT);
         let axis = self.layout.axis().unwrap_or(self.active_panel.1);
+        let viewer = cx.entity().downgrade();
         let layout_button = |id: &'static str,
                              icon: Carbon,
                              tooltip: &'static str,
@@ -2216,6 +2326,34 @@ impl Viewer {
                 )
             })
             .child(div().flex_1())
+            .child(
+                Button::new("image")
+                    .ghost()
+                    .small()
+                    .icon(Carbon::Camera)
+                    .tooltip(format!(
+                        "Copy ({SECONDARY}C) or save ({SECONDARY}E) view as an image"
+                    ))
+                    .dropdown_menu(move |menu, _, _| {
+                        let (copy, save) = (viewer.clone(), viewer.clone());
+                        menu.item(PopupMenuItem::new("Copy image").on_click(
+                            move |_, window, cx| {
+                                let _ = copy.update(cx, |viewer, cx| {
+                                    viewer.copy_image(&CopyImage, window, cx);
+                                });
+                            },
+                        ))
+                        .item(
+                            PopupMenuItem::new("Save image\u{2026}").on_click(
+                                move |_, window, cx| {
+                                    let _ = save.update(cx, |viewer, cx| {
+                                        viewer.save_image(&SaveImage, window, cx);
+                                    });
+                                },
+                            ),
+                        )
+                    }),
+            )
             .child(
                 Button::new("help")
                     .ghost()
@@ -3079,6 +3217,8 @@ impl Render for Viewer {
             .on_action(cx.listener(Self::layout_grid))
             .on_action(cx.listener(Self::layout_single))
             .on_action(cx.listener(Self::layout_lightbox))
+            .on_action(cx.listener(Self::copy_image))
+            .on_action(cx.listener(Self::save_image))
             .on_action(cx.listener(Self::close_selected))
             .on_action(cx.listener(Self::reload_selected))
             .on_action(cx.listener(Self::move_selected_up))

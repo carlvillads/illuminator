@@ -54,6 +54,10 @@ actions!(
         /// Shows MIPs
         ToggleMip,
         ShowHelp,
+        /// Copies a picture of the views to the clipboard
+        CopyImage,
+        /// Saves a picture of the views as an image
+        SaveImage,
         /// All layers overlaid in three planes
         LayoutOrtho,
         /// One column per layer three planes each
@@ -82,7 +86,7 @@ actions!(
 );
 
 pub const CONTEXT: &str = "Viewer";
-const SECONDARY: &str = if cfg!(target_os = "macos") {
+pub(crate) const SECONDARY: &str = if cfg!(target_os = "macos") {
     "\u{2318}"
 } else {
     "Ctrl+"
@@ -99,6 +103,8 @@ pub fn bind(cx: &mut App) {
         KeyBinding::new("secondary-q", Quit, None),
         KeyBinding::new("secondary-w", CloseWindow, viewer),
         KeyBinding::new("secondary-o", OpenFiles, viewer),
+        KeyBinding::new("secondary-c", CopyImage, viewer),
+        KeyBinding::new("secondary-e", SaveImage, viewer),
         KeyBinding::new("up", NextSlice, viewer),
         KeyBinding::new("down", PreviousSlice, viewer),
         KeyBinding::new("shift-up", NextSlices, viewer),
@@ -153,10 +159,7 @@ pub fn help() -> Vec<(String, &'static str)> {
         ("J/K".into(), "Next/previous layer"),
         ("V".into(), "Show/hide layer"),
         ("\u{2191}/\u{2193}".into(), "Next/previous slice"),
-        (
-            "Shift+\u{2191}/\u{2193}".into(),
-            "Ten slices, or a lightbox page",
-        ),
+        ("Shift+\u{2191}/\u{2193}".into(), "Next/previous ten slices"),
         ("\u{2190}/\u{2192}".into(), "Previous/next frame"),
         ("H".into(), "Center cursor"),
         ("A".into(), "Auto contrast"),
@@ -171,6 +174,10 @@ pub fn help() -> Vec<(String, &'static str)> {
         (format!("{SECONDARY}\u{232b}"), "Close layer"),
         ("Drag layer".into(), "Reorder layers"),
         (format!("{SECONDARY}O"), "Open volumes"),
+        (
+            format!("{SECONDARY}C/{SECONDARY}E"),
+            "Copy/save the view as an image",
+        ),
         (format!("{SECONDARY}W/{SECONDARY}Q"), "Close window/quit"),
     ]
 }
