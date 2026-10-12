@@ -428,6 +428,13 @@ impl VolumeDisplay {
         self.geometry.plane(axis, self.cursor, radiological)
     }
 
+    pub fn slice_plane(&self, axis: ViewPlane, index: usize, radiological: bool) -> SlicePlane {
+        let (world_axis, step) = self.slice_axis(axis);
+        let mut through = self.cursor;
+        through[world_axis] = self.geometry.cursor_bounds.min[world_axis] + index as f64 * step;
+        self.geometry.plane(axis, through, radiological)
+    }
+
     /// What to render for one panel of w x h pixels
     pub fn job(
         &self,
@@ -471,10 +478,14 @@ impl VolumeDisplay {
     }
 
     pub fn pick(&mut self, axis: ViewPlane, radiological: bool, s: f64, t: f64) -> bool {
+        self.pick_on(self.plane(axis, radiological), s, t)
+    }
+
+    pub fn pick_on(&mut self, plane: SlicePlane, s: f64, t: f64) -> bool {
         if !(0.0..1.0).contains(&s) || !(0.0..1.0).contains(&t) {
             return false;
         }
-        let selected = self.plane(axis, radiological).point(s, t);
+        let selected = plane.point(s, t);
         if !self.geometry.anatomical
             && !self
                 .geometry
@@ -688,6 +699,21 @@ mod tests {
         assert!(!display.step_slice(ViewPlane::Axial, 1.0));
         assert!(display.step_slice(ViewPlane::Sagittal, -1.0));
         assert_eq!(display.cursor().x, 0.0);
+    }
+
+    #[test]
+    fn picks_on_other_slices() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut display = display(&dir, &Fixture::default());
+        let (slice, count) = display.slice_position(ViewPlane::Axial);
+        assert_eq!((slice, count), (1, 4));
+        let here = display.plane(ViewPlane::Axial, false);
+        assert_eq!(display.slice_plane(ViewPlane::Axial, slice, false), here);
+        let last = display.slice_plane(ViewPlane::Axial, 3, false);
+        assert_eq!(last.origin.z, 3.0);
+        assert!(display.pick_on(last, 0.125, 0.5));
+        assert_eq!(display.cursor(), Point3D::new(0.0, 1.0, 3.0));
+        assert_eq!(display.slice_position(ViewPlane::Axial), (3, 4));
     }
 
     #[test]
