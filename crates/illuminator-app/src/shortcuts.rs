@@ -51,6 +51,8 @@ actions!(
         ToggleCrosshair,
         /// Shows or hides the text in the view corners
         ToggleInfo,
+        /// Shows MIPs
+        ToggleMip,
         ShowHelp,
         /// All layers overlaid in three planes
         LayoutOrtho,
@@ -110,6 +112,7 @@ pub fn bind(cx: &mut App) {
         KeyBinding::new("r", ToggleRadiological, viewer),
         KeyBinding::new("c", ToggleCrosshair, viewer),
         KeyBinding::new("i", ToggleInfo, viewer),
+        KeyBinding::new("p", ToggleMip, viewer),
         KeyBinding::new("?", ShowHelp, viewer),
         KeyBinding::new("o", ToggleOverlay, viewer),
         KeyBinding::new("shift-l", ToggleOutline, viewer),
@@ -155,6 +158,7 @@ pub fn help() -> Vec<(String, &'static str)> {
         ("L".into(), "Label map"),
         ("Shift+L".into(), "Label outlines"),
         ("S/R/C/I".into(), "Sync/radiological/crosshair/corner text"),
+        ("P".into(), "Maximum intensity projection (MIP)"),
         ("?".into(), "This list"),
         (format!("{ALT}J/K"), "Move layer down/up"),
         (format!("{SECONDARY}R"), "Reload layer from disk"),

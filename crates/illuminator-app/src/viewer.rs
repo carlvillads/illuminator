@@ -149,7 +149,7 @@ impl Render for DragLayer {
 
 struct Layer {
     display: VolumeDisplay,
-    panels: [Panel; 3],
+    panels: Vec<Panel>,
     histogram: Option<Histogram>,
     histogram_frame: Option<usize>,
     histogram_pending: bool,
@@ -161,6 +161,19 @@ struct Layer {
     opacity: f32,
     opacity_slider: Entity<SliderState>,
     _opacity_changes: Subscription,
+}
+
+impl Layer {
+    fn panel(&self, slot: usize) -> Option<&Panel> {
+        self.panels.get(slot)
+    }
+
+    fn panel_mut(&mut self, slot: usize) -> &mut Panel {
+        if self.panels.len() <= slot {
+            self.panels.resize_with(slot + 1, Panel::default);
+        }
+        &mut self.panels[slot]
+    }
 }
 
 /// One visible image panel
@@ -175,6 +188,8 @@ struct View {
     zoom: Zoom,
     fit: (f64, f64),
     visible: Visible,
+    mip: bool,
+    slot: usize,
 }
 
 struct TimeCurve {
@@ -194,6 +209,7 @@ struct PanDrag {
 struct Hit {
     base: usize,
     axis: ViewPlane,
+    mip: bool,
     s: f64,
     t: f64,
     in_view: (f64, f64),
@@ -278,6 +294,7 @@ pub struct Viewer {
     sync_mode: SyncMode,
     radiological: bool,
     show_crosshair: bool,
+    show_mip: bool,
     frame: usize,
     frame_slider: Option<FrameSlider>,
     time_playing: Option<Task<()>>,
@@ -353,6 +370,7 @@ impl Viewer {
             sync_mode: SyncMode::World,
             radiological: false,
             show_crosshair: true,
+            show_mip: false,
             frame: 0,
             frame_slider: None,
             time_playing: None,
@@ -411,7 +429,7 @@ impl Viewer {
                         at,
                         Layer {
                             display,
-                            panels: Default::default(),
+                            panels: Vec::new(),
                             histogram: None,
                             histogram_frame: None,
                             histogram_pending: false,
@@ -637,13 +655,13 @@ impl Viewer {
         self.views(window).iter().all(|view| {
             view.layers.clone().all(|index| {
                 let layer = &self.layers[index];
-                let panel = &layer.panels[view.axis.index()];
                 !layer.visible
-                    || (!panel.rendering
-                        && panel
-                            .image
-                            .as_ref()
-                            .is_some_and(|image| image.key.sample.frame == layer.display.frame()))
+                    || layer.panel(view.slot).is_some_and(|panel| {
+                        !panel.rendering
+                            && panel.image.as_ref().is_some_and(|image| {
+                                image.key.sample.frame == layer.display.frame()
+                            })
+                    })
             })
         })
     }
@@ -836,7 +854,7 @@ impl Viewer {
         self.retire(panels);
     }
 
-    fn retire(&mut self, panels: [Panel; 3]) {
+    fn retire(&mut self, panels: Vec<Panel>) {
         self.retired.extend(
             panels
                 .into_iter()
@@ -1062,6 +1080,11 @@ impl Viewer {
         });
     }
 
+    fn toggle_mip(&mut self, _: &ToggleMip, _: &mut Window, cx: &mut Context<Self>) {
+        self.show_mip = !self.show_mip;
+        cx.notify();
+    }
+
     fn toggle_crosshair(&mut self, _: &ToggleCrosshair, _: &mut Window, cx: &mut Context<Self>) {
         self.show_crosshair = !self.show_crosshair;
         cx.notify();
@@ -1237,15 +1260,20 @@ impl Viewer {
             return Vec::new();
         }
         let area = view_area(window);
-        let cells: Vec<(usize, ViewPlane)> = match self.layout {
-            Layout::Ortho => ViewPlane::ALL.map(|axis| (0, axis)).to_vec(),
-            Layout::Compare => ViewPlane::ALL
+        let mut rows: Vec<(ViewPlane, bool)> = ViewPlane::ALL.map(|axis| (axis, false)).to_vec();
+        if self.show_mip {
+            rows.push((ViewPlane::Coronal, true));
+        }
+        let mip = self.show_mip;
+        let cells: Vec<(usize, ViewPlane, bool)> = match self.layout {
+            Layout::Ortho => rows.iter().map(|&(axis, mip)| (0, axis, mip)).collect(),
+            Layout::Compare => rows
                 .iter()
-                .flat_map(|&axis| (0..count).map(move |layer| (layer, axis)))
+                .flat_map(|&(axis, mip)| (0..count).map(move |layer| (layer, axis, mip)))
                 .collect(),
-            Layout::Grid(axis) => (0..count).map(|layer| (layer, axis)).collect(),
+            Layout::Grid(axis) => (0..count).map(|layer| (layer, axis, mip)).collect(),
             Layout::Single { axis, layer } => {
-                vec![(layer.filter(|&layer| layer < count).unwrap_or(0), axis)]
+                vec![(layer.filter(|&layer| layer < count).unwrap_or(0), axis, mip)]
             }
         };
         let columns = match self.layout {
@@ -1259,7 +1287,7 @@ impl Viewer {
         cells
             .into_iter()
             .enumerate()
-            .map(|(n, (base, axis))| {
+            .map(|(n, (base, axis, mip))| {
                 let plane = self.layers[base].display.plane(axis, self.radiological);
                 let (width, height) = (
                     (cell.width * scale) as usize,
@@ -1288,6 +1316,8 @@ impl Viewer {
                     zoom,
                     fit,
                     visible,
+                    mip,
+                    slot: if mip { 3 } else { 0 } + axis.index(),
                 }
             })
             .collect()
@@ -1315,6 +1345,7 @@ impl Viewer {
             Some(Hit {
                 base: view.base,
                 axis: view.axis,
+                mip: view.mip,
                 s,
                 t,
                 in_view,
@@ -1329,10 +1360,13 @@ impl Viewer {
             return;
         };
         let radiological = self.radiological;
-        if self.layers[hit.base]
-            .display
-            .pick(hit.axis, radiological, hit.s, hit.t)
-        {
+        let display = &mut self.layers[hit.base].display;
+        let picked = if hit.mip {
+            display.pick_brightest(hit.axis, radiological, hit.s, hit.t)
+        } else {
+            display.pick(hit.axis, radiological, hit.s, hit.t)
+        };
+        if picked {
             self.sync_from(hit.base);
             cx.notify();
         }
@@ -1442,25 +1476,27 @@ impl Viewer {
                     .display
                     .plane(view.axis, self.radiological),
             );
-            let row = view.axis.index();
+            let slot = view.slot;
             for layer in view.layers {
                 let entry = &self.layers[layer];
-                let panel = &entry.panels[row];
-                if !entry.visible || panel.rendering {
+                let panel = entry.panel(slot);
+                if !entry.visible || panel.is_some_and(|panel| panel.rendering) {
                     continue;
                 }
 
-                let job = entry.display.job_on(plane, width, height);
+                let job = entry.display.job_on(plane, width, height, view.mip);
                 let key = ImageKey {
                     sample: job.key.clone(),
                     coloring: entry.display.coloring(),
                 };
-                if panel.image.as_ref().is_some_and(|image| image.key == key) {
+                if panel
+                    .and_then(|panel| panel.image.as_ref())
+                    .is_some_and(|image| image.key == key)
+                {
                     continue;
                 }
                 let reuse = panel
-                    .samples
-                    .as_ref()
+                    .and_then(|panel| panel.samples.as_ref())
                     .filter(|(sample, _)| *sample == key.sample)
                     .map(|(_, samples)| Arc::clone(samples));
                 let load_id = entry.load_id;
@@ -1479,7 +1515,7 @@ impl Viewer {
                         else {
                             return;
                         };
-                        let panel = &mut column.panels[row];
+                        let panel = column.panel_mut(slot);
                         panel.rendering = false;
                         panel.samples = Some((key.sample.clone(), samples));
                         if let Some(old) = panel.image.replace(PanelImage { key, image }) {
@@ -1489,7 +1525,7 @@ impl Viewer {
                     });
                 })
                 .detach();
-                self.layers[layer].panels[row].rendering = true;
+                self.layers[layer].panel_mut(slot).rendering = true;
             }
         }
     }
@@ -1740,9 +1776,9 @@ impl Viewer {
             let mut bottom = true;
             for layer in view.layers.clone() {
                 let entry = &self.layers[layer];
-                let Some(image) = entry.panels[view.axis.index()]
-                    .image
-                    .as_ref()
+                let Some(image) = entry
+                    .panel(view.slot)
+                    .and_then(|panel| panel.image.as_ref())
                     .filter(|_| entry.visible)
                 else {
                     continue;
@@ -1882,16 +1918,18 @@ impl Viewer {
                     )
                 })
             })
-            .child(
-                corner()
-                    .bottom_1()
-                    .right_2()
-                    .child(if view.zoom.scale > 1.0 {
-                        format!("\u{d7}{:.1} {}/{count}", view.zoom.scale, slice + 1)
-                    } else {
-                        format!("{}/{count}", slice + 1)
-                    }),
-            )
+            .child(corner().bottom_1().right_2().child({
+                let position = if view.mip {
+                    "MIP".to_string()
+                } else {
+                    format!("{}/{count}", slice + 1)
+                };
+                if view.zoom.scale > 1.0 {
+                    format!("\u{d7}{:.1} {position}", view.zoom.scale)
+                } else {
+                    position
+                }
+            }))
     }
 
     fn render_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -2047,6 +2085,17 @@ impl Viewer {
                     .tooltip_with_action("Crosshair", &ToggleCrosshair, context)
                     .on_click(cx.listener(|viewer, _, window, cx| {
                         viewer.toggle_crosshair(&ToggleCrosshair, window, cx);
+                    })),
+            )
+            .child(
+                Button::new("mip")
+                    .ghost()
+                    .small()
+                    .icon(Carbon::Mip)
+                    .selected(self.show_mip)
+                    .tooltip_with_action("Maximum Intensity Projection (MIP)", &ToggleMip, context)
+                    .on_click(cx.listener(|viewer, _, window, cx| {
+                        viewer.toggle_mip(&ToggleMip, window, cx);
                     })),
             )
             .child(
@@ -2896,6 +2945,7 @@ impl Render for Viewer {
             .on_action(cx.listener(Self::toggle_radiological))
             .on_action(cx.listener(Self::toggle_crosshair))
             .on_action(cx.listener(Self::toggle_info))
+            .on_action(cx.listener(Self::toggle_mip))
             .on_action(cx.listener(Self::show_help))
             .on_action(cx.listener(Self::zoom_in))
             .on_action(cx.listener(Self::zoom_out))
