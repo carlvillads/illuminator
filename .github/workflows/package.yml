@@ -59,6 +59,6 @@ jobs:
           apt-get update
           apt-get install -y shared-mime-info ./*.deb
           # every library the program links to must have come with the dependencies
-          if ldd /usr/bin/illuminator | grep "not found"; then exit 1; fi
+          if ldd /usr/bin/illuminate | grep "not found"; then exit 1; fi
           grep "nii.gz" /usr/share/mime/globs2
           cat /usr/share/applications/illuminator.desktop
