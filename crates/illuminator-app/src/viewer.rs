@@ -41,6 +41,7 @@ use crate::picture::{Picture, Rect};
 use crate::shortcuts::{self, *};
 use crate::statistics::{Snapshot, StatisticsView};
 use crate::suv_form::SuvForm;
+use crate::ui::{AppStyle, setting_row};
 use crate::zoom::{Visible, Zoom};
 
 const SIDEBAR_WIDTH: f32 = 240.0;
@@ -2181,12 +2182,8 @@ impl Viewer {
                             .gap_1()
                             .child(
                                 div()
-                                    .flex_1()
-                                    .min_w_0()
                                     .text_xs()
-                                    .overflow_hidden()
-                                    .whitespace_nowrap()
-                                    .text_ellipsis_start()
+                                    .truncate_start()
                                     .child(file_name(&status.path)),
                             )
                             .child(
@@ -2509,11 +2506,7 @@ impl Viewer {
                     )))
                     .child(
                         div()
-                            .flex_1()
-                            .min_w_0()
-                            .overflow_hidden()
-                            .whitespace_nowrap()
-                            .text_ellipsis_start()
+                            .truncate_start()
                             .when(!layer.visible, |name| name.text_color(muted))
                             .child(display.name()),
                     )
@@ -2833,18 +2826,13 @@ impl Viewer {
         let overlaid = self.layout.overlaid();
         let bottom_visible = self.layers.iter().position(|layer| layer.visible);
         let id = |name: &'static str| (name, index as u64);
-        let row = |label: &'static str| {
-            h_flex()
-                .gap_2()
-                .child(div().w(px(64.0)).text_xs().text_color(muted).child(label))
-        };
 
         let mut settings = v_flex()
             .gap_2()
             .child(section_title(format!("Layer {}", index + 1), muted))
             .when(overlaid && bottom_visible != Some(index), |settings| {
                 settings.child(
-                    row("Opacity")
+                    setting_row("Opacity", muted)
                         .child(div().flex_1().child(Slider::new(&layer.opacity_slider)))
                         .child(
                             div()
@@ -2855,62 +2843,62 @@ impl Viewer {
                 )
             });
 
-        settings =
-            if display.label_mode() {
-                settings
-                    .child(
-                        row("Labels")
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .child(format!("{} labels", display.label_count())),
-                            )
-                            .child(
-                                Button::new(id("statistics"))
-                                    .xsmall()
-                                    .label("Statistics\u{2026}")
-                                    .on_click(cx.listener(move |viewer, _, window, cx| {
-                                        viewer.show_statistics(index, window, cx);
-                                    })),
-                            ),
-                    )
-                    .child(
-                        Checkbox::new(id("outline"))
-                            .label("Outline")
-                            .checked(display.outline)
-                            .on_click(cx.listener(move |viewer, checked: &bool, _, cx| {
-                                viewer.layers[index].display.outline = *checked;
-                                cx.notify();
-                            })),
-                    )
-            } else {
-                let window = display.window;
-                settings
-                    .child(
-                        row("Window")
-                            .child(div().flex_1().text_xs().child(format!(
-                                "W {}  L {}",
-                                format_value(window.width),
-                                format_value(window.level)
-                            )))
-                            .child(self.presets_button(index, cx))
-                            .child(
-                                Button::new(id("auto"))
-                                    .ghost()
-                                    .xsmall()
-                                    .icon(Carbon::AutoWindow)
-                                    .tooltip_with_action(
-                                        "Fit to the current frame",
-                                        &AutoContrast,
-                                        Some(shortcuts::CONTEXT),
-                                    )
-                                    .on_click(cx.listener(move |viewer, _, _, cx| {
-                                        viewer.auto_window(index, cx);
-                                    })),
-                            ),
-                    )
-                    .child(self.render_histogram(index, cx))
-                    .child(row("Colormap").child(h_flex().flex_1().gap_1().children(
+        settings = if display.label_mode() {
+            settings
+                .child(
+                    setting_row("Labels", muted)
+                        .child(
+                            div()
+                                .flex_1()
+                                .child(format!("{} labels", display.label_count())),
+                        )
+                        .child(
+                            Button::new(id("statistics"))
+                                .xsmall()
+                                .label("Statistics\u{2026}")
+                                .on_click(cx.listener(move |viewer, _, window, cx| {
+                                    viewer.show_statistics(index, window, cx);
+                                })),
+                        ),
+                )
+                .child(
+                    Checkbox::new(id("outline"))
+                        .label("Outline")
+                        .checked(display.outline)
+                        .on_click(cx.listener(move |viewer, checked: &bool, _, cx| {
+                            viewer.layers[index].display.outline = *checked;
+                            cx.notify();
+                        })),
+                )
+        } else {
+            let window = display.window;
+            settings
+                .child(
+                    setting_row("Window", muted)
+                        .child(div().flex_1().text_xs().child(format!(
+                            "W {}  L {}",
+                            format_value(window.width),
+                            format_value(window.level)
+                        )))
+                        .child(self.presets_button(index, cx))
+                        .child(
+                            Button::new(id("auto"))
+                                .ghost()
+                                .xsmall()
+                                .icon(Carbon::AutoWindow)
+                                .tooltip_with_action(
+                                    "Fit to the current frame",
+                                    &AutoContrast,
+                                    Some(shortcuts::CONTEXT),
+                                )
+                                .on_click(cx.listener(move |viewer, _, _, cx| {
+                                    viewer.auto_window(index, cx);
+                                })),
+                        ),
+                )
+                .child(self.render_histogram(index, cx))
+                .child(
+                    setting_row("Colormap", muted).child(h_flex().flex_1().gap_1().children(
                         Colormap::ALL.into_iter().map(|colormap| {
                             let name = colormap.name();
                             div()
@@ -2931,55 +2919,56 @@ impl Viewer {
                                     cx.notify();
                                 }))
                         }),
-                    )))
-                    .child(
-                        Checkbox::new(id("clip-low"))
-                            .label("Transparent below window")
-                            .checked(display.clip_low)
-                            .on_click(cx.listener(move |viewer, checked: &bool, _, cx| {
-                                viewer.layers[index].display.clip_low = *checked;
-                                cx.notify();
-                            })),
-                    )
-                    .child(
-                        h_flex()
-                            .gap_2()
-                            .child(
-                                Checkbox::new(id("suv"))
-                                    .label("SUV")
-                                    .checked(display.scale() != 1.0)
-                                    .disabled(layer.suv.is_none())
-                                    .on_click(cx.listener(move |viewer, checked: &bool, _, cx| {
-                                        viewer.set_suv(index, *checked, cx);
-                                    })),
-                            )
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .text_xs()
-                                    .text_color(muted)
-                                    .child(layer.suv.map_or("no sidecar", |(_, source)| source)),
-                            )
-                            .child(
-                                Button::new(id("suv-edit"))
-                                    .ghost()
-                                    .xsmall()
-                                    .label("Edit\u{2026}")
-                                    .tooltip("Weight, dose and timing for SUV")
-                                    .on_click(cx.listener(move |viewer, _, window, cx| {
-                                        viewer.edit_suv(index, window, cx);
-                                    })),
-                            ),
-                    )
-                    .when(display.range().is_none(), |settings| {
-                        settings.child(
+                    )),
+                )
+                .child(
+                    Checkbox::new(id("clip-low"))
+                        .label("Transparent below window")
+                        .checked(display.clip_low)
+                        .on_click(cx.listener(move |viewer, checked: &bool, _, cx| {
+                            viewer.layers[index].display.clip_low = *checked;
+                            cx.notify();
+                        })),
+                )
+                .child(
+                    h_flex()
+                        .gap_2()
+                        .child(
+                            Checkbox::new(id("suv"))
+                                .label("SUV")
+                                .checked(display.scale() != 1.0)
+                                .disabled(layer.suv.is_none())
+                                .on_click(cx.listener(move |viewer, checked: &bool, _, cx| {
+                                    viewer.set_suv(index, *checked, cx);
+                                })),
+                        )
+                        .child(
                             div()
+                                .flex_1()
                                 .text_xs()
                                 .text_color(muted)
-                                .child("No finite values in this frame"),
+                                .child(layer.suv.map_or("no sidecar", |(_, source)| source)),
                         )
-                    })
-            };
+                        .child(
+                            Button::new(id("suv-edit"))
+                                .ghost()
+                                .xsmall()
+                                .label("Edit\u{2026}")
+                                .tooltip("Weight, dose and timing for SUV")
+                                .on_click(cx.listener(move |viewer, _, window, cx| {
+                                    viewer.edit_suv(index, window, cx);
+                                })),
+                        ),
+                )
+                .when(display.range().is_none(), |settings| {
+                    settings.child(
+                        div()
+                            .text_xs()
+                            .text_color(muted)
+                            .child("No finite values in this frame"),
+                    )
+                })
+        };
 
         settings
             .children(self.render_time_curve(index, cx))
@@ -3056,15 +3045,7 @@ impl Viewer {
             step => format!("{step} steps"),
         };
         let grids = viewer.clone();
-        h_flex()
-            .gap_2()
-            .child(
-                div()
-                    .w(px(64.0))
-                    .text_xs()
-                    .text_color(muted)
-                    .child("Lightbox"),
-            )
+        setting_row("Lightbox", muted)
             .child(
                 Button::new("lightbox-grid")
                     .ghost()
@@ -3134,9 +3115,7 @@ impl Viewer {
             .children(lightbox_settings)
             .when_some(self.frame_slider.as_ref(), |settings, slider| {
                 settings.child(
-                    h_flex()
-                        .gap_2()
-                        .child(div().w(px(64.0)).text_xs().text_color(muted).child("Frame"))
+                    setting_row("Frame", muted)
                         .child(
                             v_flex()
                                 .flex_1()
@@ -3155,9 +3134,7 @@ impl Viewer {
                 let playing = self.time_playing.is_some();
                 let viewer = cx.entity().downgrade();
                 settings.child(
-                    h_flex()
-                        .gap_2()
-                        .child(div().w(px(64.0)).text_xs().text_color(muted).child("Movie"))
+                    setting_row("Movie", muted)
                         .child(
                             Button::new("play")
                                 .xsmall()
@@ -3201,9 +3178,7 @@ impl Viewer {
             })
             .when(sync_modes, |settings| {
                 settings.child(
-                    h_flex()
-                        .gap_2()
-                        .child(div().w(px(64.0)).text_xs().text_color(muted).child("Sync"))
+                    setting_row("Sync", muted)
                         .child(mode_button("sync-world", "World", SyncMode::World))
                         .child(mode_button(
                             "sync-proportional",

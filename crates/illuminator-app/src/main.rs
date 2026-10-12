@@ -11,6 +11,7 @@ mod shortcuts;
 mod single_instance;
 mod statistics;
 mod suv_form;
+mod ui;
 mod viewer;
 mod zoom;
 
