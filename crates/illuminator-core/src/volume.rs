@@ -2,15 +2,18 @@ use memmap2::Mmap;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 use crate::cache::{CacheLease, VolumeCache};
 use crate::error::{Error, Result};
 use crate::geometry::{GeometryOptions, VolumeGeometry};
 use crate::meta::VolumeMeta;
 use crate::progress::Progress;
+use crate::projection::Projection;
 use crate::voxel;
+
+const NUM_MIP: usize = 6;
 
 /// Value range
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -32,6 +35,7 @@ pub struct Volume {
     map: Arc<Mmap>,
     data_path: PathBuf,
     offset: usize,
+    projections: Mutex<Vec<Arc<Projection>>>,
     /// Keeps a decompressed cache file from being evicted.
     _lease: Option<Arc<CacheLease>>,
 }
@@ -90,6 +94,7 @@ impl Volume {
             map: Arc::new(map),
             data_path,
             offset,
+            projections: Mutex::default(),
             _lease: lease,
         })
     }
@@ -113,8 +118,34 @@ impl Volume {
             map: Arc::clone(&self.map),
             data_path: self.data_path.clone(),
             offset: self.offset,
+            projections: Mutex::default(),
             _lease: self._lease.clone(),
         }
+    }
+
+    pub fn projection(&self, frame: usize, axis: usize) -> Arc<Projection> {
+        let frame = self.clamp_frame(frame);
+        let lock = || {
+            self.projections
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+        };
+        let found = lock()
+            .iter()
+            .find(|projection| (projection.frame, projection.axis) == (frame, axis))
+            .cloned();
+        if let Some(projection) = found {
+            return projection;
+        }
+
+        // compute new projection without the lock to keep the others available meanwhile
+        let projection = Arc::new(Projection::of(self, frame, axis));
+        let mut kept = lock();
+        kept.retain(|other| (other.frame, other.axis) != (frame, axis));
+        kept.push(Arc::clone(&projection));
+        let excess = kept.len().saturating_sub(NUM_MIP);
+        kept.drain(..excess);
+        projection
     }
 
     pub fn id(&self) -> u64 {

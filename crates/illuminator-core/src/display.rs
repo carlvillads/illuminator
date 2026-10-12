@@ -8,6 +8,7 @@ use crate::labels::LabelTable;
 use crate::loader::LoadedVolume;
 use crate::meta::{SpatialUnits, VolumeMeta};
 use crate::progress::Progress;
+use crate::projection;
 use crate::slicer::{Coloring, Colormap, SampledSlice, Slice};
 use crate::volume::{Range, Volume};
 
@@ -20,6 +21,7 @@ pub struct SampleKey {
     pub plane: SlicePlane,
     pub frame: usize,
     pub labels: bool,
+    pub mip: bool,
     pub width: usize,
     pub height: usize,
 }
@@ -32,14 +34,18 @@ pub struct SliceJob {
 impl SliceJob {
     pub fn sample(&self) -> SampledSlice {
         let key = &self.key;
-        Slice {
+        let slice = Slice {
             volume: &self.volume,
             geometry: &key.geometry,
             plane: key.plane,
             frame: key.frame,
             labels: key.labels,
+        };
+        if key.mip {
+            slice.sample_mip(key.width, key.height)
+        } else {
+            slice.sample(key.width, key.height)
         }
-        .sample(key.width, key.height)
     }
 }
 
@@ -430,10 +436,10 @@ impl VolumeDisplay {
         width: usize,
         height: usize,
     ) -> SliceJob {
-        self.job_on(self.plane(axis, radiological), width, height)
+        self.job_on(self.plane(axis, radiological), width, height, false)
     }
 
-    pub fn job_on(&self, plane: SlicePlane, width: usize, height: usize) -> SliceJob {
+    pub fn job_on(&self, plane: SlicePlane, width: usize, height: usize, mip: bool) -> SliceJob {
         SliceJob {
             volume: Arc::clone(&self.volume),
             key: SampleKey {
@@ -442,10 +448,26 @@ impl VolumeDisplay {
                 plane,
                 frame: self.frame,
                 labels: self.label_mode,
+                mip,
                 width,
                 height,
             },
         }
+    }
+
+    pub fn pick_brightest(&mut self, axis: ViewPlane, radiological: bool, s: f64, t: f64) -> bool {
+        if !(0.0..1.0).contains(&s) || !(0.0..1.0).contains(&t) {
+            return false;
+        }
+        let plane = self.plane(axis, radiological);
+        let depth = projection::depth_axis(&self.geometry, &plane);
+        let voxel = self.geometry.world_to_voxel.point(plane.point(s, t));
+        let Some(brightest) = self.volume.projection(self.frame, depth).brightest(voxel) else {
+            return false;
+        };
+        let brightest = Point3D::from_array(brightest.map(|index| index as f64));
+        self.cursor = self.geometry.voxel_to_world.point(brightest);
+        true
     }
 
     pub fn pick(&mut self, axis: ViewPlane, radiological: bool, s: f64, t: f64) -> bool {
