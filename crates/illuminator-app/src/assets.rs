@@ -53,6 +53,7 @@ carbon_icons! {
     ViewOff => "view--off.svg",
     WindowPreset => "window--preset.svg",
     Reload => "renew--alt.svg",
+    Mip => "shape--exclude.svg",
 }
 
 const OVERRIDES: &[(&str, &[u8])] = &[
