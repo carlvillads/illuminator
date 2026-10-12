@@ -41,14 +41,19 @@ use crate::picture::{Picture, Rect};
 use crate::shortcuts::{self, *};
 use crate::statistics::{Snapshot, StatisticsView};
 use crate::suv_form::SuvForm;
-use crate::ui::{AppStyle, setting_row};
+use crate::ui::{self, AppStyle};
 use crate::zoom::{Visible, Zoom};
 
 const SIDEBAR_WIDTH: f32 = 240.0;
 const SCROLL_STEP: f32 = 20.0;
 const OVERLAY_OPACITY: f32 = 0.5;
 const TOOLBAR_HEIGHT: f32 = 36.0;
+const TOOLBAR_LABELS_WIDTH: f32 = 1000.0;
 const STATUS_HEIGHT: f32 = 24.0;
+const POSITION_TEMPLATE: &str = "-000.0";
+const VALUE_TEMPLATE: &str = "-0000.000";
+const LABEL_TEMPLATE: &str = "00000";
+const VOXEL_TEMPLATE: &str = "0000";
 const CORNER_TEXT: f32 = 10.0;
 const HISTOGRAM_BINS: usize = 128;
 const HISTOGRAM_HEIGHT: f32 = 56.0;
@@ -1778,7 +1783,8 @@ impl Viewer {
 
     fn render_panels(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
-        let (muted, border, label_color) = (theme.muted_foreground, theme.border, theme.info);
+        let (muted, border) = (theme.muted_foreground, theme.border);
+        let label_color: Hsla = rgb(ui::ORIENTATION_COLOR).into();
         let scale = window.scale_factor();
         let overlaid = self.layout.overlaid();
         let mut area = div()
@@ -1908,13 +1914,13 @@ impl Viewer {
 
             let edge = |text: &'static str| div().absolute().text_color(label_color).child(text);
             panel = panel
-                .child(div().absolute().inset_0().border_1().border_color(
+                .child(div().absolute().inset_0().map(|frame| {
                     if self.active_panel == (view.base, view.axis) && view.current {
-                        label_color
+                        frame.border_2().border_color(rgb(ui::ACTIVE_VIEW_COLOR))
                     } else {
-                        border
-                    },
-                ))
+                        frame.border_1().border_color(border)
+                    }
+                }))
                 .when(self.info == InfoLevel::Full && !compact, |panel| {
                     panel.child(
                         v_flex()
@@ -2206,14 +2212,16 @@ impl Viewer {
             }))
     }
 
-    fn render_toolbar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_toolbar(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
         let (border, background) = (theme.border, theme.sidebar);
+        let labels = f32::from(window.viewport_size().width) >= TOOLBAR_LABELS_WIDTH;
         let context = Some(shortcuts::CONTEXT);
         let axis = self.layout.axis().unwrap_or(self.active_panel.1);
         let viewer = cx.entity().downgrade();
         let layout_button = |id: &'static str,
                              icon: Carbon,
+                             label: &'static str,
                              tooltip: &'static str,
                              action: &dyn Action,
                              layout: Layout| {
@@ -2221,6 +2229,7 @@ impl Viewer {
                 .ghost()
                 .small()
                 .icon(icon)
+                .when(labels, |button| button.label(label))
                 .selected(self.layout.same_kind(layout))
                 .tooltip_with_action(tooltip, action, context)
                 .on_click(cx.listener(move |viewer, _, _, cx| viewer.set_layout(layout, cx)))
@@ -2251,6 +2260,7 @@ impl Viewer {
                     .ghost()
                     .small()
                     .icon(Carbon::FolderOpen)
+                    .when(labels, |button| button.label("Open\u{2026}"))
                     .tooltip_with_action("Open volumes", &OpenFiles, context)
                     .on_click(cx.listener(|viewer, _, _, cx| viewer.open_files(cx))),
             )
@@ -2258,6 +2268,7 @@ impl Viewer {
             .child(layout_button(
                 "layout-ortho",
                 Carbon::Ortho,
+                "Ortho",
                 "All layers three planes",
                 &LayoutOrtho,
                 Layout::Ortho,
@@ -2265,6 +2276,7 @@ impl Viewer {
             .child(layout_button(
                 "layout-compare",
                 Carbon::Compare,
+                "Compare",
                 "Side by side three planes",
                 &LayoutCompare,
                 Layout::Compare,
@@ -2272,6 +2284,7 @@ impl Viewer {
             .child(layout_button(
                 "layout-grid",
                 Carbon::Grid,
+                "Grid",
                 "Side by side one plane",
                 &LayoutGrid,
                 Layout::Grid(axis),
@@ -2279,6 +2292,7 @@ impl Viewer {
             .child(layout_button(
                 "layout-single",
                 Carbon::Single,
+                "Single",
                 "Single view",
                 &LayoutSingle,
                 Layout::Single { axis, layer: None },
@@ -2286,6 +2300,7 @@ impl Viewer {
             .child(layout_button(
                 "layout-lightbox",
                 Carbon::Lightbox,
+                "Lightbox",
                 "Lightbox view",
                 &LayoutLightbox,
                 Layout::Lightbox(axis),
@@ -2302,6 +2317,7 @@ impl Viewer {
                     .ghost()
                     .small()
                     .icon(Carbon::Crosshair)
+                    .when(labels, |button| button.label("Crosshair"))
                     .selected(self.show_crosshair)
                     .tooltip_with_action("Crosshair", &ToggleCrosshair, context)
                     .on_click(cx.listener(|viewer, _, window, cx| {
@@ -2313,6 +2329,7 @@ impl Viewer {
                     .ghost()
                     .small()
                     .icon(Carbon::Mip)
+                    .when(labels, |button| button.label("MIP"))
                     .selected(self.show_mip)
                     .tooltip_with_action("Maximum Intensity Projection (MIP)", &ToggleMip, context)
                     .on_click(cx.listener(|viewer, _, window, cx| {
@@ -2324,6 +2341,7 @@ impl Viewer {
                     .ghost()
                     .small()
                     .icon(Carbon::Radiological)
+                    .when(labels, |button| button.label("Radiological"))
                     .selected(self.radiological)
                     .tooltip_with_action("Radiological convention", &ToggleRadiological, context)
                     .on_click(cx.listener(|viewer, _, window, cx| {
@@ -2335,6 +2353,7 @@ impl Viewer {
                     .ghost()
                     .small()
                     .icon(Carbon::CornerText)
+                    .when(labels, |button| button.label("Text"))
                     .selected(self.info != InfoLevel::Off)
                     .tooltip_with_action(
                         format!("Text in views: {}", self.info.name()),
@@ -2351,6 +2370,7 @@ impl Viewer {
                         .ghost()
                         .small()
                         .icon(Carbon::Link)
+                        .when(labels, |button| button.label("Sync"))
                         .selected(self.sync)
                         .tooltip_with_action("Sync cursors", &ToggleSync, context)
                         .on_click(cx.listener(|viewer, _, window, cx| {
@@ -2364,6 +2384,7 @@ impl Viewer {
                     .ghost()
                     .small()
                     .icon(Carbon::Camera)
+                    .when(labels, |button| button.label("Image"))
                     .tooltip(format!(
                         "Copy ({SECONDARY}C) or save ({SECONDARY}E) view as an image"
                     ))
@@ -2392,6 +2413,7 @@ impl Viewer {
                     .ghost()
                     .small()
                     .icon(Carbon::Help)
+                    .when(labels, |button| button.label("Help"))
                     .tooltip_with_action("Shortcuts", &ShowHelp, context)
                     .on_click(cx.listener(|viewer, _, window, cx| {
                         viewer.show_help(&ShowHelp, window, cx);
@@ -2415,25 +2437,52 @@ impl Viewer {
         let Some(point) = self.hover else {
             return status.left(div().text_color(muted).child("Nothing to read"));
         };
-        let mut status = status.left(format!("{:.1}, {:.1}, {:.1} mm", point.x, point.y, point.z));
+        let position = |value: f64| ui::readout(format!("{value:.1}"), POSITION_TEMPLATE);
+        let mut status = status.left(
+            h_flex()
+                .child(position(point.x))
+                .child(", ")
+                .child(position(point.y))
+                .child(", ")
+                .child(position(point.z))
+                .child(" mm"),
+        );
         for (index, layer) in self.layers.iter().enumerate() {
             let value = layer
                 .display
                 .sample_world(point)
                 .map_or("-".to_string(), |(_, value)| format_value(value));
+            let template = if layer.display.label_mode() {
+                LABEL_TEMPLATE
+            } else {
+                VALUE_TEMPLATE
+            };
             status = status.child(
-                div()
+                h_flex()
+                    .ml_2()
                     .when(!layer.visible, |item| item.text_color(muted))
                     .when(index == self.selected, |item| {
                         item.font_weight(FontWeight::SEMIBOLD)
                     })
-                    .child(format!("{}: {value}", index + 1)),
+                    .child(format!("{}: ", index + 1))
+                    .child(ui::readout(value, template)),
             );
         }
-        if let Some(layer) = self.selected()
-            && let Some(([x, y, z], _)) = self.layers[layer].display.sample_world(point)
-        {
-            status = status.right(format!("Layer {} voxel {x}, {y}, {z}", layer + 1));
+        if let Some(layer) = self.selected() {
+            let voxel = self.layers[layer].display.sample_world(point);
+            let index = |axis: usize| {
+                let text = voxel.map_or("-".to_string(), |(voxel, _)| voxel[axis].to_string());
+                ui::readout(text, VOXEL_TEMPLATE)
+            };
+            status = status.right(
+                h_flex()
+                    .child(format!("Layer {} voxel ", layer + 1))
+                    .child(index(0))
+                    .child(", ")
+                    .child(index(1))
+                    .child(", ")
+                    .child(index(2)),
+            );
         }
         status
     }
@@ -2448,11 +2497,15 @@ impl Viewer {
             theme.info,
         );
         let context = Some(shortcuts::CONTEXT);
-        v_flex()
-            .gap_0p5()
-            .child(section_title("Layers", muted))
+        let rows = v_flex()
             .when(self.layers.is_empty(), |list| {
-                list.child(div().text_xs().text_color(muted).child("No volumes open"))
+                list.child(
+                    div()
+                        .p_1()
+                        .text_xs()
+                        .text_color(muted)
+                        .child("No volumes open"),
+                )
             })
             .children(self.layers.iter().enumerate().map(|(index, layer)| {
                 let display = &layer.display;
@@ -2466,9 +2519,13 @@ impl Viewer {
                     .gap_1()
                     .h(px(26.0))
                     .px_1()
-                    .rounded_sm()
-                    .when(index == self.selected, |row| row.bg(active))
-                    .hover(|row| row.bg(hover))
+                    .map(|row| {
+                        if index == self.selected {
+                            row.bg(active)
+                        } else {
+                            row.hover(|row| row.bg(hover))
+                        }
+                    })
                     .on_click(cx.listener(move |viewer, _, _, cx| viewer.select(index, cx)))
                     .on_drag(drag, |drag, _, _, cx| cx.new(|_| drag.clone()))
                     .drag_over::<DragLayer>(move |style, _, _, _| {
@@ -2512,7 +2569,7 @@ impl Viewer {
                     )
                     .child(
                         h_flex()
-                            .opacity(0.0)
+                            .opacity(0.4)
                             .group_hover("layer-row", |buttons| buttons.opacity(1.0))
                             .child(
                                 Button::new(("layer-reload", index))
@@ -2553,7 +2610,45 @@ impl Viewer {
                                     .child(div().flex_1().min_w_0().child(value.clone()))
                             }))
                     })
-            }))
+            }));
+        let commands = h_flex()
+            .gap_1()
+            .child(
+                Button::new("layers-open")
+                    .xsmall()
+                    .icon(Carbon::FolderOpen)
+                    .label("Open\u{2026}")
+                    .on_click(cx.listener(|viewer, _, _, cx| viewer.open_files(cx))),
+            )
+            .child(
+                Button::new("layers-reload")
+                    .xsmall()
+                    .icon(Carbon::Reload)
+                    .label("Reload")
+                    .disabled(self.layers.is_empty())
+                    .on_click(cx.listener(|viewer, _, _, _| {
+                        if let Some(index) = viewer.selected() {
+                            viewer.reload_layer(index);
+                        }
+                    })),
+            )
+            .child(
+                Button::new("layers-close")
+                    .xsmall()
+                    .icon(Carbon::Close)
+                    .label("Close")
+                    .disabled(self.layers.is_empty())
+                    .on_click(cx.listener(|viewer, _, _, cx| {
+                        if let Some(index) = viewer.selected() {
+                            viewer.close_layer(index, cx);
+                        }
+                    })),
+            );
+        v_flex()
+            .gap_1()
+            .child(section_title("Layers", cx))
+            .child(rows)
+            .child(commands)
     }
 
     fn render_histogram(&self, index: usize, cx: &mut Context<Self>) -> impl IntoElement {
@@ -2686,7 +2781,7 @@ impl Viewer {
             theme.secondary,
             theme.foreground,
         );
-        let title = section_title("Curve at cursor", muted);
+        let title = section_title("Curve at cursor", cx);
         let Some(curve) = &layer.curve else {
             return Some(
                 v_flex()
@@ -2829,10 +2924,10 @@ impl Viewer {
 
         let mut settings = v_flex()
             .gap_2()
-            .child(section_title(format!("Layer {}", index + 1), muted))
+            .child(section_title(format!("Layer {}", index + 1), cx))
             .when(overlaid && bottom_visible != Some(index), |settings| {
                 settings.child(
-                    setting_row("Opacity", muted)
+                    ui::setting_row("Opacity", muted)
                         .child(div().flex_1().child(Slider::new(&layer.opacity_slider)))
                         .child(
                             div()
@@ -2846,7 +2941,7 @@ impl Viewer {
         settings = if display.label_mode() {
             settings
                 .child(
-                    setting_row("Labels", muted)
+                    ui::setting_row("Labels", muted)
                         .child(
                             div()
                                 .flex_1()
@@ -2874,7 +2969,7 @@ impl Viewer {
             let window = display.window;
             settings
                 .child(
-                    setting_row("Window", muted)
+                    ui::setting_row("Window", muted)
                         .child(div().flex_1().text_xs().child(format!(
                             "W {}  L {}",
                             format_value(window.width),
@@ -2898,7 +2993,7 @@ impl Viewer {
                 )
                 .child(self.render_histogram(index, cx))
                 .child(
-                    setting_row("Colormap", muted).child(h_flex().flex_1().gap_1().children(
+                    ui::setting_row("Colormap", muted).child(h_flex().flex_1().gap_1().children(
                         Colormap::ALL.into_iter().map(|colormap| {
                             let name = colormap.name();
                             div()
@@ -3045,7 +3140,7 @@ impl Viewer {
             step => format!("{step} steps"),
         };
         let grids = viewer.clone();
-        setting_row("Lightbox", muted)
+        ui::setting_row("Lightbox", muted)
             .child(
                 Button::new("lightbox-grid")
                     .ghost()
@@ -3110,12 +3205,12 @@ impl Viewer {
             .gap_2()
             .when(
                 sync_modes || self.frame_slider.is_some() || lightbox,
-                |settings| settings.child(section_title("View", muted)),
+                |settings| settings.child(section_title("View", cx)),
             )
             .children(lightbox_settings)
             .when_some(self.frame_slider.as_ref(), |settings, slider| {
                 settings.child(
-                    setting_row("Frame", muted)
+                    ui::setting_row("Frame", muted)
                         .child(
                             v_flex()
                                 .flex_1()
@@ -3134,7 +3229,7 @@ impl Viewer {
                 let playing = self.time_playing.is_some();
                 let viewer = cx.entity().downgrade();
                 settings.child(
-                    setting_row("Movie", muted)
+                    ui::setting_row("Movie", muted)
                         .child(
                             Button::new("play")
                                 .xsmall()
@@ -3178,7 +3273,7 @@ impl Viewer {
             })
             .when(sync_modes, |settings| {
                 settings.child(
-                    setting_row("Sync", muted)
+                    ui::setting_row("Sync", muted)
                         .child(mode_button("sync-world", "World", SyncMode::World))
                         .child(mode_button(
                             "sync-proportional",
@@ -3251,7 +3346,7 @@ impl Render for Viewer {
                     viewer.loader.enqueue(path.clone());
                 }
             }))
-            .child(self.render_toolbar(cx))
+            .child(self.render_toolbar(window, cx))
             .child(
                 h_flex()
                     .flex_1()
@@ -3324,12 +3419,15 @@ pub(crate) fn format_value(value: f64) -> String {
     }
 }
 
-fn section_title(text: impl Into<SharedString>, color: Hsla) -> Div {
-    div()
+fn section_title(text: impl Into<SharedString>, cx: &App) -> Div {
+    let theme = cx.theme();
+    h_flex()
+        .gap_2()
         .text_xs()
         .font_weight(FontWeight::SEMIBOLD)
-        .text_color(color)
+        .text_color(theme.muted_foreground)
         .child(text.into())
+        .child(div().flex_1().h(px(1.0)).bg(theme.border))
 }
 
 fn frame_ticks(last_frame: usize, color: Hsla) -> impl IntoElement {
