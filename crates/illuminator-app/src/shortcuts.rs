@@ -51,7 +51,13 @@ actions!(
         ToggleCrosshair,
         /// Shows or hides the text in the view corners
         ToggleInfo,
+        /// Shows MIPs
+        ToggleMip,
         ShowHelp,
+        /// Copies a picture of the views to the clipboard
+        CopyImage,
+        /// Saves a picture of the views as an image
+        SaveImage,
         /// All layers overlaid in three planes
         LayoutOrtho,
         /// One column per layer three planes each
@@ -60,6 +66,8 @@ actions!(
         LayoutGrid,
         /// One large view
         LayoutSingle,
+        /// Lightbox view
+        LayoutLightbox,
         /// Closes the selected layer
         CloseLayer,
         /// Loads the selected layers file again
@@ -78,7 +86,7 @@ actions!(
 );
 
 pub const CONTEXT: &str = "Viewer";
-const SECONDARY: &str = if cfg!(target_os = "macos") {
+pub(crate) const SECONDARY: &str = if cfg!(target_os = "macos") {
     "\u{2318}"
 } else {
     "Ctrl+"
@@ -95,6 +103,8 @@ pub fn bind(cx: &mut App) {
         KeyBinding::new("secondary-q", Quit, None),
         KeyBinding::new("secondary-w", CloseWindow, viewer),
         KeyBinding::new("secondary-o", OpenFiles, viewer),
+        KeyBinding::new("secondary-c", CopyImage, viewer),
+        KeyBinding::new("secondary-e", SaveImage, viewer),
         KeyBinding::new("up", NextSlice, viewer),
         KeyBinding::new("down", PreviousSlice, viewer),
         KeyBinding::new("shift-up", NextSlices, viewer),
@@ -110,6 +120,7 @@ pub fn bind(cx: &mut App) {
         KeyBinding::new("r", ToggleRadiological, viewer),
         KeyBinding::new("c", ToggleCrosshair, viewer),
         KeyBinding::new("i", ToggleInfo, viewer),
+        KeyBinding::new("p", ToggleMip, viewer),
         KeyBinding::new("?", ShowHelp, viewer),
         KeyBinding::new("o", ToggleOverlay, viewer),
         KeyBinding::new("shift-l", ToggleOutline, viewer),
@@ -120,6 +131,7 @@ pub fn bind(cx: &mut App) {
         KeyBinding::new("2", LayoutCompare, viewer),
         KeyBinding::new("3", LayoutGrid, viewer),
         KeyBinding::new("4", LayoutSingle, viewer),
+        KeyBinding::new("5", LayoutLightbox, viewer),
         KeyBinding::new("secondary-backspace", CloseLayer, viewer),
         KeyBinding::new("secondary-r", ReloadLayer, viewer),
         KeyBinding::new("alt-k", MoveLayerUp, viewer),
@@ -141,13 +153,13 @@ pub fn help() -> Vec<(String, &'static str)> {
         ("=/-/0".into(), "Zoom in/out/reset"),
         ("Doubleclick".into(), "Focus/unfocus view"),
         ("Hover".into(), "Values in the status bar"),
-        ("1-4".into(), "Layouts"),
+        ("1–5".into(), "Layouts"),
         ("Space".into(), "Play/pause frames"),
         ("O".into(), "Overlay/side by side"),
         ("J/K".into(), "Next/previous layer"),
         ("V".into(), "Show/hide layer"),
         ("\u{2191}/\u{2193}".into(), "Next/previous slice"),
-        ("Shift+\u{2191}/\u{2193}".into(), "Ten slices"),
+        ("Shift+\u{2191}/\u{2193}".into(), "Next/previous ten slices"),
         ("\u{2190}/\u{2192}".into(), "Previous/next frame"),
         ("H".into(), "Center cursor"),
         ("A".into(), "Auto contrast"),
@@ -155,12 +167,17 @@ pub fn help() -> Vec<(String, &'static str)> {
         ("L".into(), "Label map"),
         ("Shift+L".into(), "Label outlines"),
         ("S/R/C/I".into(), "Sync/radiological/crosshair/corner text"),
+        ("P".into(), "Maximum intensity projection (MIP)"),
         ("?".into(), "This list"),
         (format!("{ALT}J/K"), "Move layer down/up"),
         (format!("{SECONDARY}R"), "Reload layer from disk"),
         (format!("{SECONDARY}\u{232b}"), "Close layer"),
         ("Drag layer".into(), "Reorder layers"),
         (format!("{SECONDARY}O"), "Open volumes"),
+        (
+            format!("{SECONDARY}C/{SECONDARY}E"),
+            "Copy/save the view as an image",
+        ),
         (format!("{SECONDARY}W/{SECONDARY}Q"), "Close window/quit"),
     ]
 }

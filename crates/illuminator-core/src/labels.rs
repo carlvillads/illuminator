@@ -1,74 +1,36 @@
-use std::collections::HashMap;
+use std::collections::HashSet;
 
 use crate::error::{Error, Result};
 use crate::progress::Progress;
 use crate::volume::Volume;
 use crate::voxel;
 
-/// Label IDs to pallette indices
-#[derive(Debug, Clone)]
-pub struct LabelTable {
-    indices: HashMap<i64, u32>,
-    labels: Vec<i64>,
-}
-
-impl Default for LabelTable {
-    fn default() -> Self {
-        Self {
-            indices: HashMap::from([(0, 0)]),
-            labels: vec![0],
+/// Counts the number of distinct labels in frame `t` without background.
+///
+/// Fails if a voxel isn't an integer or if there are more than `limit` labels.
+pub fn count_labels(volume: &Volume, t: usize, limit: usize, progress: &Progress) -> Result<usize> {
+    let meta = volume.meta();
+    let voxel_count = meta.frame_voxels();
+    let mut labels = HashSet::new();
+    // neighboring voxels usually share a label, so only look at changes
+    let mut previous = 0;
+    voxel::for_each_value(volume.frame(t), meta.datatype, meta.endian, |i, raw| {
+        if i % 65536 == 0 {
+            progress.report(i as f64 / voxel_count as f64, "Preparing labels")?;
         }
-    }
-}
-
-impl LabelTable {
-    /// Label ID by palette index
-    pub fn labels(&self) -> &[i64] {
-        &self.labels
-    }
-
-    /// Converts frame t into palette index per voxel
-    pub fn encode(
-        &mut self,
-        volume: &Volume,
-        t: usize,
-        limit: usize,
-        progress: &Progress,
-    ) -> Result<Vec<u32>> {
-        let h = volume.meta();
-        let count = h.frame_voxels();
-        let mut indices = Vec::with_capacity(count);
-        // Skip hash map if the voxel label repeats
-        let mut last = (0, 0);
-        voxel::for_each_value(volume.frame(t), h.datatype, h.endian, |i, raw| {
-            if i % 65_536 == 0 {
-                progress.report(i as f64 / count as f64, "Preparing labels")?;
+        let label = voxel::label_id(meta.scaling.apply(raw))?;
+        if label != previous {
+            previous = label;
+            if label != 0 && labels.insert(label) && labels.len() > limit {
+                return Err(Error::invalid(format!(
+                    "More than {limit} distinct labels. Are you sure this is a label map?"
+                )));
             }
-            let label = voxel::label_id(h.scaling.apply(raw))?;
-            if label != last.0 {
-                let index = match self.indices.get(&label).copied() {
-                    Some(index) => index,
-                    None => self.add(label, limit)?,
-                };
-                last = (label, index);
-            }
-            indices.push(last.1);
-            Ok(())
-        })?;
-        progress.report(1.0, "Prepared labels")?;
-        Ok(indices)
-    }
-
-    fn add(&mut self, label: i64, limit: usize) -> Result<u32> {
-        let too_many = || Error::invalid("Too many distinct segmentation labels for the palette");
-        if self.labels.len() >= limit {
-            return Err(too_many());
         }
-        let index = u32::try_from(self.labels.len()).map_err(|_| too_many())?;
-        self.labels.push(label);
-        self.indices.insert(label, index);
-        Ok(index)
-    }
+        Ok(())
+    })?;
+    progress.report(1.0, "Prepared labels")?;
+    Ok(labels.len())
 }
 
 pub fn label_color(label: i64) -> [u8; 4] {
@@ -119,32 +81,23 @@ mod tests {
     }
 
     #[test]
-    fn indices_stay_stable_across_frames() {
+    fn counts_the_labels_of_one_frame() {
         let dir = tempfile::tempdir().unwrap();
         let fixture = Fixture {
             datatype: DataType::I32,
             dims: vec![4, 3, 4, 2],
             value: |i| {
                 const IDS: [f64; 4] = [0.0, 300.0, 1000.0, 16_777_217.0];
-                IDS[(i + usize::from(i >= 48)) % 4]
+                if i < 48 { IDS[i % 4] } else { IDS[i % 2] }
             },
             ..Fixture::default()
         };
         let volume = load(&dir, &fixture);
         let none = Progress::default();
 
-        let mut table = LabelTable::default();
-        let first = table.encode(&volume, 0, 256, &none).unwrap();
-        let second = table.encode(&volume, 1, 256, &none).unwrap();
-        let again = table.encode(&volume, 0, 256, &none).unwrap();
-        assert_eq!(first, again);
-        assert_eq!(first[1], second[0]);
-        assert!(first[1] != first[2] && first[2] != first[3]);
-        assert_eq!(table.labels(), [0, 300, 1000, 16_777_217]);
-        assert_eq!(table.labels()[first[3] as usize], 16_777_217);
-
-        let mut small = LabelTable::default();
-        assert!(small.encode(&volume, 0, 2, &none).is_err());
+        assert_eq!(count_labels(&volume, 0, 256, &none).unwrap(), 3);
+        assert_eq!(count_labels(&volume, 1, 256, &none).unwrap(), 1);
+        assert!(count_labels(&volume, 0, 2, &none).is_err());
     }
 
     #[test]
@@ -156,8 +109,7 @@ mod tests {
             ..Fixture::default()
         };
         let volume = load(&dir, &fixture);
-        let result = LabelTable::default().encode(&volume, 0, 256, &Progress::default());
-        assert!(result.is_err());
+        assert!(count_labels(&volume, 0, 256, &Progress::default()).is_err());
     }
 
     #[test]

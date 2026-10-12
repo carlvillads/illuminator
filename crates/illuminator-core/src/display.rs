@@ -4,10 +4,11 @@ use std::sync::Arc;
 
 use crate::error::{Error, Result};
 use crate::geometry::{GeometryOptions, Point3D, SlicePlane, ViewPlane, VolumeGeometry};
-use crate::labels::LabelTable;
+use crate::labels;
 use crate::loader::LoadedVolume;
 use crate::meta::{SpatialUnits, VolumeMeta};
 use crate::progress::Progress;
+use crate::projection;
 use crate::slicer::{Coloring, Colormap, SampledSlice, Slice};
 use crate::volume::{Range, Volume};
 
@@ -20,6 +21,7 @@ pub struct SampleKey {
     pub plane: SlicePlane,
     pub frame: usize,
     pub labels: bool,
+    pub mip: bool,
     pub width: usize,
     pub height: usize,
 }
@@ -32,14 +34,18 @@ pub struct SliceJob {
 impl SliceJob {
     pub fn sample(&self) -> SampledSlice {
         let key = &self.key;
-        Slice {
+        let slice = Slice {
             volume: &self.volume,
             geometry: &key.geometry,
             plane: key.plane,
             frame: key.frame,
             labels: key.labels,
+        };
+        if key.mip {
+            slice.sample_mip(key.width, key.height)
+        } else {
+            slice.sample(key.width, key.height)
         }
-        .sample(key.width, key.height)
     }
 }
 
@@ -96,13 +102,15 @@ pub struct PanelLabels {
 }
 
 pub struct VolumeDisplay {
+    raw: Arc<Volume>,
     volume: Arc<Volume>,
+    scale: f64,
     geometry: VolumeGeometry,
     options: GeometryOptions,
     cursor: Point3D,
     frame: usize,
     range: Option<Range>,
-    labels: LabelTable,
+    label_count: usize,
     label_mode: bool,
     pub window: IntensityWindow,
     pub colormap: Colormap,
@@ -116,14 +124,17 @@ impl VolumeDisplay {
         let options = GeometryOptions::default();
         let geometry = loaded.volume.geometry(options)?;
         let window = IntensityWindow::initial(loaded.volume.meta(), loaded.range)?;
+        let raw = Arc::new(loaded.volume);
         let mut display = Self {
-            volume: Arc::new(loaded.volume),
+            volume: Arc::clone(&raw),
+            raw,
+            scale: 1.0,
             geometry,
             options,
             cursor: Point3D::default(),
             frame: 0,
             range: loaded.range,
-            labels: LabelTable::default(),
+            label_count: 0,
             label_mode: false,
             window,
             colormap: Colormap::default(),
@@ -164,7 +175,7 @@ impl VolumeDisplay {
     }
 
     pub fn label_count(&self) -> usize {
-        self.labels.labels().len()
+        self.label_count
     }
 
     pub fn name(&self) -> String {
@@ -219,6 +230,7 @@ impl VolumeDisplay {
     }
 
     pub fn keep_settings_of(&mut self, old: &VolumeDisplay) -> Result<()> {
+        self.set_scale(old.scale)?;
         self.window = old.window;
         self.colormap = old.colormap;
         self.clip_low = old.clip_low;
@@ -318,8 +330,8 @@ impl VolumeDisplay {
             return Ok(());
         }
         if self.label_mode {
-            self.labels
-                .encode(&self.volume, frame, LABEL_LIMIT, &Progress::default())?;
+            self.label_count =
+                labels::count_labels(&self.volume, frame, LABEL_LIMIT, &Progress::default())?;
         }
         self.frame = frame;
         Ok(())
@@ -327,8 +339,8 @@ impl VolumeDisplay {
 
     pub fn set_label_mode(&mut self, enabled: bool) -> Result<()> {
         if enabled && !self.label_mode {
-            self.labels
-                .encode(&self.volume, self.frame, LABEL_LIMIT, &Progress::default())?;
+            self.label_count =
+                labels::count_labels(&self.volume, self.frame, LABEL_LIMIT, &Progress::default())?;
         }
         self.label_mode = enabled;
         Ok(())
@@ -350,6 +362,33 @@ impl VolumeDisplay {
             window.width = width;
             window.level = level;
         }
+    }
+
+    pub fn scale(&self) -> f64 {
+        self.scale
+    }
+
+    pub fn set_scale(&mut self, scale: f64) -> Result<()> {
+        if !scale.is_finite() || scale <= 0.0 {
+            return Err(Error::invalid("The scale must be a positive number"));
+        }
+        if self.label_mode {
+            return Err(Error::invalid("Label maps keep their values"));
+        }
+        let ratio = scale / self.scale;
+        self.volume = if scale == 1.0 {
+            Arc::clone(&self.raw)
+        } else {
+            Arc::new(self.raw.rescaled(scale))
+        };
+        let (low, high) = self.window_limits();
+        self.window = IntensityWindow::spanning(low * ratio, high * ratio)?;
+        self.range = self.range.map(|range| Range {
+            min: range.min * ratio,
+            max: range.max * ratio,
+        });
+        self.scale = scale;
+        Ok(())
     }
 
     /// Values at the top and bottom of the window
@@ -389,6 +428,13 @@ impl VolumeDisplay {
         self.geometry.plane(axis, self.cursor, radiological)
     }
 
+    pub fn slice_plane(&self, axis: ViewPlane, index: usize, radiological: bool) -> SlicePlane {
+        let (world_axis, step) = self.slice_axis(axis);
+        let mut through = self.cursor;
+        through[world_axis] = self.geometry.cursor_bounds.min[world_axis] + index as f64 * step;
+        self.geometry.plane(axis, through, radiological)
+    }
+
     /// What to render for one panel of w x h pixels
     pub fn job(
         &self,
@@ -397,10 +443,10 @@ impl VolumeDisplay {
         width: usize,
         height: usize,
     ) -> SliceJob {
-        self.job_on(self.plane(axis, radiological), width, height)
+        self.job_on(self.plane(axis, radiological), width, height, false)
     }
 
-    pub fn job_on(&self, plane: SlicePlane, width: usize, height: usize) -> SliceJob {
+    pub fn job_on(&self, plane: SlicePlane, width: usize, height: usize, mip: bool) -> SliceJob {
         SliceJob {
             volume: Arc::clone(&self.volume),
             key: SampleKey {
@@ -409,17 +455,37 @@ impl VolumeDisplay {
                 plane,
                 frame: self.frame,
                 labels: self.label_mode,
+                mip,
                 width,
                 height,
             },
         }
     }
 
-    pub fn pick(&mut self, axis: ViewPlane, radiological: bool, s: f64, t: f64) -> bool {
+    pub fn pick_brightest(&mut self, axis: ViewPlane, radiological: bool, s: f64, t: f64) -> bool {
         if !(0.0..1.0).contains(&s) || !(0.0..1.0).contains(&t) {
             return false;
         }
-        let selected = self.plane(axis, radiological).point(s, t);
+        let plane = self.plane(axis, radiological);
+        let depth = projection::depth_axis(&self.geometry, &plane);
+        let voxel = self.geometry.world_to_voxel.point(plane.point(s, t));
+        let Some(brightest) = self.volume.projection(self.frame, depth).brightest(voxel) else {
+            return false;
+        };
+        let brightest = Point3D::from_array(brightest.map(|index| index as f64));
+        self.cursor = self.geometry.voxel_to_world.point(brightest);
+        true
+    }
+
+    pub fn pick(&mut self, axis: ViewPlane, radiological: bool, s: f64, t: f64) -> bool {
+        self.pick_on(self.plane(axis, radiological), s, t)
+    }
+
+    pub fn pick_on(&mut self, plane: SlicePlane, s: f64, t: f64) -> bool {
+        if !(0.0..1.0).contains(&s) || !(0.0..1.0).contains(&t) {
+            return false;
+        }
+        let selected = plane.point(s, t);
         if !self.geometry.anatomical
             && !self
                 .geometry
@@ -536,6 +602,21 @@ mod tests {
     }
 
     #[test]
+    fn rescaling_follows_values_window_and_range() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut display = display(&dir, &Fixture::default());
+        let (low, high) = display.window_limits();
+        display.set_scale(0.5).unwrap();
+        assert_eq!(display.cursor_sample(), Some(([1, 1, 1], 8.5)));
+        assert_eq!(display.window_limits(), (low * 0.5, high * 0.5));
+        assert_eq!(display.range().unwrap().max, 23.5);
+        display.set_scale(1.0).unwrap();
+        assert_eq!(display.cursor_sample(), Some(([1, 1, 1], 17.0)));
+        assert_eq!(display.window_limits(), (low, high));
+        assert!(display.set_scale(0.0).is_err());
+    }
+
+    #[test]
     fn starts_on_the_center_voxel() {
         let dir = tempfile::tempdir().unwrap();
         let display = display(&dir, &Fixture::default());
@@ -621,6 +702,21 @@ mod tests {
     }
 
     #[test]
+    fn picks_on_other_slices() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut display = display(&dir, &Fixture::default());
+        let (slice, count) = display.slice_position(ViewPlane::Axial);
+        assert_eq!((slice, count), (1, 4));
+        let here = display.plane(ViewPlane::Axial, false);
+        assert_eq!(display.slice_plane(ViewPlane::Axial, slice, false), here);
+        let last = display.slice_plane(ViewPlane::Axial, 3, false);
+        assert_eq!(last.origin.z, 3.0);
+        assert!(display.pick_on(last, 0.125, 0.5));
+        assert_eq!(display.cursor(), Point3D::new(0.0, 1.0, 3.0));
+        assert_eq!(display.slice_position(ViewPlane::Axial), (3, 4));
+    }
+
+    #[test]
     fn frames_and_labels() {
         let dir = tempfile::tempdir().unwrap();
         let four_d = Fixture {
@@ -634,7 +730,7 @@ mod tests {
         assert_eq!(labels.frame(), 1);
         labels.set_label_mode(true).unwrap();
         assert_eq!(labels.coloring(), Coloring::Labels { outline: false });
-        assert_eq!(labels.label_count(), 3);
+        assert_eq!(labels.label_count(), 2);
 
         let other_dir = tempfile::tempdir().unwrap();
         let fractional = Fixture {

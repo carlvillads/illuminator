@@ -6,6 +6,9 @@ members = ["crates/*"]
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
+license = "Apache-2.0"
+repository = "https://github.com/carlvillads/illuminator-rs"
+publish = false
 
 [workspace.dependencies]
 thiserror = "2"
@@ -22,3 +25,10 @@ url = "2"
 interprocess = "2.4"
 windows-sys = { version = "0.61", features = ["Win32_System_Console", "Win32_UI_WindowsAndMessaging"] }
 embed-resource = "3"
+serde_json = "1"
+clap = { version = "4.6", features = ["derive"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true

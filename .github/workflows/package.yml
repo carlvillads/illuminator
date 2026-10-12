@@ -17,6 +17,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo install cargo-packager --version 0.11.8 --locked
+      - run: cargo install cargo-about --version 0.9.2 --locked --features cli
       - run: cargo packager --release -p illuminator-app
       - uses: actions/upload-artifact@v4
         with:
@@ -38,6 +39,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo install cargo-packager --version 0.11.8 --locked
+      - run: cargo install cargo-about --version 0.9.2 --locked --features cli
       - run: cargo packager --release -p illuminator-app --formats deb
       - uses: actions/upload-artifact@v4
         with:
@@ -59,6 +61,33 @@ jobs:
           apt-get update
           apt-get install -y shared-mime-info ./*.deb
           # every library the program links to must have come with the dependencies
-          if ldd /usr/bin/illuminator | grep "not found"; then exit 1; fi
+          if ldd /usr/bin/illuminate | grep "not found"; then exit 1; fi
           grep "nii.gz" /usr/share/mime/globs2
           cat /usr/share/applications/illuminator.desktop
+
+  release:
+    name: Draft release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [windows, debian, debian-install]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tag must match version in Cargo.toml
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "The tag $GITHUB_REF_NAME doesn't match version $version in Cargo.toml"
+            exit 1
+          fi
+      - uses: actions/download-artifact@v4
+        with:
+          path: packages
+          merge-multiple: true
+      - name: Create draft release with packages
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >
+          gh release create "$GITHUB_REF_NAME" packages/*
+          --draft --generate-notes --title "Illuminator ${GITHUB_REF_NAME#v}"

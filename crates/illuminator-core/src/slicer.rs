@@ -5,6 +5,7 @@ use std::marker::PhantomData;
 
 use crate::geometry::{Point3D, SlicePlane, VolumeGeometry, aspect_scale};
 use crate::labels::label_color;
+use crate::projection;
 use crate::volume::Volume;
 use crate::voxel::{self, Endian, Scalar, with_scalar};
 
@@ -116,6 +117,30 @@ impl Slice<'_> {
         let samples = with_scalar!(self.volume.meta().datatype, |T| {
             self.sample_typed::<T>(width, height)
         });
+        SampledSlice {
+            width,
+            height,
+            samples,
+        }
+    }
+
+    pub fn sample_mip(&self, width: usize, height: usize) -> SampledSlice {
+        let axis = projection::depth_axis(self.geometry, &self.plane);
+        let mip = self.volume.projection(self.frame, axis);
+        let samples = if self.labels {
+            Samples::Labels(
+                self.sample_pixels(width, height, LabelSample::Outside, |voxel| {
+                    match voxel::label_id(f64::from(mip.nearest(voxel))) {
+                        Ok(id) => LabelSample::Id(id),
+                        Err(_) => LabelSample::Invalid,
+                    }
+                }),
+            )
+        } else {
+            Samples::Intensity(
+                self.sample_pixels(width, height, f32::NAN, |voxel| mip.linear(voxel)),
+            )
+        };
         SampledSlice {
             width,
             height,
