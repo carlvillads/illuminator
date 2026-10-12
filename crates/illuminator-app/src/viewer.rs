@@ -914,15 +914,17 @@ impl Viewer {
         let Some(layer) = self.layers.iter_mut().find(|l| l.load_id == load_id) else {
             return;
         };
-        if let Err(error) = display.keep_settings_of(&layer.display) {
-            eprintln!("Illuminator: {}: {error}", display.name());
-        }
+        let kept = display.keep_settings_of(&layer.display);
+        let name = display.name();
         layer.display = display;
         layer.histogram = None;
         layer.histogram_frame = None;
         layer.histogram_pending = false;
         let panels = std::mem::take(&mut layer.panels);
         self.retire(panels);
+        if let Err(error) = kept {
+            eprintln!("Illuminator: {name}: {error}");
+        }
     }
 
     fn retire(&mut self, panels: Vec<Panel>) {
@@ -1292,8 +1294,8 @@ impl Viewer {
 
     fn set_frame(&mut self, frame: usize, cx: &mut Context<Self>) {
         self.frame = frame;
-        for (index, layer) in self.layers.iter_mut().enumerate() {
-            if let Err(error) = layer.display.set_frame(frame) {
+        for index in 0..self.layers.len() {
+            if let Err(error) = self.layers[index].display.set_frame(frame) {
                 eprintln!("Illuminator: layer {}: {error}", index + 1);
             }
         }
@@ -1674,10 +1676,13 @@ impl Viewer {
                     return; // the layer was reloaded in the meantime
                 }
                 layer.histogram_frame = Some(frame);
-                layer.histogram = histogram.unwrap_or_else(|error| {
-                    eprintln!("Illuminator: layer histogram: {error}");
-                    None
-                });
+                match histogram {
+                    Ok(histogram) => layer.histogram = histogram,
+                    Err(error) => {
+                        layer.histogram = None;
+                        eprintln!("Illuminator: Histogram: {error}");
+                    }
+                }
                 cx.notify();
             });
         })
