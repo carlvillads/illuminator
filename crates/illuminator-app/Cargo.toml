@@ -2,6 +2,9 @@
 name = "illuminator-app"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
 
 [[bin]]
 name = "illuminate"
@@ -30,14 +33,18 @@ category = "Medical"
 authors = ["Carl Villads Priisholm"]
 publisher = "Carl Villads Priisholm"
 binaries = [{ path = "illuminate", main = true }]
-before-packaging-command = "cargo build --release -p illuminator-app"
+before-packaging-command = "cargo about generate about.hbs -o ../../target/THIRD_PARTY_LICENSES.html && cargo build --release -p illuminator-app"
 out-dir = "../../target/packages"
 icons = ["packaging/macos/illuminator.icns", "packaging/linux/icons/*.png"]
-resources = [{ src = "packaging/macos/Assets.car", target = "Assets.car" }]
+resources = [
+    { src = "packaging/macos/Assets.car", target = "Assets.car" },
+    { src = "../../target/THIRD_PARTY_LICENSES.html", target = "THIRD_PARTY_LICENSES.html" },
+]
 
 [package.metadata.packager.macos]
 info-plist-path = "packaging/macos/Info.plist"
 minimum-system-version = "11.0"
+signing-identity = "-"
 
 # Per-user windows installer
 [package.metadata.packager.nsis]

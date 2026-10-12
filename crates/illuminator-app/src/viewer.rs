@@ -1052,7 +1052,8 @@ impl Viewer {
         window.open_dialog(cx, move |dialog, _, cx| {
             let theme = cx.theme();
             let (muted, border) = (theme.muted_foreground, theme.border);
-            dialog.title("Shortcuts").width(px(440.0)).child(
+            let title = format!("Illuminator {} shortcuts", env!("CARGO_PKG_VERSION"));
+            dialog.title(title).width(px(440.0)).child(
                 v_flex()
                     .gap_1()
                     .text_sm()
