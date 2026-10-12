@@ -3393,6 +3393,7 @@ dependencies = [
  "illuminator-core",
  "image",
  "interprocess",
+ "serde_json",
  "url",
  "windows-sys 0.61.2",
 ]
