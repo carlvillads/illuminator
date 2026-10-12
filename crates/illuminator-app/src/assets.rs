@@ -55,6 +55,7 @@ carbon_icons! {
     WindowPreset => "window--preset.svg",
     Reload => "renew--alt.svg",
     Mip => "shape--exclude.svg",
+    Camera => "camera.svg",
 }
 
 const OVERRIDES: &[(&str, &[u8])] = &[
