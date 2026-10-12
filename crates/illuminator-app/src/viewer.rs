@@ -18,7 +18,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 use illuminator_core::cache::VolumeCache;
 use illuminator_core::display::{SampleKey, VolumeDisplay};
-use illuminator_core::geometry::{Point3D, ViewPlane};
+use illuminator_core::geometry::{Point3D, SlicePlane, ViewPlane};
 use illuminator_core::histogram::Histogram;
 use illuminator_core::labels::label_color;
 use illuminator_core::loader::{LoadState, VolumeLoader};
@@ -52,6 +52,9 @@ const HISTOGRAM_HEIGHT: f32 = 56.0;
 const ZOOM_SPEED: f64 = 200.0;
 const CHART_CURVE_HEIGHT: f32 = 64.0;
 const TIMEPOINT_FRAME_RATES: [u32; 5] = [1, 2, 5, 10, 20];
+const LIGHTBOX_GRIDS: [(usize, usize); 6] = [(3, 2), (3, 3), (4, 3), (4, 4), (5, 4), (6, 5)];
+const LIGHTBOX_STEPS: [usize; 6] = [1, 2, 3, 4, 5, 10];
+const LIGHTBOX_SLOTS: usize = 6;
 const PRESETS: &[(&str, &[(&str, Preset)])] = &[
     (
         "CT (HU)",
@@ -190,6 +193,9 @@ struct View {
     visible: Visible,
     mip: bool,
     slot: usize,
+    plane: SlicePlane,
+    slice: Option<usize>,
+    current: bool,
 }
 
 struct TimeCurve {
@@ -215,6 +221,7 @@ struct Hit {
     in_view: (f64, f64),
     image_size: Size<f32>,
     fit: (f64, f64),
+    plane: SlicePlane,
 }
 
 struct FrameSlider {
@@ -259,16 +266,20 @@ enum Layout {
         axis: ViewPlane,
         layer: Option<usize>,
     },
+    Lightbox(ViewPlane),
 }
 
 impl Layout {
     fn overlaid(self) -> bool {
-        matches!(self, Self::Ortho | Self::Single { layer: None, .. })
+        matches!(
+            self,
+            Self::Ortho | Self::Single { layer: None, .. } | Self::Lightbox(_)
+        )
     }
 
     fn axis(self) -> Option<ViewPlane> {
         match self {
-            Self::Grid(axis) | Self::Single { axis, .. } => Some(axis),
+            Self::Grid(axis) | Self::Single { axis, .. } | Self::Lightbox(axis) => Some(axis),
             Self::Ortho | Self::Compare => None,
         }
     }
@@ -277,6 +288,7 @@ impl Layout {
         match self {
             Self::Grid(_) => Self::Grid(axis),
             Self::Single { layer, .. } => Self::Single { axis, layer },
+            Self::Lightbox(_) => Self::Lightbox(axis),
             other => other,
         }
     }
@@ -300,6 +312,8 @@ pub struct Viewer {
     time_playing: Option<Task<()>>,
     time_fps: u32,
     time_curve_bounds: Rc<Cell<Bounds<Pixels>>>,
+    lightbox_grid: (usize, usize),
+    lightbox_step: usize,
     contrast_drag: Option<(usize, Point<Pixels>)>,
     zoom: [Zoom; 3],
     pan_drag: Option<PanDrag>,
@@ -376,6 +390,8 @@ impl Viewer {
             time_playing: None,
             time_fps: 5,
             time_curve_bounds: Rc::default(),
+            lightbox_grid: (4, 3),
+            lightbox_step: 1,
             contrast_drag: None,
             zoom: Default::default(),
             pan_drag: None,
@@ -523,12 +539,7 @@ impl Viewer {
         let hover = self
             .hit(position, window)
             .filter(|hit| (0.0..1.0).contains(&hit.s) && (0.0..1.0).contains(&hit.t))
-            .map(|hit| {
-                let display = &self.layers[hit.base].display;
-                display
-                    .plane(hit.axis, self.radiological)
-                    .point(hit.s, hit.t)
-            });
+            .map(|hit| hit.plane.point(hit.s, hit.t));
         if hover != self.hover {
             self.hover = hover;
             cx.notify();
@@ -557,10 +568,39 @@ impl Viewer {
         let Some((column, axis)) = self.active() else {
             return;
         };
+        let steps = steps * self.slice_stride();
         if self.layers[column].display.step_slice(axis, steps) {
             self.sync_from(column);
             cx.notify();
         }
+    }
+
+    fn slice_stride(&self) -> f64 {
+        match self.layout {
+            Layout::Lightbox(_) => self.lightbox_step as f64,
+            _ => 1.0,
+        }
+    }
+
+    /// Steps per Shift+arrow: a lightbox page, or ten slices
+    fn page_steps(&self) -> f64 {
+        match self.layout {
+            Layout::Lightbox(_) => (self.lightbox_grid.0 * self.lightbox_grid.1) as f64,
+            _ => 10.0,
+        }
+    }
+
+    fn set_lightbox_grid(&mut self, grid: (usize, usize), cx: &mut Context<Self>) {
+        self.lightbox_grid = grid;
+        // images of views that are gone
+        let keep = LIGHTBOX_SLOTS + grid.0 * grid.1;
+        let unused: Vec<Panel> = self
+            .layers
+            .iter_mut()
+            .flat_map(|layer| layer.panels.split_off(keep.min(layer.panels.len())))
+            .collect();
+        self.retire(unused);
+        cx.notify();
     }
 
     fn step_frame(&mut self, delta: isize, window: &mut Window, cx: &mut Context<Self>) {
@@ -705,11 +745,11 @@ impl Viewer {
     }
 
     fn next_slices(&mut self, _: &NextSlices, _: &mut Window, cx: &mut Context<Self>) {
-        self.step_active_slice(10.0, cx);
+        self.step_active_slice(self.page_steps(), cx);
     }
 
     fn previous_slices(&mut self, _: &PreviousSlices, _: &mut Window, cx: &mut Context<Self>) {
-        self.step_active_slice(-10.0, cx);
+        self.step_active_slice(-self.page_steps(), cx);
     }
 
     fn next_frame(&mut self, _: &NextFrame, window: &mut Window, cx: &mut Context<Self>) {
@@ -924,6 +964,11 @@ impl Viewer {
         self.set_layout(Layout::Single { axis, layer: None }, cx);
     }
 
+    fn layout_lightbox(&mut self, _: &LayoutLightbox, _: &mut Window, cx: &mut Context<Self>) {
+        let axis = self.layout.axis().unwrap_or(self.active_panel.1);
+        self.set_layout(Layout::Lightbox(axis), cx);
+    }
+
     fn toggle_layer(&mut self, _: &ToggleLayer, _: &mut Window, cx: &mut Context<Self>) {
         if let Some(layer) = self.selected() {
             let column = &mut self.layers[layer];
@@ -1092,8 +1137,7 @@ impl Viewer {
 
     fn crosshair(&self, view: &View, scale: f32) -> Option<[Div; 2]> {
         let display = &self.layers[view.base].display;
-        let plane = display.plane(view.axis, self.radiological);
-        let (s, t) = view.visible.to_view(plane.project(display.cursor()));
+        let (s, t) = view.visible.to_view(view.plane.project(display.cursor()));
         if !(0.0..=1.0).contains(&s) || !(0.0..=1.0).contains(&t) {
             return None;
         }
@@ -1265,30 +1309,50 @@ impl Viewer {
             rows.push((ViewPlane::Coronal, true));
         }
         let mip = self.show_mip;
-        let cells: Vec<(usize, ViewPlane, bool)> = match self.layout {
-            Layout::Ortho => rows.iter().map(|&(axis, mip)| (0, axis, mip)).collect(),
+        let cells: Vec<(usize, ViewPlane, bool, Option<usize>)> = match self.layout {
+            Layout::Ortho => rows
+                .iter()
+                .map(|&(axis, mip)| (0, axis, mip, None))
+                .collect(),
             Layout::Compare => rows
                 .iter()
-                .flat_map(|&(axis, mip)| (0..count).map(move |layer| (layer, axis, mip)))
+                .flat_map(|&(axis, mip)| (0..count).map(move |layer| (layer, axis, mip, None)))
                 .collect(),
-            Layout::Grid(axis) => (0..count).map(|layer| (layer, axis, mip)).collect(),
+            Layout::Grid(axis) => (0..count).map(|layer| (layer, axis, mip, None)).collect(),
             Layout::Single { axis, layer } => {
-                vec![(layer.filter(|&layer| layer < count).unwrap_or(0), axis, mip)]
+                let base = layer.filter(|&layer| layer < count).unwrap_or(0);
+                vec![(base, axis, mip, None)]
+            }
+            Layout::Lightbox(axis) => {
+                let (current, slices) = self.layers[0].display.slice_position(axis);
+                let (columns, rows) = self.lightbox_grid;
+                lightbox_slices(current, slices, self.lightbox_step, columns * rows)
+                    .into_iter()
+                    .map(|slice| (0, axis, false, Some(slice)))
+                    .collect()
             }
         };
-        let columns = match self.layout {
-            Layout::Compare => count,
-            _ => grid_columns(cells.len(), area),
+        let (columns, rows) = match self.layout {
+            // a short last page keeps the size of the views
+            Layout::Lightbox(_) => self.lightbox_grid,
+            Layout::Compare => (count, cells.len().div_ceil(count)),
+            _ => {
+                let columns = grid_columns(cells.len(), area);
+                (columns, cells.len().div_ceil(columns))
+            }
         };
-        let rows = cells.len().div_ceil(columns);
         let cell = size(area.width / columns as f32, area.height / rows as f32);
         let scale = window.scale_factor();
         let overlaid = self.layout.overlaid();
         cells
             .into_iter()
             .enumerate()
-            .map(|(n, (base, axis, mip))| {
-                let plane = self.layers[base].display.plane(axis, self.radiological);
+            .map(|(n, (base, axis, mip, slice))| {
+                let display = &self.layers[base].display;
+                let plane = match slice {
+                    Some(slice) => display.slice_plane(axis, slice, self.radiological),
+                    None => display.plane(axis, self.radiological),
+                };
                 let (width, height) = (
                     (cell.width * scale) as usize,
                     (cell.height * scale) as usize,
@@ -1317,7 +1381,13 @@ impl Viewer {
                     fit,
                     visible,
                     mip,
-                    slot: if mip { 3 } else { 0 } + axis.index(),
+                    slot: match slice {
+                        Some(_) => LIGHTBOX_SLOTS + n,
+                        None => axis.index() + if mip { 3 } else { 0 },
+                    },
+                    plane,
+                    slice,
+                    current: slice.is_none_or(|slice| slice == display.slice_position(axis).0),
                 }
             })
             .collect()
@@ -1351,6 +1421,7 @@ impl Viewer {
                 in_view,
                 image_size: view.image_size,
                 fit: view.fit,
+                plane: view.plane,
             })
         })
     }
@@ -1364,7 +1435,7 @@ impl Viewer {
         let picked = if hit.mip {
             display.pick_brightest(hit.axis, radiological, hit.s, hit.t)
         } else {
-            display.pick(hit.axis, radiological, hit.s, hit.t)
+            display.pick_on(hit.plane, hit.s, hit.t)
         };
         if picked {
             self.sync_from(hit.base);
@@ -1390,10 +1461,8 @@ impl Viewer {
             return;
         }
         self.scroll_remainder -= steps * SCROLL_STEP;
-        if self.layers[hit.base]
-            .display
-            .step_slice(hit.axis, f64::from(steps))
-        {
+        let steps = f64::from(steps) * self.slice_stride();
+        if self.layers[hit.base].display.step_slice(hit.axis, steps) {
             self.sync_from(hit.base);
             cx.notify();
         }
@@ -1471,11 +1540,7 @@ impl Viewer {
             if width == 0 || height == 0 {
                 continue;
             }
-            let plane = view.visible.apply(
-                self.layers[view.base]
-                    .display
-                    .plane(view.axis, self.radiological),
-            );
+            let plane = view.visible.apply(view.plane);
             let slot = view.slot;
             for layer in view.layers {
                 let entry = &self.layers[layer];
@@ -1758,6 +1823,8 @@ impl Viewer {
         for view in self.views(window) {
             let display = &self.layers[view.base].display;
             let labels = display.labels(view.axis, self.radiological);
+            // only show slice number for lightbox views
+            let compact = view.slice.is_some();
             let mut panel = div()
                 .absolute()
                 .left(px(view.origin.x))
@@ -1797,6 +1864,7 @@ impl Viewer {
             }
             panel = panel.child(stack);
             if !bottom
+                && view.current
                 && self.show_crosshair
                 && let Some(lines) = self.crosshair(&view, scale)
             {
@@ -1806,13 +1874,13 @@ impl Viewer {
             let edge = |text: &'static str| div().absolute().text_color(label_color).child(text);
             panel = panel
                 .child(div().absolute().inset_0().border_1().border_color(
-                    if self.active_panel == (view.base, view.axis) {
+                    if self.active_panel == (view.base, view.axis) && view.current {
                         label_color
                     } else {
                         border
                     },
                 ))
-                .when(self.info == InfoLevel::Full, |panel| {
+                .when(self.info == InfoLevel::Full && !compact, |panel| {
                     panel.child(
                         v_flex()
                             .absolute()
@@ -1824,13 +1892,15 @@ impl Viewer {
                             .when(!overlaid, |title| title.child(display.name())),
                     )
                 })
-                .when(self.info != InfoLevel::Off, |panel| {
+                .when(self.info != InfoLevel::Off && !compact, |panel| {
                     panel
                         .child(edge(labels.left).left_2())
                         .child(edge(labels.right).right_2())
                         .child(edge(labels.top).top_1())
                         .child(edge(labels.bottom).bottom_1())
-                        .child(self.corner_info(&view, muted))
+                })
+                .when(self.info != InfoLevel::Off, |panel| {
+                    panel.child(self.corner_info(&view, muted))
                 });
             area = area.child(panel);
         }
@@ -1879,13 +1949,14 @@ impl Viewer {
         };
         let base = &self.layers[view.base].display;
         let (slice, count) = base.slice_position(view.axis);
+        let slice = view.slice.unwrap_or(slice);
         let corner = || {
             div()
                 .absolute()
                 .text_size(px(CORNER_TEXT))
                 .text_color(color)
         };
-        let full = self.info == InfoLevel::Full;
+        let full = self.info == InfoLevel::Full && view.slice.is_none();
         div()
             .absolute()
             .inset_0()
@@ -2068,6 +2139,13 @@ impl Viewer {
                 "Single view",
                 &LayoutSingle,
                 Layout::Single { axis, layer: None },
+            ))
+            .child(layout_button(
+                "layout-lightbox",
+                Carbon::Lightbox,
+                "Lightbox view",
+                &LayoutLightbox,
+                Layout::Lightbox(axis),
             ))
             .when(self.layout.axis().is_some(), |bar| {
                 bar.child(separator())
@@ -2794,10 +2872,74 @@ impl Viewer {
             .into_any_element()
     }
 
+    /// How many lightbox views and how far apart each view is
+    fn render_lightbox_settings(&self, cx: &mut Context<Self>) -> Div {
+        let muted = cx.theme().muted_foreground;
+        let viewer = cx.entity().downgrade();
+        let grid_label = |(columns, rows): (usize, usize)| format!("{columns} \u{d7} {rows}");
+        let step_label = |step: usize| match step {
+            1 => "1 step".to_string(),
+            step => format!("{step} steps"),
+        };
+        let grids = viewer.clone();
+        h_flex()
+            .gap_2()
+            .child(
+                div()
+                    .w(px(64.0))
+                    .text_xs()
+                    .text_color(muted)
+                    .child("Lightbox"),
+            )
+            .child(
+                Button::new("lightbox-grid")
+                    .ghost()
+                    .xsmall()
+                    .label(grid_label(self.lightbox_grid))
+                    .tooltip("Columns \u{d7} rows")
+                    .dropdown_menu(move |mut menu, _, _| {
+                        for grid in LIGHTBOX_GRIDS {
+                            let viewer = grids.clone();
+                            menu = menu.item(PopupMenuItem::new(grid_label(grid)).on_click(
+                                move |_, _, cx| {
+                                    let _ = viewer.update(cx, |viewer, cx| {
+                                        viewer.set_lightbox_grid(grid, cx);
+                                    });
+                                },
+                            ));
+                        }
+                        menu
+                    }),
+            )
+            .child(
+                Button::new("lightbox-step")
+                    .ghost()
+                    .xsmall()
+                    .label(step_label(self.lightbox_step))
+                    .tooltip("Step size")
+                    .dropdown_menu(move |mut menu, _, _| {
+                        for step in LIGHTBOX_STEPS {
+                            let viewer = viewer.clone();
+                            menu = menu.item(PopupMenuItem::new(step_label(step)).on_click(
+                                move |_, _, cx| {
+                                    let _ = viewer.update(cx, |viewer, cx| {
+                                        viewer.lightbox_step = step;
+                                        cx.notify();
+                                    });
+                                },
+                            ));
+                        }
+                        menu
+                    }),
+            )
+    }
+
     /// Settings shared by all layers. Empty unless there is something to set
     fn render_view_settings(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let muted = cx.theme().muted_foreground;
         let sync_modes = !self.layout.overlaid() && self.sync;
+        let lightbox = matches!(self.layout, Layout::Lightbox(_));
+        let lightbox_settings = lightbox.then(|| self.render_lightbox_settings(cx));
         let mode_button = |id: &'static str, label: &'static str, mode: SyncMode| {
             Button::new(id)
                 .xsmall()
@@ -2811,9 +2953,11 @@ impl Viewer {
         };
         v_flex()
             .gap_2()
-            .when(sync_modes || self.frame_slider.is_some(), |settings| {
-                settings.child(section_title("View", muted))
-            })
+            .when(
+                sync_modes || self.frame_slider.is_some() || lightbox,
+                |settings| settings.child(section_title("View", muted)),
+            )
+            .children(lightbox_settings)
             .when_some(self.frame_slider.as_ref(), |settings, slider| {
                 settings.child(
                     h_flex()
@@ -2934,6 +3078,7 @@ impl Render for Viewer {
             .on_action(cx.listener(Self::layout_compare))
             .on_action(cx.listener(Self::layout_grid))
             .on_action(cx.listener(Self::layout_single))
+            .on_action(cx.listener(Self::layout_lightbox))
             .on_action(cx.listener(Self::close_selected))
             .on_action(cx.listener(Self::reload_selected))
             .on_action(cx.listener(Self::move_selected_up))
@@ -2997,6 +3142,17 @@ fn view_area(window: &Window) -> Size<f32> {
         (f32::from(viewport.width) - SIDEBAR_WIDTH).max(0.0),
         (f32::from(viewport.height) - TOOLBAR_HEIGHT - STATUS_HEIGHT).max(0.0),
     )
+}
+
+fn lightbox_slices(current: usize, count: usize, step: usize, cells: usize) -> Vec<usize> {
+    let (step, cells) = (step.max(1), cells.max(1));
+    let phase = current % step;
+    let page = (current - phase) / step / cells;
+    let first = phase + page * cells * step;
+    (0..cells)
+        .map(|n| first + n * step)
+        .take_while(|&slice| slice < count)
+        .collect()
 }
 
 fn grid_columns(count: usize, area: Size<f32>) -> usize {
@@ -3173,7 +3329,20 @@ fn opacity_slider(load_id: u64, cx: &mut Context<Viewer>) -> (Entity<SliderState
 
 #[cfg(test)]
 mod tests {
-    use super::{Layout, PRESETS, Preset, ViewPlane, format_value, grid_columns, moved, size};
+    use super::{
+        Layout, PRESETS, Preset, ViewPlane, format_value, grid_columns, lightbox_slices, moved,
+        size,
+    };
+
+    #[test]
+    fn lightbox_pages_hold_the_cursor() {
+        assert_eq!(lightbox_slices(0, 10, 1, 4), [0, 1, 2, 3]);
+        assert_eq!(lightbox_slices(5, 10, 1, 4), [4, 5, 6, 7]);
+        assert_eq!(lightbox_slices(9, 10, 1, 4), [8, 9]);
+        assert_eq!(lightbox_slices(5, 10, 2, 4), [1, 3, 5, 7]);
+        assert_eq!(lightbox_slices(9, 10, 2, 4), [9]);
+        assert_eq!(lightbox_slices(4, 10, 2, 4), [0, 2, 4, 6]);
+    }
 
     #[test]
     fn grids_make_cells_as_large_as_possible() {
@@ -3200,6 +3369,12 @@ mod tests {
         };
         assert!(single(None).overlaid());
         assert!(!single(Some(1)).overlaid());
+        let lightbox = Layout::Lightbox(ViewPlane::Axial);
+        assert!(lightbox.overlaid());
+        assert_eq!(
+            lightbox.with_axis(ViewPlane::Sagittal),
+            Layout::Lightbox(ViewPlane::Sagittal)
+        );
     }
 
     #[test]

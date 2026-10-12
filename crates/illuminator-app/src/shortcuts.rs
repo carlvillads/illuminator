@@ -62,6 +62,8 @@ actions!(
         LayoutGrid,
         /// One large view
         LayoutSingle,
+        /// Lightbox view
+        LayoutLightbox,
         /// Closes the selected layer
         CloseLayer,
         /// Loads the selected layers file again
@@ -123,6 +125,7 @@ pub fn bind(cx: &mut App) {
         KeyBinding::new("2", LayoutCompare, viewer),
         KeyBinding::new("3", LayoutGrid, viewer),
         KeyBinding::new("4", LayoutSingle, viewer),
+        KeyBinding::new("5", LayoutLightbox, viewer),
         KeyBinding::new("secondary-backspace", CloseLayer, viewer),
         KeyBinding::new("secondary-r", ReloadLayer, viewer),
         KeyBinding::new("alt-k", MoveLayerUp, viewer),
@@ -144,13 +147,16 @@ pub fn help() -> Vec<(String, &'static str)> {
         ("=/-/0".into(), "Zoom in/out/reset"),
         ("Doubleclick".into(), "Focus/unfocus view"),
         ("Hover".into(), "Values in the status bar"),
-        ("1-4".into(), "Layouts"),
+        ("1–5".into(), "Layouts"),
         ("Space".into(), "Play/pause frames"),
         ("O".into(), "Overlay/side by side"),
         ("J/K".into(), "Next/previous layer"),
         ("V".into(), "Show/hide layer"),
         ("\u{2191}/\u{2193}".into(), "Next/previous slice"),
-        ("Shift+\u{2191}/\u{2193}".into(), "Ten slices"),
+        (
+            "Shift+\u{2191}/\u{2193}".into(),
+            "Ten slices, or a lightbox page",
+        ),
         ("\u{2190}/\u{2192}".into(), "Previous/next frame"),
         ("H".into(), "Center cursor"),
         ("A".into(), "Auto contrast"),
