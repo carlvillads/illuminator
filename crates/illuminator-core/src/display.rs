@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use crate::error::{Error, Result};
 use crate::geometry::{GeometryOptions, Point3D, SlicePlane, ViewPlane, VolumeGeometry};
-use crate::labels::LabelTable;
+use crate::labels;
 use crate::loader::LoadedVolume;
 use crate::meta::{SpatialUnits, VolumeMeta};
 use crate::progress::Progress;
@@ -110,7 +110,7 @@ pub struct VolumeDisplay {
     cursor: Point3D,
     frame: usize,
     range: Option<Range>,
-    labels: LabelTable,
+    label_count: usize,
     label_mode: bool,
     pub window: IntensityWindow,
     pub colormap: Colormap,
@@ -134,7 +134,7 @@ impl VolumeDisplay {
             cursor: Point3D::default(),
             frame: 0,
             range: loaded.range,
-            labels: LabelTable::default(),
+            label_count: 0,
             label_mode: false,
             window,
             colormap: Colormap::default(),
@@ -175,7 +175,7 @@ impl VolumeDisplay {
     }
 
     pub fn label_count(&self) -> usize {
-        self.labels.labels().len()
+        self.label_count
     }
 
     pub fn name(&self) -> String {
@@ -330,8 +330,8 @@ impl VolumeDisplay {
             return Ok(());
         }
         if self.label_mode {
-            self.labels
-                .encode(&self.volume, frame, LABEL_LIMIT, &Progress::default())?;
+            self.label_count =
+                labels::count_labels(&self.volume, frame, LABEL_LIMIT, &Progress::default())?;
         }
         self.frame = frame;
         Ok(())
@@ -339,8 +339,8 @@ impl VolumeDisplay {
 
     pub fn set_label_mode(&mut self, enabled: bool) -> Result<()> {
         if enabled && !self.label_mode {
-            self.labels
-                .encode(&self.volume, self.frame, LABEL_LIMIT, &Progress::default())?;
+            self.label_count =
+                labels::count_labels(&self.volume, self.frame, LABEL_LIMIT, &Progress::default())?;
         }
         self.label_mode = enabled;
         Ok(())
@@ -730,7 +730,7 @@ mod tests {
         assert_eq!(labels.frame(), 1);
         labels.set_label_mode(true).unwrap();
         assert_eq!(labels.coloring(), Coloring::Labels { outline: false });
-        assert_eq!(labels.label_count(), 3);
+        assert_eq!(labels.label_count(), 2);
 
         let other_dir = tempfile::tempdir().unwrap();
         let fractional = Fixture {
