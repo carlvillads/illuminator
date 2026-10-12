@@ -11,7 +11,7 @@ path = "src/main.rs"
 illuminator-core = { path = "../illuminator-core" }
 gpui-kit.workspace = true
 futures.workspace = true
-image.workspace = true
+image = { workspace = true, features = ["png"] }
 url.workspace = true
 interprocess.workspace = true
 
