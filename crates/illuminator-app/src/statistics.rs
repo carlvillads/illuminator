@@ -13,6 +13,7 @@ use std::sync::Arc;
 use crate::viewer::format_value;
 
 const COLUMN: f32 = 76.0;
+const NO_VALUES: &str = "None (volumes only)";
 
 #[derive(Clone)]
 pub struct Snapshot {
@@ -131,7 +132,7 @@ impl StatisticsView {
         let names: Vec<SharedString> = self.candidates.iter().map(|c| c.name.clone()).collect();
         let label = match self.chosen {
             Some(index) => names[index].clone(),
-            None => "No label maps loaded.".into(),
+            None => NO_VALUES.into(),
         };
         Button::new("values")
             .xsmall()
@@ -145,11 +146,9 @@ impl StatisticsView {
                 }
                 let view = view.clone();
                 menu.separator()
-                    .item(
-                        PopupMenuItem::new("No label maps loaded.").on_click(move |_, _, cx| {
-                            let _ = view.update(cx, |view, cx| view.choose(None, cx));
-                        }),
-                    )
+                    .item(PopupMenuItem::new(NO_VALUES).on_click(move |_, _, cx| {
+                        let _ = view.update(cx, |view, cx| view.choose(None, cx));
+                    }))
             })
     }
 }
