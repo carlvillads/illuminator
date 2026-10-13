@@ -10,7 +10,7 @@ use illuminator_core::volume::Volume;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use crate::viewer::format_value;
+use crate::ui::format_value;
 
 const COLUMN: f32 = 76.0;
 const NO_VALUES: &str = "None (volumes only)";

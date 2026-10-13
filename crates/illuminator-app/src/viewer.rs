@@ -33,7 +33,6 @@ use illuminator_core::cache::VolumeCache;
 use illuminator_core::display::{SampleKey, VolumeDisplay};
 use illuminator_core::geometry::{Point3D, SlicePlane, ViewPlane};
 use illuminator_core::histogram::Histogram;
-use illuminator_core::labels::label_color;
 use illuminator_core::loader::{LoadState, VolumeLoader};
 use illuminator_core::slicer::{Coloring, Colormap, SampledSlice, SliceImage, fit_size};
 use illuminator_core::suv::SuvInputs;
@@ -54,7 +53,7 @@ use crate::picture::{Picture, Rect};
 use crate::shortcuts::{self, *};
 use crate::statistics::{Snapshot, StatisticsView};
 use crate::suv_form::SuvForm;
-use crate::ui::{self, AppStyle};
+use crate::ui::{self, AppStyle, colormap_strip, format_value, section_title, tabular_nums};
 use crate::zoom::{Visible, Zoom};
 
 const SIDEBAR_WIDTH: f32 = 240.0;
@@ -736,49 +735,6 @@ fn view_area(window: &Window) -> Size<f32> {
     )
 }
 
-pub(crate) fn format_value(value: f64) -> String {
-    if value.fract() == 0.0 && value.abs() < 1e9 {
-        format!("{value:.0}")
-    } else {
-        format!("{value:.3}")
-    }
-}
-
-fn section_title(text: impl Into<SharedString>, cx: &App) -> Div {
-    let theme = cx.theme();
-    h_flex()
-        .gap_2()
-        .text_xs()
-        .font_weight(FontWeight::SEMIBOLD)
-        .text_color(theme.muted_foreground)
-        .child(text.into())
-        .child(div().flex_1().h(px(1.0)).bg(theme.border))
-}
-
-fn colormap_strip(colormap: Colormap, labels: bool, blocks: usize) -> Div {
-    h_flex()
-        .w_full()
-        .h(px(10.0))
-        .rounded_sm()
-        .overflow_hidden()
-        .children((0..blocks).map(|block| {
-            let [r, g, b] = if labels {
-                let [r, g, b, _] = label_color(block as i64 + 1);
-                [r, g, b]
-            } else {
-                colormap.color((block as f64 + 0.5) / blocks as f64)
-            };
-            div()
-                .flex_1()
-                .h_full()
-                .bg(rgb(u32::from_be_bytes([0, r, g, b])))
-        }))
-}
-
-fn tabular_nums() -> FontFeatures {
-    FontFeatures(Arc::new(vec![("tnum".into(), 1)]))
-}
-
 fn opacity_slider(load_id: u64, cx: &mut Context<Viewer>) -> (Entity<SliderState>, Subscription) {
     let state = cx.new(|_| {
         SliderState::new()
@@ -800,7 +756,7 @@ fn opacity_slider(load_id: u64, cx: &mut Context<Viewer>) -> (Entity<SliderState
 
 #[cfg(test)]
 mod tests {
-    use super::{Layout, PRESETS, Preset, ViewPlane, format_value};
+    use super::{Layout, PRESETS, Preset, ViewPlane};
 
     #[test]
     fn layouts_know_their_plane() {
@@ -824,12 +780,6 @@ mod tests {
             lightbox.with_axis(ViewPlane::Sagittal),
             Layout::Lightbox(ViewPlane::Sagittal)
         );
-    }
-
-    #[test]
-    fn values_are_short() {
-        assert_eq!(format_value(-1024.0), "-1024");
-        assert_eq!(format_value(3.81234), "3.812");
     }
 
     #[test]
