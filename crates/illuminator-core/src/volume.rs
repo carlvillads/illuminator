@@ -79,7 +79,7 @@ impl Volume {
 
         // SAFETY: Memory map is only sound while no one else modifies the file.
         // Decompressed volumes are written once into the cache and never changed in place. However,
-        // uncompressed volumes aren't stored in our cache, so if another program truncates or ewrites one
+        // uncompressed volumes aren't stored in our cache, so if another program truncates or rewrites one
         // while it is open, the views may change, or the app may crash. I think the risk is relatively low,
         // and its an alright trade-off to avoid copying whole uncompressed volumes to memory.
         let map = unsafe { Mmap::map(&file)? };
