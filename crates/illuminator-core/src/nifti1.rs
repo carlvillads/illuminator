@@ -11,7 +11,7 @@ use crate::error::{Error, Result};
 use crate::meta::{DataFile, Format, Mat3x4, SpatialUnits, Transform, VolumeMeta};
 use crate::voxel::{self, DataType, Endian, Scaling};
 
-const MAGIC: usize = 344;
+const MAGIC_OFFSET: usize = 344;
 
 pub fn read(path: &Path) -> Result<VolumeMeta> {
     let header_path = header_path_for(path)?;
@@ -33,9 +33,9 @@ fn read_header(path: &Path) -> std::result::Result<(NiftiHeader, bool), String> 
         file.read_exact(&mut bytes)
     };
     read.map_err(|error| error.to_string())?;
-    let analyze = !matches!(&bytes[MAGIC..MAGIC + 4], b"n+1\0" | b"ni1\0");
+    let analyze = !matches!(&bytes[MAGIC_OFFSET..MAGIC_OFFSET + 4], b"n+1\0" | b"ni1\0");
     if analyze {
-        bytes[MAGIC..MAGIC + 4].copy_from_slice(b"ni1\0");
+        bytes[MAGIC_OFFSET..MAGIC_OFFSET + 4].copy_from_slice(b"ni1\0");
     }
     let raw = NiftiHeader::from_reader(&bytes[..]).map_err(|error| match error {
         nifti::NiftiError::Io(error) => error.to_string(),
@@ -78,13 +78,13 @@ fn from_nifti(raw: &NiftiHeader, analyze: bool, path: &Path) -> Result<VolumeMet
     })?;
 
     let spacing = [1, 2, 3].map(|axis| f64::from(raw.pixdim[axis]));
-    let (cal_min, cal_max) = (finite(raw.cal_min), finite(raw.cal_max));
+    let (cal_min, cal_max) = (finite_or_zero(raw.cal_min), finite_or_zero(raw.cal_max));
     let display_range = (cal_max > cal_min).then(|| (f64::from(cal_min), f64::from(cal_max)));
 
     // account for the different header structure of analyze
     let (units, scaling, transform) = if analyze {
         // analyze is always in mm
-        let scaling = Scaling::from_header(finite(raw.scl_slope), 0.0)?;
+        let scaling = Scaling::from_header(finite_or_zero(raw.scl_slope), 0.0)?;
         (SpatialUnits::Millimeter, scaling, None)
     } else {
         let units = match raw.xyzt_units & 0x07 {
@@ -93,7 +93,8 @@ fn from_nifti(raw: &NiftiHeader, analyze: bool, path: &Path) -> Result<VolumeMet
             3 => SpatialUnits::Micron,
             _ => SpatialUnits::Unknown,
         };
-        let scaling = Scaling::from_header(finite(raw.scl_slope), finite(raw.scl_inter))?;
+        let scaling =
+            Scaling::from_header(finite_or_zero(raw.scl_slope), finite_or_zero(raw.scl_inter))?;
         (units, scaling, transform(raw))
     };
 
@@ -141,8 +142,8 @@ fn transform(raw: &NiftiHeader) -> Option<Transform> {
     (raw.qform_code > 0).then(|| Transform {
         name: "qform",
         matrix: quaternion_to_matrix(
-            [raw.quatern_b, raw.quatern_c, raw.quatern_d].map(finite),
-            [raw.quatern_x, raw.quatern_y, raw.quatern_z].map(finite),
+            [raw.quatern_b, raw.quatern_c, raw.quatern_d].map(finite_or_zero),
+            [raw.quatern_x, raw.quatern_y, raw.quatern_z].map(finite_or_zero),
             [raw.pixdim[1], raw.pixdim[2], raw.pixdim[3]],
             raw.pixdim[0] < 0.0,
         ),
@@ -150,7 +151,7 @@ fn transform(raw: &NiftiHeader) -> Option<Transform> {
 }
 
 /// Copy nifti_clib behaviour: 'FIXED_FLOAT' -> non finite values become 0
-fn finite(value: f32) -> f32 {
+fn finite_or_zero(value: f32) -> f32 {
     if value.is_finite() { value } else { 0.0 }
 }
 

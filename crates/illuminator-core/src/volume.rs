@@ -37,7 +37,7 @@ pub struct Volume {
     offset: usize,
     projections: Mutex<Vec<Arc<Projection>>>,
     /// Keeps a decompressed cache file from being evicted.
-    _lease: Option<Arc<CacheLease>>,
+    lease: Option<Arc<CacheLease>>,
 }
 
 impl Volume {
@@ -98,7 +98,7 @@ impl Volume {
             data_path,
             offset,
             projections: Mutex::default(),
-            _lease: lease,
+            lease,
         })
     }
 
@@ -122,7 +122,7 @@ impl Volume {
             data_path: self.data_path.clone(),
             offset: self.offset,
             projections: Mutex::default(),
-            _lease: self._lease.clone(),
+            lease: self.lease.clone(),
         }
     }
 

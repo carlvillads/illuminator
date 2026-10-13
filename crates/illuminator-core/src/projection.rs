@@ -11,21 +11,22 @@ pub struct Projection {
     pub axis: usize,
     dims: [usize; 2],
     max: Vec<f32>,
-    at: Vec<u32>,
+    depth_of_max: Vec<u32>,
 }
 
 impl Projection {
     pub fn of(volume: &Volume, frame: usize, axis: usize) -> Self {
         let frame = volume.clamp_frame(frame);
         let meta = volume.meta();
-        let (max, at) = with_scalar!(meta.datatype, |T| project::<T>(volume, frame, axis));
-        let [a, b] = others(axis);
+        let (max, depth_of_max) =
+            with_scalar!(meta.datatype, |T| project::<T>(volume, frame, axis));
+        let [a, b] = other_axes(axis);
         Self {
             frame,
             axis,
             dims: [meta.dims[a], meta.dims[b]],
             max,
-            at,
+            depth_of_max,
         }
     }
 
@@ -35,7 +36,7 @@ impl Projection {
     }
 
     pub fn linear(&self, voxel: Point3D) -> f32 {
-        let [a, b] = others(self.axis);
+        let [a, b] = other_axes(self.axis);
         let (x, y) = (voxel[a].max(0.0), voxel[b].max(0.0));
         let [i, j] = self.cell(voxel, 0.0);
         let (i1, j1) = ((i + 1).min(self.dims[0] - 1), (j + 1).min(self.dims[1] - 1));
@@ -57,16 +58,16 @@ impl Projection {
         if self.max[index].is_nan() {
             return None;
         }
-        let [a, b] = others(self.axis);
+        let [a, b] = other_axes(self.axis);
         let mut found = [0; 3];
         found[a] = i;
         found[b] = j;
-        found[self.axis] = self.at[index] as usize;
+        found[self.axis] = self.depth_of_max[index] as usize;
         Some(found)
     }
 
     fn cell(&self, voxel: Point3D, round: f64) -> [usize; 2] {
-        let [a, b] = others(self.axis);
+        let [a, b] = other_axes(self.axis);
         let index = |coordinate: f64, size: usize| {
             ((coordinate + round).floor().max(0.0) as usize).min(size - 1)
         };
@@ -74,7 +75,7 @@ impl Projection {
     }
 }
 
-pub fn others(axis: usize) -> [usize; 2] {
+pub fn other_axes(axis: usize) -> [usize; 2] {
     match axis {
         0 => [1, 2],
         1 => [0, 2],
@@ -102,7 +103,7 @@ fn project<T: Scalar>(volume: &Volume, frame: usize, axis: usize) -> (Vec<f32>, 
     let (scaling, endian) = (meta.scaling, meta.endian);
     let dims = [meta.dims[0], meta.dims[1], meta.dims[2]];
     let strides = [1, dims[0], dims[0] * dims[1]];
-    let [a, b] = others(axis);
+    let [a, b] = other_axes(axis);
     // one line of the projection per task
     let rows: Vec<(Vec<f32>, Vec<u32>)> = (0..dims[b])
         .into_par_iter()

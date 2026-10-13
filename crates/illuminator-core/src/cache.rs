@@ -147,7 +147,7 @@ impl VolumeCache {
             self.make_room(&mut state, min_bytes)?;
             state.reserved += min_bytes;
             state.writing.insert(target.clone());
-            Writing {
+            PendingWrite {
                 cache: self,
                 target: target.clone(),
                 reserved: min_bytes,
@@ -197,7 +197,7 @@ impl VolumeCache {
         source: &Path,
         start: u64,
         output: &mut impl Write,
-        writing: &mut Writing<'_>,
+        writing: &mut PendingWrite<'_>,
         min_bytes: u64,
         progress: &Progress,
     ) -> Result<u64> {
@@ -286,13 +286,13 @@ impl VolumeCache {
     }
 }
 
-struct Writing<'a> {
+struct PendingWrite<'a> {
     cache: &'a VolumeCache,
     target: PathBuf,
     reserved: u64,
 }
 
-impl Writing<'_> {
+impl PendingWrite<'_> {
     fn grow(&mut self, total: u64) -> Result<()> {
         if total <= self.reserved {
             return Ok(());
@@ -306,7 +306,7 @@ impl Writing<'_> {
     }
 }
 
-impl Drop for Writing<'_> {
+impl Drop for PendingWrite<'_> {
     fn drop(&mut self) {
         let mut state = self
             .cache

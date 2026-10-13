@@ -29,7 +29,7 @@ impl Viewer {
         v_flex()
             .gap_1()
             .children(self.loader.statuses().into_iter().map(|status| {
-                let id = status.id;
+                let id = status.load_id;
                 v_flex()
                     .child(
                         h_flex()

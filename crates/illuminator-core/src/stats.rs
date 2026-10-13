@@ -116,7 +116,7 @@ fn voxel_volume_mm3(geometry: &VolumeGeometry) -> f64 {
 #[derive(Default)]
 struct Counts {
     voxels: usize,
-    values: Running,
+    values: RunningStats,
 }
 
 impl Counts {
@@ -129,7 +129,7 @@ impl Counts {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct Running {
+struct RunningStats {
     count: usize,
     mean: f64,
     m2: f64,
@@ -137,7 +137,7 @@ struct Running {
     max: f64,
 }
 
-impl Default for Running {
+impl Default for RunningStats {
     fn default() -> Self {
         Self {
             count: 0,
@@ -149,7 +149,7 @@ impl Default for Running {
     }
 }
 
-impl Running {
+impl RunningStats {
     fn push(&mut self, value: f64) {
         self.count += 1;
         let delta = value - self.mean;
@@ -225,15 +225,15 @@ mod tests {
     #[test]
     fn running_statistics_merge_like_one_pass() {
         let values = [3.0, -1.0, 4.0, 1.0, 5.0, 9.0, 2.0];
-        let mut whole = Running::default();
+        let mut whole = RunningStats::default();
         values.iter().for_each(|&v| whole.push(v));
-        let (mut a, mut b) = (Running::default(), Running::default());
+        let (mut a, mut b) = (RunningStats::default(), RunningStats::default());
         values[..3].iter().for_each(|&v| a.push(v));
         values[3..].iter().for_each(|&v| b.push(v));
         let (whole, merged) = (whole.summary().unwrap(), a.merge(b).summary().unwrap());
         assert!(close(whole.mean, merged.mean) && close(whole.std, merged.std));
         assert_eq!((merged.min, merged.max, merged.count), (-1.0, 9.0, 7));
-        let mut five = Running::default();
+        let mut five = RunningStats::default();
         (1..=5).for_each(|v| five.push(f64::from(v)));
         assert!(close(five.summary().unwrap().std, 2.5f64.sqrt()));
     }

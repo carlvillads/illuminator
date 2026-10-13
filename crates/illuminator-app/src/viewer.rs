@@ -49,9 +49,9 @@ use std::time::Duration;
 
 use crate::assets::Carbon;
 use crate::cli::{Cli, LayoutName};
+use crate::label_statistics::{Snapshot, StatisticsView};
 use crate::picture::{Picture, Rect};
 use crate::shortcuts::{self, *};
-use crate::statistics::{Snapshot, StatisticsView};
 use crate::suv_form::SuvForm;
 use crate::ui::{
     self, AppStyle, colormap_strip, format_value, rgb_to_rgba, section_title, tabular_nums,
@@ -466,7 +466,7 @@ impl Viewer {
     fn take_loaded(&mut self, cx: &mut Context<Self>) {
         let mut added = false;
         for loaded in self.loader.take_completed() {
-            let load_id = loaded.id;
+            let load_id = loaded.load_id;
             let reload_of = self.reloads.remove(&load_id);
             match VolumeDisplay::new(loaded) {
                 Ok(mut display) => {

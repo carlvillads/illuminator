@@ -93,7 +93,7 @@ impl IntensityWindow {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PanelLabels {
+pub struct OrientationLabels {
     pub title: &'static str,
     pub left: &'static str,
     pub right: &'static str,
@@ -512,11 +512,11 @@ impl VolumeDisplay {
         Some((nearest, value))
     }
 
-    pub fn labels(&self, axis: ViewPlane, radiological: bool) -> PanelLabels {
+    pub fn orientation_labels(&self, axis: ViewPlane, radiological: bool) -> OrientationLabels {
         let sagittal = axis == ViewPlane::Sagittal;
         let axial = axis == ViewPlane::Axial;
         if self.geometry.anatomical {
-            PanelLabels {
+            OrientationLabels {
                 title: match axis {
                     ViewPlane::Axial => "Axial",
                     ViewPlane::Coronal => "Coronal",
@@ -540,7 +540,7 @@ impl VolumeDisplay {
                 bottom: if axial { "P" } else { "I" },
             }
         } else {
-            PanelLabels {
+            OrientationLabels {
                 title: match axis {
                     ViewPlane::Axial => "Native K",
                     ViewPlane::Coronal => "Native J",
@@ -571,7 +571,7 @@ mod tests {
         let volume = Volume::load(&path, &cache, &Progress::default()).unwrap();
         let range = volume.frame_range(0, &Progress::default()).unwrap();
         VolumeDisplay::new(LoadedVolume {
-            id: 1,
+            load_id: 1,
             volume,
             range,
         })
@@ -785,9 +785,12 @@ mod tests {
     fn panel_labels() {
         let dir = tempfile::tempdir().unwrap();
         let display = display(&dir, &Fixture::default());
-        let axial = display.labels(ViewPlane::Axial, false);
+        let axial = display.orientation_labels(ViewPlane::Axial, false);
         assert_eq!((axial.title, axial.left, axial.top), ("Axial", "L", "A"));
-        assert_eq!(display.labels(ViewPlane::Axial, true).left, "R");
-        assert_eq!(display.labels(ViewPlane::Sagittal, true).left, "P");
+        assert_eq!(display.orientation_labels(ViewPlane::Axial, true).left, "R");
+        assert_eq!(
+            display.orientation_labels(ViewPlane::Sagittal, true).left,
+            "P"
+        );
     }
 }

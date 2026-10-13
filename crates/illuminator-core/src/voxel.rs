@@ -276,11 +276,11 @@ impl<'a> Values<'a> {
         F: Fn(A, f64) -> A + Sync + Send,
         M: Fn(A, A) -> A + Sync + Send,
     {
-        let piece_types = T::SIZE * PIECE;
-        let pieces = self.bytes.len().div_ceil(piece_types).max(1);
+        let piece_bytes = T::SIZE * PIECE;
+        let pieces = self.bytes.len().div_ceil(piece_bytes).max(1);
         let done = AtomicUsize::new(0);
         self.bytes
-            .par_chunks(piece_types)
+            .par_chunks(piece_bytes)
             .try_fold(&init, |sum, piece| {
                 let sum = piece
                     .chunks_exact(T::SIZE)

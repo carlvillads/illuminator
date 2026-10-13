@@ -216,7 +216,7 @@ impl SampledSlice {
                 Samples::Intensity(values),
                 Coloring::Intensity {
                     level,
-                    width,
+                    width: window_width,
                     colormap,
                     clip_low,
                 },
@@ -226,7 +226,7 @@ impl SampledSlice {
                     .zip(values.par_chunks(row))
                     .for_each(|(line, values)| {
                         for (pixel, &value) in line.iter_mut().zip(values) {
-                            let t = (f64::from(value) - level) / width + 0.5;
+                            let t = (f64::from(value) - level) / window_width + 0.5;
                             if !value.is_nan() && !(clip_low && t <= 0.0) {
                                 let [r, g, b] = table.color(t);
                                 *pixel = [r, g, b, 255];

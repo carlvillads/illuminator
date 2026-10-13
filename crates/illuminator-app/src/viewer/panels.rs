@@ -10,7 +10,7 @@ impl Viewer {
     ) -> impl IntoElement {
         let theme = cx.theme();
         let (muted, border) = (theme.muted_foreground, theme.border);
-        let label_color: Hsla = rgb(ui::ORIENTATION_COLOR).into();
+        let orientation_color: Hsla = rgb(ui::ORIENTATION_COLOR).into();
         let scale = window.scale_factor();
         let overlaid = self.layout.overlaid();
         let mut area = div()
@@ -104,7 +104,7 @@ impl Viewer {
 
         for view in self.views(window) {
             let display = &self.layers[view.base].display;
-            let labels = display.labels(view.axis, self.radiological);
+            let labels = display.orientation_labels(view.axis, self.radiological);
             // only show slice number for lightbox views
             let compact = view.slice.is_some();
             let mut panel = div()
@@ -138,7 +138,8 @@ impl Viewer {
                 panel = panel.children(lines);
             }
 
-            let edge = |text: &'static str| div().absolute().text_color(label_color).child(text);
+            let edge =
+                |text: &'static str| div().absolute().text_color(orientation_color).child(text);
             panel = panel
                 .child(div().absolute().inset_0().map(|frame| {
                     if self.active_panel == (view.base, view.axis) && view.current {
