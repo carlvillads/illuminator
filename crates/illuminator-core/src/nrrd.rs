@@ -217,7 +217,7 @@ fn space(
     let spacing = [0, 1, 2].map(|axis| columns[axis].iter().map(|x| x * x).sum::<f64>().sqrt());
 
     let units = header
-        .field("space_units")
+        .field("space units")
         .map_or(SpatialUnits::Millimeter, parse_spatial_units);
     let transform = Transform {
         name: "space directions",
