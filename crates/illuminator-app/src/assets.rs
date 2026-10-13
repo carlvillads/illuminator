@@ -38,7 +38,7 @@ carbon_icons! {
     AutoWindow => "window--auto.svg",
     Close => "close.svg",
     Compare => "hanging-protocol.svg",
-    CornerText => "text-annotation-toggle.svg",
+    CornerText => "dicom--overlay.svg",
     Crosshair => "3D-cursor--alt.svg",
     FolderOpen => "folder--open.svg",
     Grid => "grid.svg",

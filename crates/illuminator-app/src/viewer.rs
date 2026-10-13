@@ -2353,10 +2353,10 @@ impl Viewer {
                     .ghost()
                     .small()
                     .icon(Carbon::CornerText)
-                    .when(labels, |button| button.label("Text"))
+                    .when(labels, |button| button.label("Overlay"))
                     .selected(self.info != InfoLevel::Off)
                     .tooltip_with_action(
-                        format!("Text in views: {}", self.info.name()),
+                        format!("Text overlay: {}", self.info.name()),
                         &ToggleInfo,
                         context,
                     )
