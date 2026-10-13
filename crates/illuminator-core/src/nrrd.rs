@@ -216,29 +216,30 @@ fn space(
     });
     let spacing = [0, 1, 2].map(|axis| columns[axis].iter().map(|x| x * x).sum::<f64>().sqrt());
 
-    let units = match header.field("space units") {
-        Some(text) => {
-            let units: Vec<&str> = text
-                .split_whitespace()
-                .map(|unit| unit.trim_matches('"'))
-                .collect();
-            match units.first() {
-                Some(&first) if units.iter().all(|&unit| unit == first) => match first {
-                    "mm" => SpatialUnits::Millimeter,
-                    "m" => SpatialUnits::Meter,
-                    "um" | "µm" => SpatialUnits::Micron,
-                    _ => SpatialUnits::Unknown,
-                },
-                _ => SpatialUnits::Unknown,
-            }
-        }
-        None => SpatialUnits::Millimeter,
-    };
+    let units = header
+        .field("space_units")
+        .map_or(SpatialUnits::Millimeter, parse_spatial_units);
     let transform = Transform {
         name: "space directions",
         matrix,
     };
     Ok((spacing, units, Some(transform)))
+}
+
+fn parse_spatial_units(text: &str) -> SpatialUnits {
+    let mut units = text.split_whitespace().map(|unit| unit.trim_matches('"'));
+    let Some(first) = units.next() else {
+        return SpatialUnits::Unknown;
+    };
+    if units.any(|unit| unit != first) {
+        return SpatialUnits::Unknown;
+    }
+    match first {
+        "mm" => SpatialUnits::Millimeter,
+        "m" => SpatialUnits::Meter,
+        "um" | "µm" => SpatialUnits::Micron,
+        _ => SpatialUnits::Unknown,
+    }
 }
 
 fn vectors(text: &str) -> Result<Vec<Option<[f64; 3]>>> {
@@ -412,6 +413,20 @@ space origin: (10,20,30)";
         let fields = format!("type: uchar\ndimension: 4\nsizes: 3 2 2 2\nencoding: raw\n{space}");
         let path = write(&dir, "dwi.nrrd", &[&header(&fields), &[0; 24]]);
         assert!(VolumeMeta::read(&path).is_err());
+    }
+
+    #[test]
+    fn space_units_must_be_the_same_on_every_axis() {
+        assert_eq!(
+            parse_spatial_units(r#""mm" "mm" "mm""#),
+            SpatialUnits::Millimeter
+        );
+        assert_eq!(parse_spatial_units(r#""um" "um""#), SpatialUnits::Micron);
+        assert_eq!(
+            parse_spatial_units(r#""mm" "m" "mm""#),
+            SpatialUnits::Unknown
+        );
+        assert_eq!(parse_spatial_units(""), SpatialUnits::Unknown);
     }
 
     #[test]
