@@ -77,8 +77,11 @@ impl Volume {
             .map_err(|_| Error::invalid("Volume data file is too large"))?;
         voxel::validate_region(file_bytes, offset, data.bytes)?;
 
-        // NOTE: I haven't done anything about what happens if someone changes a uncompressed file while open.
-
+        // SAFETY: Memory map is only sound while no one else modifies the file.
+        // Decompressed volumes are written once into the cache and never changed in place. However,
+        // uncompressed volumes aren't stored in our cache, so if another program truncates or ewrites one
+        // while it is open, the views may change, or the app may crash. I think the risk is relatively low,
+        // and its an alright trade-off to avoid copying whole uncompressed volumes to memory.
         let map = unsafe { Mmap::map(&file)? };
         if map.len() < needed {
             return Err(Error::invalid(

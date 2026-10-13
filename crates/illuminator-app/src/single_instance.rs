@@ -60,10 +60,13 @@ fn send(mut stream: LocalSocketStream, files: &[PathBuf]) -> io::Result<()> {
         message.push(0);
     }
     message.push(0);
+    // Windows only lets the foreground app bring a window to the front, so allow the first instance to show
+    // its window when it receives the new files.
     #[cfg(windows)]
-    unsafe {
+    {
         use windows_sys::Win32::UI::WindowsAndMessaging::{ASFW_ANY, AllowSetForegroundWindow};
-        AllowSetForegroundWindow(ASFW_ANY);
+        // SAFETY: AllowSetForegroundWindow takes no pointers. Failing should be harmless.
+        unsafe { AllowSetForegroundWindow(ASFW_ANY) };
     }
     stream.write_all(&message)?;
     stream.read_exact(&mut [0])

@@ -89,3 +89,6 @@ depends = [
 ]
 desktop-template = "packaging/linux/illuminator.desktop"
 files = { "packaging/linux/nifti.xml" = "usr/share/mime/packages/illuminator.xml" }
+
+[lints]
+workspace = true

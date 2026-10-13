@@ -14,3 +14,6 @@ tempfile.workspace = true
 memmap2.workspace = true
 rayon.workspace = true
 serde_json.workspace = true
+
+[lints]
+workspace = true

@@ -95,9 +95,13 @@ fn main() {
     });
 }
 
+/// Release builds won't have a console of their own on Windows. We borrow the terminal that started
+/// illuminator, if it was opened from one.
 #[cfg(windows)]
 fn attach_console() {
     use windows_sys::Win32::System::Console::{ATTACH_PARENT_PROCESS, AttachConsole};
+    // SAFETY: AttachConsole takes no pointers. Without a parent console it returns 0, which should be fine
+    // to ignore.
     unsafe { AttachConsole(ATTACH_PARENT_PROCESS) };
 }
 
