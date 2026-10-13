@@ -7,7 +7,7 @@ use illuminator_core::slicer::Colormap;
 use std::ffi::OsString;
 use std::path::PathBuf;
 
-/// A viewer for nfiti volumes and more.
+/// A viewer for NIfTI volumes and more.
 #[derive(Debug, Parser)]
 #[command(name = "illuminate", version, about)]
 pub struct Cli {
@@ -137,7 +137,7 @@ impl Cli {
 }
 
 fn window_size(text: &str) -> Result<(f32, f32), String> {
-    let expected = || "expected a width and height: f.x. 1440x900".to_string();
+    let expected = || "expected a width and height, e.g. 1440x900".to_string();
     let (width, height) = text.split_once(['x', 'X']).ok_or_else(expected)?;
     let length = |part: &str| {
         part.trim()
