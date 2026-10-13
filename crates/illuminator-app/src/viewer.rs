@@ -220,6 +220,16 @@ struct View {
     current: bool,
 }
 
+impl View {
+    /// Where the image starts inside of the view
+    fn image_offset(&self) -> Point<f32> {
+        point(
+            (self.size.width - self.image_size.width) / 2.0,
+            (self.size.height - self.image_size.height) / 2.0,
+        )
+    }
+}
+
 struct TimeCurve {
     volume: u64,
     voxel: [usize; 3],
