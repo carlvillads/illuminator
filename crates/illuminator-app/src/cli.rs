@@ -109,19 +109,18 @@ impl Cli {
                 .unwrap_or_default()
         };
         let (files, labels) = (positions("files"), positions("labels"));
+        let conflict = |message: &str| Self::command().error(ErrorKind::ArgumentConflict, message);
         cli.colormaps = vec![None; cli.files.len()];
         for (position, &colormap) in positions("colormap").into_iter().zip(&cli.colormap) {
             let file = files.iter().rposition(|&file| file < position);
             let label = labels.iter().rfind(|&&label| label < position);
-            let message = match (file, label) {
+            match (file, label) {
                 (Some(file), label) if label.is_none_or(|&label| label < files[file]) => {
                     cli.colormaps[file] = Some(colormap.into());
-                    continue;
                 }
-                (_, Some(_)) => "label maps do not accept the -c argument",
-                _ => "the -c arg comes after the FILE it is for",
-            };
-            return Err(Self::command().error(ErrorKind::ArgumentConflict, message));
+                (_, Some(_)) => return Err(conflict("label maps do not accept the -c argument")),
+                _ => return Err(conflict("the -c arg comes after the FILE it is for")),
+            }
         }
         Ok(cli)
     }
