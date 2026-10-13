@@ -84,17 +84,8 @@ impl SuvInputs {
                 .ok_or_else(|| missing("known tracer or half-life"))?,
         };
         let bq_ml_per_unit = match sidecar.text("Units") {
+            Some(unit) => bq_ml_per(unit)?,
             None => 1.0,
-            Some(unit) => match unit.to_ascii_lowercase().replace('/', "").as_str() {
-                "bqml" => 1.0,
-                "kbqml" => 1e3,
-                "mbqml" => 1e6,
-                _ => {
-                    return Err(Error::invalid(format!(
-                        "The image is in {unit}, not an activity (like Bq/mL)"
-                    )));
-                }
-            },
         };
         Ok(Self {
             weight_kg,
@@ -168,6 +159,18 @@ fn clock_seconds(text: &str) -> Option<f64> {
     let part = |range: std::ops::Range<usize>| whole[range].parse::<f64>().ok();
     let fraction = format!("0.{fraction}").parse::<f64>().unwrap_or(0.0);
     Some(part(0..2)? * 3600.0 + part(2..4)? * 60.0 + part(4..6)? + fraction)
+}
+
+/// How many Bq/mL one unit of the image is
+fn bq_ml_per(unit: &str) -> Result<f64> {
+    match unit.to_ascii_lowercase().replace('/', "").as_str() {
+        "bqml" => Ok(1.0),
+        "kbqml" => Ok(1e3),
+        "mbqml" => Ok(1e6),
+        _ => Err(Error::invalid(format!(
+            "The image is in {unit}. Should be an activity (e.g. Bq/mL)"
+        ))),
+    }
 }
 
 fn mbq_per(unit: &str) -> Result<f64> {
