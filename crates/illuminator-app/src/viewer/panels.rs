@@ -255,24 +255,29 @@ impl Viewer {
         } else {
             view.base
         };
-        let window_text = match self.layers[windowed].display.coloring() {
-            Coloring::Labels { .. } => "Labels".to_string(),
-            Coloring::Intensity { level, width, .. } => {
-                format!("W {} L {}", format_value(width), format_value(level))
-            }
-        };
-        let colorbar = match self.layers[windowed].display.coloring() {
+        let (window_text, bar) = match self.layers[windowed].display.coloring() {
+            Coloring::Labels { .. } => ("Labels".to_string(), None),
             Coloring::Intensity {
                 level,
                 width,
                 colormap,
                 ..
-            } => Some(colorbar(colormap, level - width / 2.0, level + width / 2.0)),
-            Coloring::Labels { .. } => None,
+            } => (
+                format!("W {} L {}", format_value(width), format_value(level)),
+                Some(colorbar(colormap, level - width / 2.0, level + width / 2.0)),
+            ),
         };
         let base = &self.layers[view.base].display;
         let (slice, count) = base.slice_position(view.axis);
         let slice = view.slice.unwrap_or(slice);
+        let mut position = if view.mip {
+            "MIP".to_string()
+        } else {
+            format!("{}/{count}", slice + 1)
+        };
+        if view.zoom.scale > 1.0 {
+            position = format!("\u{d7}{:.1} {position}", view.zoom.scale);
+        }
         let corner = || {
             div()
                 .absolute()
@@ -299,7 +304,7 @@ impl Viewer {
                             .child(numbered(windowed, window_text)),
                     ),
                 )
-                .when_some(colorbar, |info, colorbar| {
+                .when_some(bar, |info, bar| {
                     info.child(
                         corner()
                             .top_0()
@@ -308,22 +313,11 @@ impl Viewer {
                             .flex()
                             .flex_col()
                             .justify_center()
-                            .child(colorbar),
+                            .child(bar),
                     )
                 })
             })
-            .child(corner().bottom_1().right_2().child({
-                let position = if view.mip {
-                    "MIP".to_string()
-                } else {
-                    format!("{}/{count}", slice + 1)
-                };
-                if view.zoom.scale > 1.0 {
-                    format!("\u{d7}{:.1} {position}", view.zoom.scale)
-                } else {
-                    position
-                }
-            }))
+            .child(corner().bottom_1().right_2().child(position))
     }
 }
 
