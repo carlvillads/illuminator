@@ -10,7 +10,7 @@ use illuminator_core::volume::Volume;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use crate::ui::format_value;
+use crate::ui::{format_value, rgb_to_rgba, tabular_nums};
 
 const COLUMN: f32 = 76.0;
 const NO_VALUES: &str = "None (volumes only)";
@@ -213,12 +213,7 @@ impl Render for StatisticsView {
                             h_flex()
                                 .flex_1()
                                 .gap_2()
-                                .child(
-                                    div()
-                                        .size(px(10.0))
-                                        .rounded_sm()
-                                        .bg(rgb(u32::from_be_bytes([0, r, g, b]))),
-                                )
+                                .child(div().size(px(10.0)).rounded_sm().bg(rgb_to_rgba([r, g, b])))
                                 .child(region.label.to_string()),
                         )
                         .child(cell(region.voxels.to_string()))
@@ -260,7 +255,7 @@ impl Render for StatisticsView {
             )
             .child(
                 v_flex()
-                    .font_features(tabular_figures())
+                    .font_features(tabular_nums())
                     .child(header)
                     .child(body),
             )
@@ -291,8 +286,4 @@ impl Render for StatisticsView {
                     ),
             )
     }
-}
-
-fn tabular_figures() -> FontFeatures {
-    FontFeatures(Arc::new(vec![("tnum".into(), 1)]))
 }

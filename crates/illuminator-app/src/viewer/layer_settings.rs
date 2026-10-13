@@ -508,7 +508,6 @@ fn transfer_strip(histogram: &Histogram, coloring: Coloring) -> Div {
             if clip_low && t <= 0.0 {
                 return block;
             }
-            let [r, g, b] = colormap.color(t);
-            block.bg(rgb(u32::from_be_bytes([0, r, g, b])))
+            block.bg(rgb_to_rgba(colormap.color(t)))
         }))
 }

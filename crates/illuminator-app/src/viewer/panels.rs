@@ -342,11 +342,8 @@ fn colorbar(colormap: Colormap, low: f64, high: f64) -> Div {
                 .rounded_sm()
                 .overflow_hidden()
                 .children((0..BLOCKS).rev().map(|block| {
-                    let [r, g, b] = colormap.color((block as f64 + 0.5) / BLOCKS as f64);
-                    div()
-                        .w_full()
-                        .flex_1()
-                        .bg(rgb(u32::from_be_bytes([0, r, g, b])))
+                    let color = colormap.color((block as f64 + 0.5) / BLOCKS as f64);
+                    div().w_full().flex_1().bg(rgb_to_rgba(color))
                 })),
         )
         .child(format_value(low))

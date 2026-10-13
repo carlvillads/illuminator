@@ -53,7 +53,9 @@ use crate::picture::{Picture, Rect};
 use crate::shortcuts::{self, *};
 use crate::statistics::{Snapshot, StatisticsView};
 use crate::suv_form::SuvForm;
-use crate::ui::{self, AppStyle, colormap_strip, format_value, section_title, tabular_nums};
+use crate::ui::{
+    self, AppStyle, colormap_strip, format_value, rgb_to_rgba, section_title, tabular_nums,
+};
 use crate::zoom::{Visible, Zoom};
 
 const SIDEBAR_WIDTH: f32 = 240.0;

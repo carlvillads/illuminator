@@ -63,21 +63,22 @@ pub fn colormap_strip(colormap: Colormap, labels: bool, blocks: usize) -> Div {
         .rounded_sm()
         .overflow_hidden()
         .children((0..blocks).map(|block| {
-            let [r, g, b] = if labels {
+            let color = if labels {
                 let [r, g, b, _] = label_color(block as i64 + 1);
                 [r, g, b]
             } else {
                 colormap.color((block as f64 + 0.5) / blocks as f64)
             };
-            div()
-                .flex_1()
-                .h_full()
-                .bg(rgb(u32::from_be_bytes([0, r, g, b])))
+            div().flex_1().h_full().bg(rgb_to_rgba(color))
         }))
 }
 
 pub fn tabular_nums() -> FontFeatures {
     FontFeatures(Arc::new(vec![("tnum".into(), 1)]))
+}
+
+pub fn rgb_to_rgba([r, g, b]: [u8; 3]) -> Rgba {
+    rgb(u32::from_be_bytes([0, r, g, b]))
 }
 
 #[cfg(test)]
