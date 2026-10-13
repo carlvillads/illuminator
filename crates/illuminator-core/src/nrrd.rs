@@ -371,6 +371,16 @@ space origin: (10,20,30)";
     }
 
     #[test]
+    fn reads_the_space_units_field() {
+        let dir = tempfile::tempdir().unwrap();
+        let fields = format!(
+            "type: short\ndimension: 3\nsizes: 4 3 4\nencoding: raw\nendian: little\n{LPS}\nspace units: \"m\" \"m\" \"m\""
+        );
+        let path = write(&dir, "meters.nrrd", &[&header(&fields), &voxels(false)]);
+        assert_eq!(VolumeMeta::read(&path).unwrap().units, SpatialUnits::Meter);
+    }
+
+    #[test]
     fn reads_attached_gzip_data() {
         let dir = tempfile::tempdir().unwrap();
         let head =
