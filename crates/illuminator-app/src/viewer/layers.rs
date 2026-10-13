@@ -66,7 +66,7 @@ impl Viewer {
     }
 
     pub(super) fn replace_layer(&mut self, load_id: u64, mut display: VolumeDisplay) {
-        let Some(layer) = self.layers.iter_mut().find(|l| l.load_id == load_id) else {
+        let Some(layer) = self.layer_by_id(load_id) else {
             return;
         };
         let kept = display.keep_settings_of(&layer.display);
@@ -115,7 +115,7 @@ impl Viewer {
         bounds: Bounds<Pixels>,
         cx: &mut Context<Self>,
     ) {
-        let Some(layer) = self.layers.iter_mut().find(|l| l.load_id == drag.load_id) else {
+        let Some(layer) = self.layer_by_id(drag.load_id) else {
             return;
         };
         let Some(histogram) = &layer.histogram else {

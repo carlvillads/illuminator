@@ -47,11 +47,10 @@ impl Viewer {
                         })
                         .await;
                     let _ = viewer.update_in(cx, |viewer, window, cx| {
-                        let Some(column) = viewer.layers.iter_mut().find(|c| c.load_id == load_id)
-                        else {
+                        let Some(layer) = viewer.layer_by_id(load_id) else {
                             return;
                         };
-                        let panel = column.panel_mut(slot);
+                        let panel = layer.panel_mut(slot);
                         panel.rendering = false;
                         panel.samples = Some((key.sample.clone(), samples));
                         if let Some(old) = panel.image.replace(PanelImage { key, image }) {
@@ -93,7 +92,7 @@ impl Viewer {
                 })
                 .await;
             let _ = viewer.update(cx, |viewer, cx| {
-                let Some(layer) = viewer.layers.iter_mut().find(|l| l.load_id == load_id) else {
+                let Some(layer) = viewer.layer_by_id(load_id) else {
                     return;
                 };
                 layer.histogram_pending = false;
@@ -148,7 +147,7 @@ impl Viewer {
                 })
                 .await;
             let _ = viewer.update(cx, |viewer, cx| {
-                if let Some(layer) = viewer.layers.iter_mut().find(|l| l.load_id == load_id) {
+                if let Some(layer) = viewer.layer_by_id(load_id) {
                     layer.curve_pending = false;
                     layer.curve = curve;
                     cx.notify();

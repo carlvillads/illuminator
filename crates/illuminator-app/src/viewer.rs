@@ -538,6 +538,12 @@ impl Viewer {
         (self.selected < self.layers.len()).then_some(self.selected)
     }
 
+    fn layer_by_id(&mut self, load_id: u64) -> Option<&mut Layer> {
+        self.layers
+            .iter_mut()
+            .find(|layer| layer.load_id == load_id)
+    }
+
     fn select(&mut self, layer: usize, cx: &mut Context<Self>) {
         if layer < self.layers.len() {
             self.selected = layer;
@@ -747,9 +753,9 @@ fn opacity_slider(load_id: u64, cx: &mut Context<Viewer>) -> (Entity<SliderState
     });
     let changes = cx.subscribe(&state, move |viewer, _, event: &SliderEvent, cx| {
         if let SliderEvent::Change(value) = event
-            && let Some(column) = viewer.layers.iter_mut().find(|c| c.load_id == load_id)
+            && let Some(layer) = viewer.layer_by_id(load_id)
         {
-            column.opacity = value.start() / 100.0;
+            layer.opacity = value.start() / 100.0;
             cx.notify();
         }
     });
