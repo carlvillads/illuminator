@@ -6,10 +6,10 @@
 
 mod assets;
 mod cli;
+mod label_statistics;
 mod picture;
 mod shortcuts;
 mod single_instance;
-mod statistics;
 mod suv_form;
 mod theme;
 mod ui;
