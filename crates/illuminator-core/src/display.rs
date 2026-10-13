@@ -200,11 +200,11 @@ impl VolumeDisplay {
     }
 
     pub fn reset_cursor(&mut self) {
-        let h = self.volume.meta();
+        let meta = self.volume.meta();
         let center = Point3D::new(
-            ((h.width() - 1) / 2) as f64,
-            ((h.height() - 1) / 2) as f64,
-            ((h.depth() - 1) / 2) as f64,
+            ((meta.width() - 1) / 2) as f64,
+            ((meta.height() - 1) / 2) as f64,
+            ((meta.depth() - 1) / 2) as f64,
         );
         self.cursor = self.geometry.voxel_to_world.point(center);
     }

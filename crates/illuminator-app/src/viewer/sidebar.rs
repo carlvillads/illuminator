@@ -396,27 +396,27 @@ fn frame_ticks(last_frame: usize, color: Hsla) -> impl IntoElement {
 }
 
 fn layer_details(display: &VolumeDisplay) -> Vec<(&'static str, String)> {
-    let h = display.volume().meta();
+    let meta = display.volume().meta();
     let geometry = display.geometry();
     vec![
         ("File", display.name()),
         (
             "Size",
-            format!("{} x {} x {}", h.width(), h.height(), h.depth()),
+            format!("{} x {} x {}", meta.width(), meta.height(), meta.depth()),
         ),
         (
             "Voxel",
             format!(
                 "{} x {} x {} {}",
-                format_value(h.spacing[0]),
-                format_value(h.spacing[1]),
-                format_value(h.spacing[2]),
+                format_value(meta.spacing[0]),
+                format_value(meta.spacing[1]),
+                format_value(meta.spacing[2]),
                 geometry.unit_name
             ),
         ),
-        ("Frames", h.timepoints().to_string()),
-        ("Type", h.datatype.name().to_string()),
-        ("Format", h.format.name().to_string()),
+        ("Frames", meta.timepoints().to_string()),
+        ("Type", meta.datatype.name().to_string()),
+        ("Format", meta.format.name().to_string()),
         ("Transform", geometry.transform_name.to_string()),
         ("Path", display.volume().path().display().to_string()),
     ]

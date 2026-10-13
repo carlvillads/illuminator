@@ -179,13 +179,13 @@ impl Volume {
 
     /// Scaled value for one voxel, None if outside volume
     pub fn sample_value(&self, [x, y, z]: [usize; 3], t: usize) -> Option<f64> {
-        let h = &self.meta;
-        if x >= h.width() || y >= h.height() || z >= h.depth() {
+        let meta = &self.meta;
+        if x >= meta.width() || y >= meta.height() || z >= meta.depth() {
             return None;
         }
-        let index = x + h.width() * (y + h.height() * z);
-        let raw = voxel::read_value(self.frame(t), index, h.datatype, h.endian)?;
-        Some(h.scaling.apply(raw))
+        let index = x + meta.width() * (y + meta.height() * z);
+        let raw = voxel::read_value(self.frame(t), index, meta.datatype, meta.endian)?;
+        Some(meta.scaling.apply(raw))
     }
 
     pub fn read_ahead(&self, t: usize) -> std::io::Result<u64> {
@@ -213,9 +213,9 @@ impl Volume {
     }
 
     pub fn frame_range(&self, t: usize, progress: &Progress) -> Result<Option<Range>> {
-        let h = &self.meta;
-        let scaling = h.scaling;
-        let (min, max) = voxel::Values::new(self.frame(t), h.datatype, h.endian).fold(
+        let meta = &self.meta;
+        let scaling = meta.scaling;
+        let (min, max) = voxel::Values::new(self.frame(t), meta.datatype, meta.endian).fold(
             progress,
             "Measuring contrast",
             || (f64::INFINITY, f64::NEG_INFINITY),

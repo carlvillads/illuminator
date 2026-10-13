@@ -16,7 +16,7 @@ impl Histogram {
         let Some(range) = volume.frame_range(t, &progress.part(0.0, 0.5))? else {
             return Ok(None);
         };
-        let h = volume.meta();
+        let meta = volume.meta();
         let bins = bins.max(1);
         let last = bins - 1;
         let per_value = if range.max > range.min {
@@ -24,8 +24,8 @@ impl Histogram {
         } else {
             0.0
         };
-        let scaling = h.scaling;
-        let counts = voxel::Values::new(volume.frame(t), h.datatype, h.endian).fold(
+        let scaling = meta.scaling;
+        let counts = voxel::Values::new(volume.frame(t), meta.datatype, meta.endian).fold(
             &progress.part(0.5, 0.5),
             "Counting values",
             || vec![0u64; bins],

@@ -299,11 +299,11 @@ struct Voxels<'a, T> {
 
 impl<'a, T: Scalar> Voxels<'a, T> {
     fn new(volume: &'a Volume, frame: usize) -> Self {
-        let h = volume.meta();
+        let meta = volume.meta();
         Self {
             bytes: volume.frame(frame),
-            endian: h.endian,
-            dims: [h.width(), h.height(), h.depth()],
+            endian: meta.endian,
+            dims: [meta.width(), meta.height(), meta.depth()],
             _type: PhantomData,
         }
     }
