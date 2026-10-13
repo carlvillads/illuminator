@@ -65,6 +65,34 @@ impl Viewer {
         self.reloads.insert(load_id, layer.load_id);
     }
 
+    pub(super) fn add_layer(
+        &mut self,
+        load_id: u64,
+        mut display: VolumeDisplay,
+        cx: &mut Context<Self>,
+    ) {
+        if let Err(error) = display.set_frame(self.frame) {
+            eprintln!("Illuminator: {}: {error}", display.name());
+        }
+        if let Some(colormap) = self.load_colormaps.remove(&load_id) {
+            display.colormap = colormap;
+        }
+        if self.label_loads.remove(&load_id)
+            && let Err(error) = display.set_label_mode(true)
+        {
+            eprintln!("Illuminator: {}: {error}", display.name());
+        }
+        display.clip_low = true;
+        let at = self
+            .layers
+            .iter()
+            .rposition(|layer| layer.load_id < load_id)
+            .map_or(0, |index| index + 1);
+        self.reindex(|index| Some(if index >= at { index + 1 } else { index }));
+        let layer = Layer::new(load_id, display, cx);
+        self.layers.insert(at, layer);
+    }
+
     pub(super) fn replace_layer(&mut self, load_id: u64, mut display: VolumeDisplay) {
         let Some(layer) = self.layer_by_id(load_id) else {
             return;

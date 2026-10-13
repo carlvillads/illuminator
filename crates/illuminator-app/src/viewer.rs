@@ -189,6 +189,33 @@ struct Layer {
 }
 
 impl Layer {
+    fn new(load_id: u64, display: VolumeDisplay, cx: &mut Context<Viewer>) -> Self {
+        let suv = match SuvInputs::from_sidecar(display.volume().path()) {
+            Some(Ok(inputs)) => Some((inputs, "from sidecar")),
+            Some(Err(error)) => {
+                eprintln!("Illuminator: {error}");
+                None
+            }
+            None => None,
+        };
+        let (opacity_slider, opacity_changes) = opacity_slider(load_id, cx);
+        Self {
+            display,
+            panels: Vec::new(),
+            histogram: None,
+            histogram_frame: None,
+            histogram_pending: false,
+            curve: None,
+            curve_pending: false,
+            suv,
+            load_id,
+            visible: true,
+            opacity: OVERLAY_OPACITY,
+            opacity_slider,
+            _opacity_changes: opacity_changes,
+        }
+    }
+
     fn panel(&self, slot: usize) -> Option<&Panel> {
         self.panels.get(slot)
     }
@@ -469,57 +496,11 @@ impl Viewer {
             let load_id = loaded.load_id;
             let reload_of = self.reloads.remove(&load_id);
             match VolumeDisplay::new(loaded) {
-                Ok(mut display) => {
-                    if let Some(old_id) = reload_of {
-                        self.replace_layer(old_id, display);
-                        added = true;
-                        continue;
+                Ok(display) => {
+                    match reload_of {
+                        Some(old_id) => self.replace_layer(old_id, display),
+                        None => self.add_layer(load_id, display, cx),
                     }
-                    if let Err(error) = display.set_frame(self.frame) {
-                        eprintln!("Illuminator: {}: {error}", display.name());
-                    }
-                    if let Some(colormap) = self.load_colormaps.remove(&load_id) {
-                        display.colormap = colormap;
-                    }
-                    if self.label_loads.remove(&load_id)
-                        && let Err(error) = display.set_label_mode(true)
-                    {
-                        eprintln!("Illuminator: {}: {error}", display.name());
-                    }
-                    display.clip_low = true;
-                    let at = self
-                        .layers
-                        .iter()
-                        .rposition(|layer| layer.load_id < load_id)
-                        .map_or(0, |index| index + 1);
-                    self.reindex(|index| Some(if index >= at { index + 1 } else { index }));
-                    let suv = match SuvInputs::from_sidecar(display.volume().path()) {
-                        Some(Ok(inputs)) => Some((inputs, "from sidecar")),
-                        Some(Err(error)) => {
-                            eprintln!("Illuminator: {error}");
-                            None
-                        }
-                        None => None,
-                    };
-                    let (opacity_slider, opacity_changes) = opacity_slider(load_id, cx);
-                    self.layers.insert(
-                        at,
-                        Layer {
-                            display,
-                            panels: Vec::new(),
-                            histogram: None,
-                            histogram_frame: None,
-                            histogram_pending: false,
-                            curve: None,
-                            curve_pending: false,
-                            suv,
-                            load_id,
-                            visible: true,
-                            opacity: OVERLAY_OPACITY,
-                            opacity_slider,
-                            _opacity_changes: opacity_changes,
-                        },
-                    );
                     added = true;
                 }
                 Err(error) => eprintln!("Illuminator: {error}"),
