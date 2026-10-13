@@ -79,7 +79,7 @@ pub fn label_statistics(
             Ok(a)
         })?;
 
-    let voxel_ml = voxel_volume_mm3(labels.geometry) / 1000.0;
+    let voxel_ml = labels.geometry.voxel_to_world.determinant().abs() / 1000.0;
     let mut regions: Vec<Region> = regions
         .into_iter()
         .map(|(label, counts)| Region {
@@ -94,23 +94,11 @@ pub fn label_statistics(
 }
 
 fn value_at(values: Source, world: Point3D) -> Option<f64> {
-    let voxel = values.geometry.world_to_voxel.point(world);
-    if !values.geometry.contains_voxel(voxel) {
-        return None;
-    }
-    let nearest = [0, 1, 2].map(|axis| (voxel[axis] + 0.5).floor() as usize);
+    let nearest = values.geometry.nearest_voxel(world)?;
     values
         .volume
         .sample_value(nearest, values.frame)
         .filter(|value| value.is_finite())
-}
-
-fn voxel_volume_mm3(geometry: &VolumeGeometry) -> f64 {
-    let m = &geometry.voxel_to_world.m;
-    let det = m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1])
-        - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0])
-        + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]);
-    det.abs()
 }
 
 #[derive(Default)]
@@ -214,9 +202,8 @@ pub fn to_csv(regions: &[Region]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cache::VolumeCache;
     use crate::geometry::GeometryOptions;
-    use crate::test_util::Fixture;
+    use crate::test_util::{Fixture, load};
 
     fn close(a: f64, b: f64) -> bool {
         (a - b).abs() < 1e-9
@@ -241,11 +228,8 @@ mod tests {
     #[test]
     fn measures_values_inside_labels() {
         let dir = tempfile::tempdir().unwrap();
-        let cache = VolumeCache::new(dir.path().join("cache"), 1 << 20).unwrap();
-        let load = |fixture: &Fixture, name: &str| {
-            let path = dir.path().join(name);
-            fixture.write(&path);
-            let volume = Volume::load(&path, &cache, &Progress::default()).unwrap();
+        let load_with_geometry = |fixture: &Fixture, name: &str| {
+            let volume = load(&dir, fixture, name);
             let geometry = volume.geometry(GeometryOptions::default()).unwrap();
             (volume, geometry)
         };
@@ -253,8 +237,8 @@ mod tests {
             value: |i| (i % 3) as f64,
             ..Fixture::default()
         };
-        let (label_volume, label_geometry) = load(&labels, "labels.nii");
-        let (value_volume, value_geometry) = load(&Fixture::default(), "values.nii");
+        let (label_volume, label_geometry) = load_with_geometry(&labels, "labels.nii");
+        let (value_volume, value_geometry) = load_with_geometry(&Fixture::default(), "values.nii");
         let source = |volume, geometry| Source {
             volume,
             geometry,
@@ -293,7 +277,6 @@ mod tests {
     #[test]
     fn follows_the_world_across_grids() {
         let dir = tempfile::tempdir().unwrap();
-        let cache = VolumeCache::new(dir.path().join("cache"), 1 << 20).unwrap();
         let labels = Fixture {
             dims: vec![2, 2, 2],
             value: |i| if i == 0 { 5.0 } else { 0.0 },
@@ -304,12 +287,8 @@ mod tests {
             ],
             ..Fixture::default()
         };
-        let label_path = dir.path().join("coarse.nii");
-        labels.write(&label_path);
-        let value_path = dir.path().join("fine.nii");
-        Fixture::default().write(&value_path);
-        let label_volume = Volume::load(&label_path, &cache, &Progress::default()).unwrap();
-        let value_volume = Volume::load(&value_path, &cache, &Progress::default()).unwrap();
+        let label_volume = load(&dir, &labels, "coarse.nii");
+        let value_volume = load(&dir, &Fixture::default(), "fine.nii");
         let label_geometry = label_volume.geometry(GeometryOptions::default()).unwrap();
         let value_geometry = value_volume.geometry(GeometryOptions::default()).unwrap();
         let regions = label_statistics(

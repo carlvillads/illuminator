@@ -503,11 +503,7 @@ impl VolumeDisplay {
     }
 
     pub fn sample_world(&self, p: Point3D) -> Option<([usize; 3], f64)> {
-        let voxel = self.geometry.world_to_voxel.point(p);
-        if !self.geometry.contains_voxel(voxel) {
-            return None;
-        }
-        let nearest = [0, 1, 2].map(|axis| (voxel[axis] + 0.5).floor() as usize);
+        let nearest = self.geometry.nearest_voxel(p)?;
         let value = self.volume.sample_value(nearest, self.frame)?;
         Some((nearest, value))
     }
@@ -560,15 +556,11 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
-    use crate::cache::VolumeCache;
-    use crate::test_util::Fixture;
+    use crate::test_util::{Fixture, load};
     use crate::voxel::DataType;
 
     fn display(dir: &TempDir, fixture: &Fixture) -> VolumeDisplay {
-        let path = dir.path().join("display.nii");
-        fixture.write(&path);
-        let cache = VolumeCache::new(dir.path().join("cache"), 1 << 20).unwrap();
-        let volume = Volume::load(&path, &cache, &Progress::default()).unwrap();
+        let volume = load(dir, fixture, "display.nii");
         let range = volume.frame_range(0, &Progress::default()).unwrap();
         VolumeDisplay::new(LoadedVolume {
             load_id: 1,

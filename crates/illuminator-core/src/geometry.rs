@@ -25,6 +25,14 @@ impl Point3D {
         self.x * other.x + self.y * other.y + self.z * other.z
     }
 
+    pub fn cross(self, other: Self) -> Self {
+        Self::new(
+            self.y * other.z - self.z * other.y,
+            self.z * other.x - self.x * other.z,
+            self.x * other.y - self.y * other.x,
+        )
+    }
+
     pub fn length(self) -> f64 {
         self.x.hypot(self.y).hypot(self.z)
     }
@@ -131,7 +139,7 @@ impl Affine {
             return Err(Error::invalid("Nonfinite image affine"));
         }
         let [[a, b, c, _], [d, e, f, _], [g, h, i, _]] = self.m;
-        let det = a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g);
+        let det = self.determinant();
         let scale = Point3D::new(a, d, g).length()
             * Point3D::new(b, e, h).length()
             * Point3D::new(c, f, i).length();
@@ -165,6 +173,12 @@ impl Affine {
             row[3] = -value;
         }
         Ok(inverse)
+    }
+
+    /// Determinant of the 3x3 matrix without the last implicit row.
+    pub fn determinant(&self) -> f64 {
+        let [[a, b, c, _], [d, e, f, _], [g, h, i, _]] = self.m;
+        a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g)
     }
 }
 
@@ -332,6 +346,15 @@ impl VolumeGeometry {
         self.contains_voxel(self.world_to_voxel.point(p))
     }
 
+    /// Voxel whose center is the closest to the world point `p` if `p` is in the volume.
+    pub fn nearest_voxel(&self, p: Point3D) -> Option<[usize; 3]> {
+        let voxel = self.world_to_voxel.point(p);
+        if !self.contains_voxel(voxel) {
+            return None;
+        }
+        Some([0, 1, 2].map(|axis| (voxel[axis] + 0.5).floor() as usize))
+    }
+
     pub fn plane(&self, axis: ViewPlane, cursor: Point3D, radiological: bool) -> SlicePlane {
         let min = self.bounds.min;
         let extent = self.bounds.extent();
@@ -432,6 +455,10 @@ mod tests {
         );
         assert_eq!(-p, Point3D::new(-1.0, -2.0, -3.0));
         assert_eq!(Point3D::new(3.0, 4.0, 0.0).length(), 5.0);
+        assert_eq!(
+            p.cross(Point3D::new(4.0, 5.0, 6.0)),
+            Point3D::new(-3.0, 6.0, -3.0)
+        );
         p[2] = 7.0;
         assert_eq!(p.z, 7.0);
     }

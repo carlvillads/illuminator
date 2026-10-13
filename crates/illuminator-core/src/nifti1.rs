@@ -38,6 +38,7 @@ fn read_header(path: &Path) -> std::result::Result<(NiftiHeader, bool), String> 
         bytes[MAGIC_OFFSET..MAGIC_OFFSET + 4].copy_from_slice(b"ni1\0");
     }
     let raw = NiftiHeader::from_reader(&bytes[..]).map_err(|error| match error {
+        // The nifti crates Io error has no message, so we show the message of the io::Error inside it.
         nifti::NiftiError::Io(error) => error.to_string(),
         other => other.to_string(),
     })?;

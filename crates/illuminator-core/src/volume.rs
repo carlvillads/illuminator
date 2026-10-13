@@ -236,18 +236,9 @@ impl Volume {
 
 #[cfg(test)]
 mod tests {
-    use tempfile::TempDir;
-
     use super::*;
-    use crate::test_util::Fixture;
+    use crate::test_util::{Fixture, load};
     use crate::voxel::DataType;
-
-    fn load(dir: &TempDir, fixture: &Fixture, name: &str) -> Result<Volume> {
-        let path = dir.path().join(name);
-        fixture.write(&path);
-        let cache = VolumeCache::new(dir.path().join("cache"), 1 << 20)?;
-        Volume::load(&path, &cache, &Progress::default())
-    }
 
     fn range(volume: &Volume, t: usize) -> Option<Range> {
         volume.frame_range(t, &Progress::default()).unwrap()
@@ -275,7 +266,7 @@ mod tests {
                         ..Fixture::default()
                     };
                     let name = format!("{datatype:?}-{big_endian}.{extension}");
-                    let volume = load(&dir, &fixture, &name).expect(&name);
+                    let volume = load(&dir, &fixture, &name);
                     assert_eq!(volume.sample_value([3, 2, 3], 0), Some(47.0), "{name}");
                     assert_eq!(volume.sample_value([4, 0, 0], 0), None, "{name}");
                     assert_eq!(volume.sample_value([0, 0, 4], 0), None, "{name}");
@@ -300,7 +291,7 @@ mod tests {
             intercept: 100.0,
             ..Fixture::default()
         };
-        let volume = load(&dir, &zero_slope, "zero.nii").unwrap();
+        let volume = load(&dir, &zero_slope, "zero.nii");
         assert_eq!(volume.sample_value([3, 0, 0], 0), Some(3.0));
         let doubled = volume.rescaled(2.0);
         assert_eq!(doubled.sample_value([3, 0, 0], 0), Some(6.0));
@@ -311,7 +302,7 @@ mod tests {
             intercept: 10.0,
             ..Fixture::default()
         };
-        let volume = load(&dir, &negative, "negative.nii").unwrap();
+        let volume = load(&dir, &negative, "negative.nii");
         assert_eq!(volume.sample_value([3, 0, 0], 0), Some(4.0));
         assert_eq!(
             range(&volume, 0),
@@ -329,7 +320,7 @@ mod tests {
             dims: vec![4, 3, 4, 2],
             ..Fixture::default()
         };
-        let volume = load(&dir, &four_d, "4d.nii").unwrap();
+        let volume = load(&dir, &four_d, "4d.nii");
         assert_eq!(volume.time_curve([1, 0, 0]), Some(vec![1.0, 49.0]));
         assert_eq!(volume.time_curve([4, 0, 0]), None);
         assert_eq!(volume.read_ahead(1).unwrap(), 4 * 3 * 4 * 2);
@@ -352,11 +343,11 @@ mod tests {
             dims: vec![4, 3],
             ..Fixture::default()
         };
-        let volume = load(&dir, &flat, "2d.nii").unwrap();
+        let volume = load(&dir, &flat, "2d.nii");
         assert_eq!((volume.meta().depth(), volume.meta().timepoints()), (1, 1));
         assert_eq!(volume.sample_value([3, 2, 0], 0), Some(11.0));
 
-        let pair = load(&dir, &Fixture::default(), "pair.hdr").unwrap();
+        let pair = load(&dir, &Fixture::default(), "pair.hdr");
         assert_eq!(pair.sample_value([3, 2, 3], 0), Some(47.0));
     }
 
@@ -368,7 +359,7 @@ mod tests {
             value: |i| 16_777_217.0 + i as f64,
             ..Fixture::default()
         };
-        let volume = load(&dir, &large, "exact.nii").unwrap();
+        let volume = load(&dir, &large, "exact.nii");
         assert_eq!(volume.sample_value([0, 0, 0], 0), Some(16_777_217.0));
     }
 
@@ -380,7 +371,7 @@ mod tests {
             value: |_| f64::NAN,
             ..Fixture::default()
         };
-        let volume = load(&dir, &all_nan, "nan.nii").unwrap();
+        let volume = load(&dir, &all_nan, "nan.nii");
         assert_eq!(range(&volume, 0), None);
 
         let one_infinity = Fixture {
@@ -388,7 +379,7 @@ mod tests {
             value: |i| if i == 0 { f64::INFINITY } else { i as f64 },
             ..Fixture::default()
         };
-        let volume = load(&dir, &one_infinity, "inf.nii").unwrap();
+        let volume = load(&dir, &one_infinity, "inf.nii");
         assert_eq!(
             range(&volume, 0),
             Some(Range {
@@ -416,8 +407,8 @@ mod tests {
     #[test]
     fn every_volume_gets_its_own_id() {
         let dir = tempfile::tempdir().unwrap();
-        let a = load(&dir, &Fixture::default(), "a.nii").unwrap();
-        let b = load(&dir, &Fixture::default(), "b.nii").unwrap();
+        let a = load(&dir, &Fixture::default(), "a.nii");
+        let b = load(&dir, &Fixture::default(), "b.nii");
         assert_ne!(a.id(), b.id());
     }
 }

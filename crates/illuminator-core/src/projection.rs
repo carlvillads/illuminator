@@ -84,12 +84,7 @@ pub fn other_axes(axis: usize) -> [usize; 2] {
 }
 
 pub fn depth_axis(geometry: &VolumeGeometry, plane: &SlicePlane) -> usize {
-    let (u, v) = (plane.u, plane.v);
-    let normal = Point3D::new(
-        u.y * v.z - u.z * v.y,
-        u.z * v.x - u.x * v.z,
-        u.x * v.y - u.y * v.x,
-    );
+    let normal = plane.u.cross(plane.v);
     let to_voxel = &geometry.world_to_voxel;
     let step = to_voxel.point(plane.origin + normal) - to_voxel.point(plane.origin);
     (0..3)
@@ -137,22 +132,13 @@ fn project<T: Scalar>(volume: &Volume, frame: usize, axis: usize) -> (Vec<f32>, 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cache::VolumeCache;
     use crate::geometry::{GeometryOptions, ViewPlane};
-    use crate::progress::Progress;
-    use crate::test_util::Fixture;
-
-    fn load(dir: &tempfile::TempDir, name: &str, fixture: &Fixture) -> Volume {
-        let path = dir.path().join(name);
-        fixture.write(&path);
-        let cache = VolumeCache::new(dir.path().join("cache"), 1 << 20).unwrap();
-        Volume::load(&path, &cache, &Progress::default()).unwrap()
-    }
+    use crate::test_util::{Fixture, load};
 
     #[test]
     fn projects_the_highest_value_along_each_line() {
         let dir = tempfile::tempdir().unwrap();
-        let volume = load(&dir, "values.nii", &Fixture::default());
+        let volume = load(&dir, &Fixture::default(), "values.nii");
         let mip = Projection::of(&volume, 0, 1);
         assert_eq!(mip.dims, [4, 4]);
         assert_eq!(mip.nearest(Point3D::new(1.0, 0.0, 3.0)), 45.0);
@@ -163,7 +149,7 @@ mod tests {
             value: |i| if i == 17 { 100.0 } else { 0.0 },
             ..Fixture::default()
         };
-        let volume = load(&dir, "peaked.nii", &peaked);
+        let volume = load(&dir, &peaked, "peaked.nii");
         let mip = Projection::of(&volume, 0, 2);
         assert_eq!(mip.brightest(Point3D::new(1.0, 1.0, 0.0)), Some([1, 1, 1]));
         assert_eq!(mip.nearest(Point3D::new(0.0, 0.0, 0.0)), 0.0);
@@ -172,7 +158,7 @@ mod tests {
     #[test]
     fn looks_along_the_axis_closest_to_the_view() {
         let dir = tempfile::tempdir().unwrap();
-        let volume = load(&dir, "values.nii", &Fixture::default());
+        let volume = load(&dir, &Fixture::default(), "values.nii");
         let geometry = volume.geometry(GeometryOptions::default()).unwrap();
         let cursor = Point3D::new(1.0, 1.0, 1.0);
         let axis = |plane| depth_axis(&geometry, &geometry.plane(plane, cursor, false));

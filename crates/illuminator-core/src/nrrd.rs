@@ -7,6 +7,7 @@ use std::io::{BufRead, BufReader};
 use std::path::Path;
 
 use crate::error::{Error, Result};
+use crate::geometry::Point3D;
 use crate::meta::{DataFile, Format, Mat3x4, SpatialUnits, Transform, VolumeMeta};
 use crate::voxel::{self, DataType, Endian, Scaling};
 
@@ -184,14 +185,9 @@ fn space(
     }
     let mut columns: Vec<[f64; 3]> = directions.into_iter().flatten().collect();
     if columns.len() == 2 {
-        let [u, v] = [columns[0], columns[1]];
-        let normal = [
-            u[1] * v[2] - u[2] * v[1],
-            u[2] * v[0] - u[0] * v[2],
-            u[0] * v[1] - u[1] * v[0],
-        ];
-        let length = normal.iter().map(|x| x * x).sum::<f64>().sqrt();
-        columns.push(normal.map(|x| x / length));
+        let normal = Point3D::from_array(columns[0]).cross(Point3D::from_array(columns[1]));
+        let length = normal.dot(normal).sqrt();
+        columns.push([normal.x / length, normal.y / length, normal.z / length]);
     }
 
     let flip = match header.field("space") {

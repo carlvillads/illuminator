@@ -74,19 +74,9 @@ impl Histogram {
 
 #[cfg(test)]
 mod tests {
-    use tempfile::TempDir;
-
     use super::*;
-    use crate::cache::VolumeCache;
-    use crate::test_util::Fixture;
+    use crate::test_util::{Fixture, load};
     use crate::voxel::DataType;
-
-    fn load(dir: &TempDir, fixture: &Fixture, name: &str) -> Volume {
-        let path = dir.path().join(name);
-        fixture.write(&path);
-        let cache = VolumeCache::new(dir.path().join("cache"), 1 << 20).unwrap();
-        Volume::load(&path, &cache, &Progress::default()).unwrap()
-    }
 
     #[test]
     fn counts_values_into_bins() {

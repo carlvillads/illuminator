@@ -57,28 +57,33 @@ impl SuvInputs {
     }
 
     pub fn from_json(text: &str) -> Result<Self> {
-        let json: Value = serde_json::from_str(text)
-            .map_err(|error| Error::invalid(format!("Invalid JSON: {error}")))?;
-        let number = |key: &str| json.get(key).and_then(Value::as_f64);
-        let text = |key: &str| json.get(key).and_then(Value::as_str);
+        let sidecar = Sidecar(
+            serde_json::from_str(text)
+                .map_err(|error| Error::invalid(format!("Invalid JSON: {error}")))?,
+        );
         let missing = |what: &str| Error::invalid(format!("The sidecar has no {what}"));
 
-        let weight_kg = number("BodyWeight")
-            .or(number("PatientWeight"))
+        let weight_kg = sidecar
+            .number("BodyWeight")
+            .or(sidecar.number("PatientWeight"))
             .ok_or_else(|| missing("body weight"))?;
-        let dose_mbq = match number("InjectedRadioactivity") {
-            Some(dose) => dose * mbq_per(text("InjectedRadioactivityUnits").unwrap_or("MBq"))?,
-            None => number("RadionuclideTotalDose")
+        let dose_mbq = match sidecar.number("InjectedRadioactivity") {
+            Some(dose) => {
+                dose * mbq_per(sidecar.text("InjectedRadioactivityUnits").unwrap_or("MBq"))?
+            }
+            None => sidecar
+                .number("RadionuclideTotalDose")
                 .map(|bq| bq / 1e6)
                 .ok_or_else(|| missing("injected dose"))?,
         };
-        let half_life_minutes = match number("RadionuclideHalfLife") {
+        let half_life_minutes = match sidecar.number("RadionuclideHalfLife") {
             Some(seconds) => seconds / 60.0,
-            None => text("TracerRadionuclide")
+            None => sidecar
+                .text("TracerRadionuclide")
                 .and_then(half_life_of)
                 .ok_or_else(|| missing("known tracer or half-life"))?,
         };
-        let bq_ml_per_unit = match text("Units") {
+        let bq_ml_per_unit = match sidecar.text("Units") {
             None => 1.0,
             Some(unit) => match unit.to_ascii_lowercase().replace('/', "").as_str() {
                 "bqml" => 1.0,
@@ -94,34 +99,36 @@ impl SuvInputs {
         Ok(Self {
             weight_kg,
             dose_mbq,
-            minutes_after_injection: decay_minutes(&json)?,
+            minutes_after_injection: decay_minutes(&sidecar)?,
             half_life_minutes,
             bq_ml_per_unit,
         })
     }
 }
 
-fn decay_minutes(json: &Value) -> Result<f64> {
-    let number = |key: &str| json.get(key).and_then(Value::as_f64);
-    let text = |key: &str| json.get(key).and_then(Value::as_str);
+fn decay_minutes(sidecar: &Sidecar) -> Result<f64> {
     let uncorrected =
         || Error::invalid("The image isn't decay corrected, so SUV depends on the frame time");
-    if json.get("ImageDecayCorrected").and_then(Value::as_bool) == Some(false) {
+    if sidecar.flag("ImageDecayCorrected") == Some(false) {
         return Err(uncorrected());
     }
-    if let (Some(corrected), Some(injected)) =
-        (number("ImageDecayCorrectionTime"), number("InjectionStart"))
-    {
+    if let (Some(corrected), Some(injected)) = (
+        sidecar.number("ImageDecayCorrectionTime"),
+        sidecar.number("InjectionStart"),
+    ) {
         return Ok((corrected - injected) / 60.0);
     }
-    match text("DecayCorrection") {
+    match sidecar.text("DecayCorrection") {
         Some("ADMIN") => return Ok(0.0),
         Some("NONE") => return Err(uncorrected()),
         Some("START") => {
-            let start = text("AcquisitionTime")
-                .or(text("SeriesTime"))
+            let start = sidecar
+                .text("AcquisitionTime")
+                .or(sidecar.text("SeriesTime"))
                 .and_then(clock_seconds);
-            let injection = text("RadiopharmaceuticalStartTime").and_then(clock_seconds);
+            let injection = sidecar
+                .text("RadiopharmaceuticalStartTime")
+                .and_then(clock_seconds);
             if let (Some(start), Some(injection)) = (start, injection) {
                 // a scan after midnight
                 let seconds = (start - injection).rem_euclid(24.0 * 3600.0);
@@ -133,6 +140,23 @@ fn decay_minutes(json: &Value) -> Result<f64> {
     Err(Error::invalid(
         "The sidecar has no time between injection and scan",
     ))
+}
+
+/// BIDS or dcm2niix sidecar
+struct Sidecar(Value);
+
+impl Sidecar {
+    fn number(&self, key: &str) -> Option<f64> {
+        self.0.get(key).and_then(Value::as_f64)
+    }
+
+    fn text(&self, key: &str) -> Option<&str> {
+        self.0.get(key).and_then(Value::as_str)
+    }
+
+    fn flag(&self, key: &str) -> Option<bool> {
+        self.0.get(key).and_then(Value::as_bool)
+    }
 }
 
 fn clock_seconds(text: &str) -> Option<f64> {

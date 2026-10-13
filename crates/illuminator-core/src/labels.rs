@@ -69,16 +69,8 @@ fn hsv_to_rgb(h: f32, s: f32, v: f32) -> [f32; 3] {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cache::VolumeCache;
-    use crate::test_util::Fixture;
+    use crate::test_util::{Fixture, load};
     use crate::voxel::DataType;
-
-    fn load(dir: &tempfile::TempDir, fixture: &Fixture) -> Volume {
-        let path = dir.path().join("labels.nii");
-        fixture.write(&path);
-        let cache = VolumeCache::new(dir.path().join("cache"), 1 << 20).unwrap();
-        Volume::load(&path, &cache, &Progress::default()).unwrap()
-    }
 
     #[test]
     fn counts_the_labels_of_one_frame() {
@@ -92,7 +84,7 @@ mod tests {
             },
             ..Fixture::default()
         };
-        let volume = load(&dir, &fixture);
+        let volume = load(&dir, &fixture, "labels.nii");
         let none = Progress::default();
 
         assert_eq!(count_labels(&volume, 0, 256, &none).unwrap(), 3);
@@ -108,7 +100,7 @@ mod tests {
             value: |i| i as f64 + 0.25,
             ..Fixture::default()
         };
-        let volume = load(&dir, &fixture);
+        let volume = load(&dir, &fixture, "labels.nii");
         assert!(count_labels(&volume, 0, 256, &Progress::default()).is_err());
     }
 

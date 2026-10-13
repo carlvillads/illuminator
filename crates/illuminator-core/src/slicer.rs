@@ -74,6 +74,23 @@ impl Coloring {
     pub fn is_labels(self) -> bool {
         matches!(self, Self::Labels { .. })
     }
+
+    /// Where `value` falls on the colormap.
+    /// `0` at the bottom of the window, `1` at the top, and `None` if it is drawn as transparent, or if its
+    /// color labels.
+    pub fn window_position(self, value: f64) -> Option<f64> {
+        let Self::Intensity {
+            level,
+            width,
+            clip_low,
+            ..
+        } = self
+        else {
+            return None;
+        };
+        let t = (value - level) / width + 0.5;
+        (!value.is_nan() && !(clip_low && t <= 0.0)).then_some(t)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -212,22 +229,13 @@ impl SampledSlice {
         let out = pixels.as_chunks_mut::<4>().0;
         let row = self.width.max(1);
         match (&self.samples, coloring) {
-            (
-                Samples::Intensity(values),
-                Coloring::Intensity {
-                    level,
-                    width: window_width,
-                    colormap,
-                    clip_low,
-                },
-            ) => {
+            (Samples::Intensity(values), Coloring::Intensity { colormap, .. }) => {
                 let table = ColorTable::new(colormap);
                 out.par_chunks_mut(row)
                     .zip(values.par_chunks(row))
                     .for_each(|(line, values)| {
                         for (pixel, &value) in line.iter_mut().zip(values) {
-                            let t = (f64::from(value) - level) / window_width + 0.5;
-                            if !value.is_nan() && !(clip_low && t <= 0.0) {
+                            if let Some(t) = coloring.window_position(f64::from(value)) {
                                 let [r, g, b] = table.color(t);
                                 *pixel = [r, g, b, 255];
                             }
@@ -451,22 +459,11 @@ const INFERNO: [[f64; 3]; 7] = [
 
 #[cfg(test)]
 mod tests {
-    use tempfile::TempDir;
-
     use super::*;
-    use crate::cache::VolumeCache;
     use crate::geometry::{Affine, GeometryOptions, ViewPlane};
     use crate::meta::Mat3x4;
-    use crate::progress::Progress;
-    use crate::test_util::Fixture;
+    use crate::test_util::{Fixture, load};
     use crate::voxel::DataType;
-
-    fn load(dir: &TempDir, fixture: &Fixture, name: &str) -> Volume {
-        let path = dir.path().join(name);
-        fixture.write(&path);
-        let cache = VolumeCache::new(dir.path().join("cache"), 1 << 20).unwrap();
-        Volume::load(&path, &cache, &Progress::default()).unwrap()
-    }
 
     fn geometry_of(volume: &Volume) -> VolumeGeometry {
         volume.geometry(GeometryOptions::default()).unwrap()

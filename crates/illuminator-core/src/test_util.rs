@@ -4,9 +4,21 @@ use std::path::Path;
 
 use flate2::Compression;
 use flate2::write::GzEncoder;
+use tempfile::TempDir;
 
+use crate::cache::VolumeCache;
 use crate::meta::Mat3x4;
+use crate::progress::Progress;
+use crate::volume::Volume;
 use crate::voxel::DataType;
+
+pub fn load(dir: &TempDir, fixture: &Fixture, name: &str) -> Volume {
+    let path = dir.path().join(name);
+    fixture.write(&path);
+    let cache = VolumeCache::new(dir.path().join("cache"), 1 << 20).unwrap();
+    Volume::load(&path, &cache, &Progress::default())
+        .unwrap_or_else(|error| panic!("{name}: {error}"))
+}
 
 pub struct Fixture {
     pub dims: Vec<u16>,

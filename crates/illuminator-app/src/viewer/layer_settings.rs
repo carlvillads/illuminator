@@ -486,13 +486,7 @@ impl Viewer {
 /// The colors along the histogram's value axis, as the views show them
 fn transfer_strip(histogram: &Histogram, coloring: Coloring) -> Div {
     const BLOCKS: usize = 64;
-    let Coloring::Intensity {
-        level,
-        width,
-        colormap,
-        clip_low,
-    } = coloring
-    else {
+    let Coloring::Intensity { colormap, .. } = coloring else {
         return div();
     };
     h_flex()
@@ -503,11 +497,10 @@ fn transfer_strip(histogram: &Histogram, coloring: Coloring) -> Div {
         .children((0..BLOCKS).map(|block| {
             let fraction = (block as f64 + 0.5) / BLOCKS as f64;
             let value = histogram.min + fraction * (histogram.max - histogram.min);
-            let t = (value - level) / width + 0.5;
             let block = div().flex_1().h_full();
-            if clip_low && t <= 0.0 {
-                return block;
+            match coloring.window_position(value) {
+                Some(t) => block.bg(rgb_to_rgba(colormap.color(t))),
+                None => block,
             }
-            block.bg(rgb_to_rgba(colormap.color(t)))
         }))
 }
