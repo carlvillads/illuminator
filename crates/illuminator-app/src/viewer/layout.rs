@@ -111,11 +111,10 @@ impl Viewer {
             {
                 return None;
             }
-            let left = (view.size.width - view.image_size.width) / 2.0;
-            let top = (view.size.height - view.image_size.height) / 2.0;
+            let offset = view.image_offset();
             let in_view = (
-                f64::from((local_x - left) / view.image_size.width),
-                f64::from(1.0 - (local_y - top) / view.image_size.height),
+                f64::from((local_x - offset.x) / view.image_size.width),
+                f64::from(1.0 - (local_y - offset.y) / view.image_size.height),
             );
             let (s, t) = view.visible.to_plane(in_view);
             Some(Hit {

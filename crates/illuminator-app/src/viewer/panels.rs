@@ -201,30 +201,28 @@ impl Viewer {
             return None;
         }
         let image = view.image_size;
-        let left = (view.size.width - image.width) / 2.0;
-        let top = (view.size.height - image.height) / 2.0;
+        let offset = view.image_offset();
         // "snap" to device screen pixels for sharp lines
         let snap = |value: f32| (value * scale).floor() / scale;
         Some((
-            snap(left + s as f32 * image.width),
-            snap(top + (1.0 - t as f32) * image.height),
+            snap(offset.x + s as f32 * image.width),
+            snap(offset.y + (1.0 - t as f32) * image.height),
         ))
     }
 
     fn crosshair(&self, view: &View, scale: f32) -> Option<[Div; 2]> {
         let (x, y) = self.crosshair_at(view, scale)?;
         let image = view.image_size;
-        let left = (view.size.width - image.width) / 2.0;
-        let top = (view.size.height - image.height) / 2.0;
+        let offset = view.image_offset();
         let line = || div().absolute().bg(rgba(ui::CROSSHAIR_COLOR));
         Some([
             line()
                 .left(px(x))
-                .top(px(top))
+                .top(px(offset.y))
                 .w(px(1.0))
                 .h(px(image.height)),
             line()
-                .left(px(left))
+                .left(px(offset.x))
                 .top(px(y))
                 .w(px(image.width))
                 .h(px(1.0)),

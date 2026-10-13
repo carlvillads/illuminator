@@ -80,9 +80,10 @@ impl Viewer {
                 continue;
             }
             let image = view.image_size;
+            let offset = view.image_offset();
             let rect = Rect {
-                left: device(view.origin.x + (view.size.width - image.width) / 2.0),
-                top: device(view.origin.y + (view.size.height - image.height) / 2.0),
+                left: device(view.origin.x + offset.x),
+                top: device(view.origin.y + offset.y),
                 width: device(image.width),
                 height: device(image.height),
             };
