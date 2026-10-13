@@ -1,0 +1,71 @@
+//! The status bar
+
+use super::*;
+
+impl Viewer {
+    /// Values of all layers at the mouse
+    pub(super) fn render_status(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.theme();
+        let (muted, border, background) = (theme.muted_foreground, theme.border, theme.sidebar);
+        let status = StatusBar::new()
+            .h(px(STATUS_HEIGHT))
+            .flex_none()
+            .px_2()
+            .gap_4()
+            .text_xs()
+            .bg(background)
+            .border_t_1()
+            .border_color(border);
+        let Some(point) = self.hover else {
+            return status.left(div().text_color(muted).child("Nothing to read"));
+        };
+        let position = |value: f64| ui::readout(format!("{value:.1}"), POSITION_TEMPLATE);
+        let mut status = status.left(
+            h_flex()
+                .child(position(point.x))
+                .child(", ")
+                .child(position(point.y))
+                .child(", ")
+                .child(position(point.z))
+                .child(" mm"),
+        );
+        for (index, layer) in self.layers.iter().enumerate() {
+            let value = layer
+                .display
+                .sample_world(point)
+                .map_or("-".to_string(), |(_, value)| format_value(value));
+            let template = if layer.display.label_mode() {
+                LABEL_TEMPLATE
+            } else {
+                VALUE_TEMPLATE
+            };
+            status = status.child(
+                h_flex()
+                    .ml_2()
+                    .when(!layer.visible, |item| item.text_color(muted))
+                    .when(index == self.selected, |item| {
+                        item.font_weight(FontWeight::SEMIBOLD)
+                    })
+                    .child(format!("{}: ", index + 1))
+                    .child(ui::readout(value, template)),
+            );
+        }
+        if let Some(layer) = self.selected() {
+            let voxel = self.layers[layer].display.sample_world(point);
+            let index = |axis: usize| {
+                let text = voxel.map_or("-".to_string(), |(voxel, _)| voxel[axis].to_string());
+                ui::readout(text, VOXEL_TEMPLATE)
+            };
+            status = status.right(
+                h_flex()
+                    .child(format!("Layer {} voxel ", layer + 1))
+                    .child(index(0))
+                    .child(", ")
+                    .child(index(1))
+                    .child(", ")
+                    .child(index(2)),
+            );
+        }
+        status
+    }
+}
