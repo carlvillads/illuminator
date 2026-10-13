@@ -22,11 +22,11 @@ impl Viewer {
                 .collect(),
             Layout::Compare => rows
                 .iter()
-                .flat_map(|&(axis, mip)| (0..count).map(move |layer| (layer, axis, mip, None)))
+                .flat_map(|&(axis, mip)| (0..count).map(move |index| (index, axis, mip, None)))
                 .collect(),
-            Layout::Grid(axis) => (0..count).map(|layer| (layer, axis, mip, None)).collect(),
+            Layout::Grid(axis) => (0..count).map(|index| (index, axis, mip, None)).collect(),
             Layout::Single { axis, layer } => {
-                let base = layer.filter(|&layer| layer < count).unwrap_or(0);
+                let base = layer.filter(|&index| index < count).unwrap_or(0);
                 vec![(base, axis, mip, None)]
             }
             Layout::Lightbox(axis) => {

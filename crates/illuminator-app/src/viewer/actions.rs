@@ -71,9 +71,9 @@ impl Viewer {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let Some(column) = self.selected() {
+        if let Some(index) = self.selected() {
             self.change(
-                column,
+                index,
                 |display| {
                     display.reset_cursor();
                     Ok(())
@@ -100,10 +100,10 @@ impl Viewer {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let Some(column) = self.selected() {
-            let display = &mut self.layers[column].display;
+        if let Some(index) = self.selected() {
+            let display = &mut self.layers[index].display;
             let current = Colormap::ALL.iter().position(|&c| c == display.colormap);
-            let next = current.map_or(0, |index| (index + 1) % Colormap::ALL.len());
+            let next = current.map_or(0, |position| (position + 1) % Colormap::ALL.len());
             display.colormap = Colormap::ALL[next];
             cx.notify();
         }
@@ -115,9 +115,9 @@ impl Viewer {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let Some(column) = self.selected() {
-            let enabled = !self.layers[column].display.label_mode();
-            self.change(column, |display| display.set_label_mode(enabled), cx);
+        if let Some(index) = self.selected() {
+            let enabled = !self.layers[index].display.label_mode();
+            self.change(index, |display| display.set_label_mode(enabled), cx);
         }
     }
 
@@ -233,9 +233,9 @@ impl Viewer {
     }
 
     pub(super) fn toggle_layer(&mut self, _: &ToggleLayer, _: &mut Window, cx: &mut Context<Self>) {
-        if let Some(layer) = self.selected() {
-            let column = &mut self.layers[layer];
-            column.visible = !column.visible;
+        if let Some(index) = self.selected() {
+            let layer = &mut self.layers[index];
+            layer.visible = !layer.visible;
             cx.notify();
         }
     }
@@ -309,12 +309,12 @@ impl Viewer {
     }
 
     fn step_active_slice(&mut self, steps: f64, cx: &mut Context<Self>) {
-        let Some((column, axis)) = self.active() else {
+        let Some((index, axis)) = self.active() else {
             return;
         };
         let steps = steps * self.slice_stride();
-        if self.layers[column].display.step_slice(axis, steps) {
-            self.sync_from(column);
+        if self.layers[index].display.step_slice(axis, steps) {
+            self.sync_from(index);
             cx.notify();
         }
     }

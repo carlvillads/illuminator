@@ -79,7 +79,7 @@ impl Viewer {
         let frames = self
             .layers
             .iter()
-            .map(|column| column.display.volume().meta().timepoints())
+            .map(|layer| layer.display.volume().meta().timepoints())
             .max()
             .unwrap_or(1);
         let last_frame = frames - 1;

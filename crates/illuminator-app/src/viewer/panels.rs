@@ -104,7 +104,7 @@ impl Viewer {
 
         for view in self.views(window) {
             let display = &self.layers[view.base].display;
-            let labels = display.orientation_labels(view.axis, self.radiological);
+            let orientation = display.orientation_labels(view.axis, self.radiological);
             // only show slice number for lightbox views
             let compact = view.slice.is_some();
             let mut panel = div()
@@ -156,16 +156,16 @@ impl Viewer {
                             .left_2()
                             .text_size(px(CORNER_TEXT))
                             .text_color(muted)
-                            .child(labels.title)
+                            .child(orientation.title)
                             .when(!overlaid, |title| title.child(display.name())),
                     )
                 })
                 .when(self.info != InfoLevel::Off && !compact, |panel| {
                     panel
-                        .child(edge(labels.left).left_2())
-                        .child(edge(labels.right).right_2())
-                        .child(edge(labels.top).top_1())
-                        .child(edge(labels.bottom).bottom_1())
+                        .child(edge(orientation.left).left_2())
+                        .child(edge(orientation.right).right_2())
+                        .child(edge(orientation.top).top_1())
+                        .child(edge(orientation.bottom).bottom_1())
                 })
                 .when(self.info != InfoLevel::Off, |panel| {
                     panel.child(self.corner_info(&view, muted))
@@ -177,16 +177,16 @@ impl Viewer {
 
     pub(super) fn shown(&self, view: &View) -> Vec<(Arc<RenderImage>, f32)> {
         let mut shown = Vec::new();
-        for layer in view.layers.clone() {
-            let entry = &self.layers[layer];
-            let Some(image) = entry
+        for index in view.layers.clone() {
+            let layer = &self.layers[index];
+            let Some(image) = layer
                 .panel(view.slot)
                 .and_then(|panel| panel.image.as_ref())
-                .filter(|_| entry.visible)
+                .filter(|_| layer.visible)
             else {
                 continue;
             };
-            let opacity = if shown.is_empty() { 1.0 } else { entry.opacity };
+            let opacity = if shown.is_empty() { 1.0 } else { layer.opacity };
             shown.push((Arc::clone(&image.image), opacity));
         }
         shown
@@ -232,9 +232,9 @@ impl Viewer {
 
     fn corner_info(&self, view: &View, color: Hsla) -> Div {
         let overlaid = view.layers.len() > 1;
-        let numbered = |layer: usize, text: String| {
+        let numbered = |index: usize, text: String| {
             if overlaid {
-                format!("{}: {text}", layer + 1)
+                format!("{}: {text}", index + 1)
             } else {
                 text
             }
@@ -242,13 +242,13 @@ impl Viewer {
         let values = view
             .layers
             .clone()
-            .filter(|&layer| self.layers[layer].visible)
-            .map(|layer| {
-                let value = self.layers[layer]
+            .filter(|&index| self.layers[index].visible)
+            .map(|index| {
+                let value = self.layers[index]
                     .display
                     .cursor_sample()
                     .map_or("-".to_string(), |(_, value)| format_value(value));
-                numbered(layer, value)
+                numbered(index, value)
             });
         let windowed = if overlaid {
             self.selected().unwrap_or(view.base)

@@ -50,20 +50,20 @@ impl Viewer {
                     .child(ui::readout(value, template)),
             );
         }
-        if let Some(layer) = self.selected() {
-            let voxel = self.layers[layer].display.sample_world(point);
-            let index = |axis: usize| {
+        if let Some(index) = self.selected() {
+            let voxel = self.layers[index].display.sample_world(point);
+            let coordinate = |axis: usize| {
                 let text = voxel.map_or("-".to_string(), |(voxel, _)| voxel[axis].to_string());
                 ui::readout(text, VOXEL_TEMPLATE)
             };
             status = status.right(
                 h_flex()
-                    .child(format!("Layer {} voxel ", layer + 1))
-                    .child(index(0))
+                    .child(format!("Layer {} voxel ", index + 1))
+                    .child(coordinate(0))
                     .child(", ")
-                    .child(index(1))
+                    .child(coordinate(1))
                     .child(", ")
-                    .child(index(2)),
+                    .child(coordinate(2)),
             );
         }
         status

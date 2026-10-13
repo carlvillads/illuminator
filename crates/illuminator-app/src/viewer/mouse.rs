@@ -137,13 +137,13 @@ impl Viewer {
     }
 
     pub(super) fn drag_contrast(&mut self, position: Point<Pixels>, cx: &mut Context<Self>) {
-        let Some((column, last)) = self.contrast_drag else {
+        let Some((index, last)) = self.contrast_drag else {
             return;
         };
         let dx = f64::from(f32::from(position.x - last.x));
         let dy = f64::from(f32::from(position.y - last.y));
-        self.layers[column].display.drag_window(dx, dy);
-        self.contrast_drag = Some((column, position));
+        self.layers[index].display.drag_window(dx, dy);
+        self.contrast_drag = Some((index, position));
         cx.notify();
     }
 }

@@ -540,8 +540,8 @@ impl Viewer {
     }
 
     fn active(&self) -> Option<(usize, ViewPlane)> {
-        let (column, axis) = self.active_panel;
-        (column < self.layers.len()).then_some((column, axis))
+        let (index, axis) = self.active_panel;
+        (index < self.layers.len()).then_some((index, axis))
     }
 
     fn selected(&self) -> Option<usize> {
@@ -554,11 +554,11 @@ impl Viewer {
             .find(|layer| layer.load_id == load_id)
     }
 
-    fn select(&mut self, layer: usize, cx: &mut Context<Self>) {
-        if layer < self.layers.len() {
-            self.selected = layer;
+    fn select(&mut self, index: usize, cx: &mut Context<Self>) {
+        if index < self.layers.len() {
+            self.selected = index;
             if !self.layout.overlaid() {
-                self.active_panel.0 = layer;
+                self.active_panel.0 = index;
             }
             cx.notify();
         }
@@ -609,14 +609,14 @@ impl Viewer {
 
     fn change(
         &mut self,
-        column: usize,
+        index: usize,
         change: impl FnOnce(&mut VolumeDisplay) -> illuminator_core::Result<()>,
         cx: &mut Context<Self>,
     ) {
-        if let Err(error) = change(&mut self.layers[column].display) {
-            eprintln!("Illuminator: layer {}: {error}", column + 1);
+        if let Err(error) = change(&mut self.layers[index].display) {
+            eprintln!("Illuminator: layer {}: {error}", index + 1);
         }
-        self.sync_from(column);
+        self.sync_from(index);
         cx.notify();
     }
 
@@ -624,8 +624,8 @@ impl Viewer {
         if self.layout.overlaid() {
             // make sure overlaid layers share world pos
             let cursor = self.layers[active].display.cursor();
-            for column in &mut self.layers {
-                column.display.set_cursor(cursor);
+            for layer in &mut self.layers {
+                layer.display.set_cursor(cursor);
             }
             return;
         }
@@ -639,17 +639,17 @@ impl Viewer {
                     return;
                 }
                 let cursor = source.cursor();
-                for (index, column) in self.layers.iter_mut().enumerate() {
-                    if index != active && column.display.world_linked() {
-                        column.display.set_cursor(cursor);
+                for (index, layer) in self.layers.iter_mut().enumerate() {
+                    if index != active && layer.display.world_linked() {
+                        layer.display.set_cursor(cursor);
                     }
                 }
             }
             SyncMode::Proportional => {
                 let fraction = source.fractional_cursor();
-                for (index, column) in self.layers.iter_mut().enumerate() {
+                for (index, layer) in self.layers.iter_mut().enumerate() {
                     if index != active {
-                        column.display.set_fractional_cursor(fraction);
+                        layer.display.set_fractional_cursor(fraction);
                     }
                 }
             }
@@ -663,8 +663,8 @@ impl Viewer {
             }
             return;
         }
-        let leader = self.layers.iter().position(|column| {
-            self.sync_mode == SyncMode::Proportional || column.display.world_linked()
+        let leader = self.layers.iter().position(|layer| {
+            self.sync_mode == SyncMode::Proportional || layer.display.world_linked()
         });
         if let Some(leader) = leader {
             self.sync_from(leader);

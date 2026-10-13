@@ -13,17 +13,17 @@ impl Viewer {
             }
             let plane = view.visible.apply(view.plane);
             let slot = view.slot;
-            for layer in view.layers {
-                let entry = &self.layers[layer];
-                let panel = entry.panel(slot);
-                if !entry.visible || panel.is_some_and(|panel| panel.rendering) {
+            for index in view.layers {
+                let layer = &self.layers[index];
+                let panel = layer.panel(slot);
+                if !layer.visible || panel.is_some_and(|panel| panel.rendering) {
                     continue;
                 }
 
-                let job = entry.display.job_on(plane, width, height, view.mip);
+                let job = layer.display.job_on(plane, width, height, view.mip);
                 let key = ImageKey {
                     sample: job.key.clone(),
-                    coloring: entry.display.coloring(),
+                    coloring: layer.display.coloring(),
                 };
                 if panel
                     .and_then(|panel| panel.image.as_ref())
@@ -35,7 +35,7 @@ impl Viewer {
                     .and_then(|panel| panel.samples.as_ref())
                     .filter(|(sample, _)| *sample == key.sample)
                     .map(|(_, samples)| Arc::clone(samples));
-                let load_id = entry.load_id;
+                let load_id = layer.load_id;
 
                 cx.spawn_in(window, async move |viewer, cx| {
                     let coloring = key.coloring;
@@ -60,7 +60,7 @@ impl Viewer {
                     });
                 })
                 .detach();
-                self.layers[layer].panel_mut(slot).rendering = true;
+                self.layers[index].panel_mut(slot).rendering = true;
             }
         }
     }

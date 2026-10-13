@@ -782,7 +782,7 @@ mod tests {
     }
 
     #[test]
-    fn panel_labels() {
+    fn orientation_labels() {
         let dir = tempfile::tempdir().unwrap();
         let display = display(&dir, &Fixture::default());
         let axial = display.orientation_labels(ViewPlane::Axial, false);
