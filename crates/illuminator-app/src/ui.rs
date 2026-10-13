@@ -7,6 +7,7 @@ use std::sync::Arc;
 const CAPTION_WIDTH: f32 = 64.0;
 pub(crate) const ORIENTATION_COLOR: u32 = 0xe8c547;
 pub(crate) const ACTIVE_VIEW_COLOR: u32 = 0xc86b98;
+pub(crate) const CROSSHAIR_COLOR: u32 = 0x00ccffb3; // cyan, 70% opacity
 
 pub trait AppStyle: Styled + Sized {
     fn truncate_start(self) -> Self {

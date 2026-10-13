@@ -5,7 +5,7 @@ use image::{ImageFormat, Rgba, RgbaImage};
 use std::io::Cursor;
 use std::sync::Arc;
 
-const CROSSHAIR_LINE: ([u8; 3], f32) = ([0x00, 0xcc, 0xff], 0xb3 as f32 / 255.0);
+use crate::ui;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Rect {
@@ -28,10 +28,10 @@ impl Picture {
         for (image, rect, opacity) in &self.images {
             draw_image(&mut picture, image, *rect, *opacity);
         }
-        let (color, alpha) = CROSSHAIR_LINE;
+        let [r, g, b, a] = ui::CROSSHAIR_COLOR.to_be_bytes();
         for line in &self.lines {
             for (x, y) in pixels(&picture, *line) {
-                over(picture.get_pixel_mut(x, y), color, alpha);
+                over(picture.get_pixel_mut(x, y), [r, g, b], f32::from(a) / 255.0);
             }
         }
         picture

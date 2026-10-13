@@ -216,7 +216,7 @@ impl Viewer {
         let image = view.image_size;
         let left = (view.size.width - image.width) / 2.0;
         let top = (view.size.height - image.height) / 2.0;
-        let line = || div().absolute().bg(rgba(0x00ccffb3));
+        let line = || div().absolute().bg(rgba(ui::CROSSHAIR_COLOR));
         Some([
             line()
                 .left(px(x))
