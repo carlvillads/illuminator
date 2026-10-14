@@ -62,14 +62,7 @@ impl Viewer {
 
     /// One row per layer
     fn render_layer_list(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = cx.theme();
-        let (muted, active, hover, info) = (
-            theme.muted_foreground,
-            theme.list_active,
-            theme.list_hover,
-            theme.info,
-        );
-        let context = Some(shortcuts::CONTEXT);
+        let muted = cx.theme().muted_foreground;
         let rows = v_flex()
             .when(self.layers.is_empty(), |list| {
                 list.child(
@@ -80,110 +73,7 @@ impl Viewer {
                         .child("No volumes open"),
                 )
             })
-            .children(self.layers.iter().enumerate().map(|(index, layer)| {
-                let display = &layer.display;
-                let drag = DragLayer {
-                    index,
-                    name: display.name().into(),
-                };
-                let row = h_flex()
-                    .id(("layer-row", index))
-                    .group("layer-row")
-                    .gap_1()
-                    .h(px(26.0))
-                    .px_1()
-                    .map(|row| {
-                        if index == self.selected {
-                            row.bg(active)
-                        } else {
-                            row.hover(|row| row.bg(hover))
-                        }
-                    })
-                    .on_click(cx.listener(move |viewer, _, _, cx| viewer.select(index, cx)))
-                    .on_drag(drag, |drag, _, _, cx| cx.new(|_| drag.clone()))
-                    .drag_over::<DragLayer>(move |style, _, _, _| {
-                        style.border_t_2().border_color(info)
-                    })
-                    .on_drop(cx.listener(move |viewer, drag: &DragLayer, _, cx| {
-                        viewer.move_layer(drag.index, index, cx);
-                    }))
-                    .child(
-                        Button::new(("layer-visible", index))
-                            .ghost()
-                            .xsmall()
-                            .icon(if layer.visible {
-                                Carbon::View
-                            } else {
-                                Carbon::ViewOff
-                            })
-                            .on_click(cx.listener(move |viewer, _, _, cx| {
-                                let layer = &mut viewer.layers[index];
-                                layer.visible = !layer.visible;
-                                cx.notify();
-                            })),
-                    )
-                    .child(
-                        div()
-                            .w(px(14.0))
-                            .text_xs()
-                            .text_color(muted)
-                            .child(format!("{}", index + 1)),
-                    )
-                    .child(div().w(px(18.0)).child(colormap_strip(
-                        display.colormap,
-                        display.label_mode(),
-                        3,
-                    )))
-                    .child(
-                        div()
-                            .truncate_start()
-                            .when(!layer.visible, |name| name.text_color(muted))
-                            .child(display.name()),
-                    )
-                    .child(
-                        h_flex()
-                            .opacity(0.4)
-                            .group_hover("layer-row", |buttons| buttons.opacity(1.0))
-                            .child(
-                                Button::new(("layer-reload", index))
-                                    .ghost()
-                                    .xsmall()
-                                    .icon(Carbon::Reload)
-                                    .tooltip_with_action("Reload from disk", &ReloadLayer, context)
-                                    .on_click(cx.listener(move |viewer, _, _, _| {
-                                        viewer.reload_layer(index);
-                                    })),
-                            )
-                            .child(
-                                Button::new(("layer-close", index))
-                                    .ghost()
-                                    .xsmall()
-                                    .icon(Carbon::Close)
-                                    .tooltip_with_action("Close", &CloseLayer, context)
-                                    .on_click(cx.listener(move |viewer, _, _, cx| {
-                                        viewer.close_layer(index, cx);
-                                    })),
-                            ),
-                    );
-                let details = layer_details(display);
-                HoverCard::new(("layer-card", index))
-                    .anchor(Anchor::RightCenter)
-                    .trigger(row)
-                    .content(move |_, _, cx| {
-                        let muted = cx.theme().muted_foreground;
-                        v_flex()
-                            .w(px(360.0))
-                            .gap_1()
-                            .text_xs()
-                            .children(details.iter().map(|(label, value)| {
-                                h_flex()
-                                    .gap_2()
-                                    .items_start()
-                                    .child(div().w(px(80.0)).text_color(muted).child(*label))
-                                    .child(div().flex_1().min_w_0().child(value.clone()))
-                            }))
-                    })
-            }));
+            .children((0..self.layers.len()).map(|index| self.render_layer_row(index, cx)));
         let commands = h_flex()
             .gap_1()
             .child(
@@ -222,6 +112,106 @@ impl Viewer {
             .child(section_title("Layers", cx))
             .child(rows)
             .child(commands)
+    }
+
+    /// A layers row in the layer list.
+    fn render_layer_row(&self, index: usize, cx: &mut Context<Self>) -> HoverCard {
+        let theme = cx.theme();
+        let (muted, active, hover, info) = (
+            theme.muted_foreground,
+            theme.list_active,
+            theme.list_hover,
+            theme.info,
+        );
+        let context = Some(shortcuts::CONTEXT);
+        let layer = &self.layers[index];
+        let display = &layer.display;
+        let drag = DragLayer {
+            index,
+            name: display.name().into(),
+        };
+        let row = h_flex()
+            .id(("layer-row", index))
+            .group("layer-row")
+            .gap_1()
+            .h(px(26.0))
+            .px_1()
+            .map(|row| {
+                if index == self.selected {
+                    row.bg(active)
+                } else {
+                    row.hover(|row| row.bg(hover))
+                }
+            })
+            .on_click(cx.listener(move |viewer, _, _, cx| viewer.select(index, cx)))
+            .on_drag(drag, |drag, _, _, cx| cx.new(|_| drag.clone()))
+            .drag_over::<DragLayer>(move |style, _, _, _| style.border_t_2().border_color(info))
+            .on_drop(cx.listener(move |viewer, drag: &DragLayer, _, cx| {
+                viewer.move_layer(drag.index, index, cx);
+            }))
+            .child(
+                Button::new(("layer-visible", index))
+                    .ghost()
+                    .xsmall()
+                    .icon(if layer.visible {
+                        Carbon::View
+                    } else {
+                        Carbon::ViewOff
+                    })
+                    .on_click(cx.listener(move |viewer, _, _, cx| {
+                        let layer = &mut viewer.layers[index];
+                        layer.visible = !layer.visible;
+                        cx.notify();
+                    })),
+            )
+            .child(
+                div()
+                    .w(px(14.0))
+                    .text_xs()
+                    .text_color(muted)
+                    .child(format!("{}", index + 1)),
+            )
+            .child(div().w(px(18.0)).child(colormap_strip(
+                display.colormap,
+                display.label_mode(),
+                3,
+            )))
+            .child(
+                div()
+                    .truncate_start()
+                    .when(!layer.visible, |name| name.text_color(muted))
+                    .child(display.name()),
+            )
+            .child(
+                h_flex()
+                    .opacity(0.4)
+                    .group_hover("layer-row", |buttons| buttons.opacity(1.0))
+                    .child(
+                        Button::new(("layer-reload", index))
+                            .ghost()
+                            .xsmall()
+                            .icon(Carbon::Reload)
+                            .tooltip_with_action("Reload from disk", &ReloadLayer, context)
+                            .on_click(cx.listener(move |viewer, _, _, _| {
+                                viewer.reload_layer(index);
+                            })),
+                    )
+                    .child(
+                        Button::new(("layer-close", index))
+                            .ghost()
+                            .xsmall()
+                            .icon(Carbon::Close)
+                            .tooltip_with_action("Close", &CloseLayer, context)
+                            .on_click(cx.listener(move |viewer, _, _, cx| {
+                                viewer.close_layer(index, cx);
+                            })),
+                    ),
+            );
+        let details = layer_details(display);
+        HoverCard::new(("layer-card", index))
+            .anchor(Anchor::RightCenter)
+            .trigger(row)
+            .content(move |_, _, cx| layer_card(&details, cx.theme().muted_foreground))
     }
 
     /// How many lightbox views and how far apart each view is
@@ -420,6 +410,21 @@ fn layer_details(display: &VolumeDisplay) -> Vec<(&'static str, String)> {
         ("Transform", geometry.transform_name.to_string()),
         ("Path", display.volume().path().display().to_string()),
     ]
+}
+
+/// The hover card with a layer's details
+fn layer_card(details: &[(&'static str, String)], muted: Hsla) -> Div {
+    v_flex()
+        .w(px(360.0))
+        .gap_1()
+        .text_xs()
+        .children(details.iter().map(|(label, value)| {
+            h_flex()
+                .gap_2()
+                .items_start()
+                .child(div().w(px(80.0)).text_color(muted).child(*label))
+                .child(div().flex_1().min_w_0().child(value.clone()))
+        }))
 }
 
 fn file_name(path: &Path) -> String {

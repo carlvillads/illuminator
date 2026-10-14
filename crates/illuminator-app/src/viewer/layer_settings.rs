@@ -9,15 +9,15 @@ impl Viewer {
             return div().into_any_element();
         };
         let theme = cx.theme();
-        let (muted, danger, info) = (theme.muted_foreground, theme.danger, theme.info);
+        let (muted, danger) = (theme.muted_foreground, theme.danger);
         let layer = &self.layers[index];
         let display = &layer.display;
-        let geometry = display.geometry();
+        let anatomical = display.geometry().anatomical;
         let overlaid = self.layout.overlaid();
         let bottom_visible = self.layers.iter().position(|layer| layer.visible);
-        let id = |name: &'static str| (name, index as u64);
+        let link_world = !overlaid && self.sync && self.sync_mode == SyncMode::World && anatomical;
 
-        let mut settings = v_flex()
+        v_flex()
             .gap_2()
             .child(section_title(format!("Layer {}", index + 1), cx))
             .when(overlaid && bottom_visible != Some(index), |settings| {
@@ -31,190 +31,55 @@ impl Viewer {
                                 .child(format!("{:.0}%", layer.opacity * 100.0)),
                         ),
                 )
-            });
-
-        settings = if display.label_mode() {
-            settings
-                .child(
-                    ui::setting_row("Labels", muted)
-                        .child(
-                            div()
-                                .flex_1()
-                                .child(format!("{} labels", display.label_count())),
-                        )
-                        .child(
-                            Button::new(id("statistics"))
-                                .xsmall()
-                                .label("Statistics\u{2026}")
-                                .on_click(cx.listener(move |viewer, _, window, cx| {
-                                    viewer.show_statistics(index, window, cx);
-                                })),
-                        ),
-                )
-                .child(
-                    Checkbox::new(id("outline"))
-                        .label("Outline")
-                        .checked(display.outline)
-                        .on_click(cx.listener(move |viewer, checked: &bool, _, cx| {
-                            viewer.layers[index].display.outline = *checked;
-                            cx.notify();
-                        })),
-                )
-        } else {
-            let window = display.window;
-            settings
-                .child(
-                    ui::setting_row("Window", muted)
-                        .child(div().flex_1().text_xs().child(format!(
-                            "W {}  L {}",
-                            format_value(window.width),
-                            format_value(window.level)
-                        )))
-                        .child(self.presets_button(index, cx))
-                        .child(
-                            Button::new(id("auto"))
-                                .ghost()
-                                .xsmall()
-                                .icon(Carbon::AutoWindow)
-                                .tooltip_with_action(
-                                    "Fit to the current frame",
-                                    &AutoContrast,
-                                    Some(shortcuts::CONTEXT),
-                                )
-                                .on_click(cx.listener(move |viewer, _, _, cx| {
-                                    viewer.auto_window(index, cx);
-                                })),
-                        ),
-                )
-                .child(self.render_histogram(index, cx))
-                .child(
-                    ui::setting_row("Colormap", muted).child(h_flex().flex_1().gap_1().children(
-                        Colormap::ALL.into_iter().map(|colormap| {
-                            let name = colormap.name();
-                            div()
-                                .id(SharedString::from(format!("colormap-{name}")))
-                                .flex_1()
-                                .p_0p5()
-                                .rounded_sm()
-                                .border_1()
-                                .border_color(if display.colormap == colormap {
-                                    info
-                                } else {
-                                    transparent_black()
-                                })
-                                .child(colormap_strip(colormap, false, 8))
-                                .tooltip(move |window, cx| Tooltip::new(name).build(window, cx))
-                                .on_click(cx.listener(move |viewer, _, _, cx| {
-                                    viewer.layers[index].display.colormap = colormap;
-                                    cx.notify();
-                                }))
-                        }),
-                    )),
-                )
-                .child(
-                    Checkbox::new(id("clip-low"))
-                        .label("Transparent below window")
-                        .checked(display.clip_low)
-                        .on_click(cx.listener(move |viewer, checked: &bool, _, cx| {
-                            viewer.layers[index].display.clip_low = *checked;
-                            cx.notify();
-                        })),
-                )
-                .child(
-                    h_flex()
-                        .gap_2()
-                        .child(
-                            Checkbox::new(id("suv"))
-                                .label("SUV")
-                                .checked(display.scale() != 1.0)
-                                .disabled(layer.suv.is_none())
-                                .on_click(cx.listener(move |viewer, checked: &bool, _, cx| {
-                                    viewer.set_suv(index, *checked, cx);
-                                })),
-                        )
-                        .child(
-                            div()
-                                .flex_1()
-                                .text_xs()
-                                .text_color(muted)
-                                .child(layer.suv.map_or("no sidecar", |(_, source)| source)),
-                        )
-                        .child(
-                            Button::new(id("suv-edit"))
-                                .ghost()
-                                .xsmall()
-                                .label("Edit\u{2026}")
-                                .tooltip("Weight, dose and timing for SUV")
-                                .on_click(cx.listener(move |viewer, _, window, cx| {
-                                    viewer.edit_suv(index, window, cx);
-                                })),
-                        ),
-                )
-                .when(display.range().is_none(), |settings| {
-                    settings.child(
-                        div()
-                            .text_xs()
-                            .text_color(muted)
-                            .child("No finite values in this frame"),
-                    )
-                })
-        };
-
-        settings
+            })
+            .child(if display.label_mode() {
+                self.render_label_settings(index, cx)
+            } else {
+                self.render_intensity_settings(index, cx)
+            })
             .children(self.render_time_curve(index, cx))
-            .child(
-                Checkbox::new(id("labels"))
-                    .label("Label map")
-                    .checked(display.label_mode())
-                    .on_click(cx.listener(move |viewer, checked: &bool, _, cx| {
-                        let checked = *checked;
-                        viewer.change(index, |display| display.set_label_mode(checked), cx);
-                    })),
-            )
+            .child(display_checkbox(
+                index,
+                "labels",
+                "Label map",
+                display.label_mode(),
+                VolumeDisplay::set_label_mode,
+                cx,
+            ))
             .when(display.can_be_anatomical(), |settings| {
-                settings.child(
-                    Checkbox::new(id("native"))
-                        .label("Native axes")
-                        .checked(display.options().native)
-                        .on_click(cx.listener(move |viewer, checked: &bool, _, cx| {
-                            let checked = *checked;
-                            viewer.change(index, |display| display.set_native(checked), cx);
-                        })),
-                )
+                settings.child(display_checkbox(
+                    index,
+                    "native",
+                    "Native axes",
+                    display.options().native,
+                    VolumeDisplay::set_native,
+                    cx,
+                ))
             })
             .when(display.units_unknown(), |settings| {
-                settings.child(
-                    Checkbox::new(id("assume-mm"))
-                        .label("Assume mm")
-                        .checked(display.options().assume_mm)
-                        .on_click(cx.listener(move |viewer, checked: &bool, _, cx| {
-                            let checked = *checked;
-                            viewer.change(index, |display| display.set_assume_mm(checked), cx);
-                        })),
-                )
+                settings.child(display_checkbox(
+                    index,
+                    "assume-mm",
+                    "Assume mm",
+                    display.options().assume_mm,
+                    VolumeDisplay::set_assume_mm,
+                    cx,
+                ))
             })
-            .when(
-                !overlaid && self.sync && self.sync_mode == SyncMode::World && geometry.anatomical,
-                |settings| {
-                    settings.child(
-                        Checkbox::new(id("link"))
-                            .label("Link in world")
-                            .checked(display.link_world)
-                            .on_click(cx.listener(move |viewer, checked: &bool, _, cx| {
-                                let checked = *checked;
-                                viewer.change(
-                                    index,
-                                    |display| {
-                                        display.link_world = checked;
-                                        Ok(())
-                                    },
-                                    cx,
-                                );
-                            })),
-                    )
-                },
-            )
-            .when(overlaid && !geometry.anatomical, |settings| {
+            .when(link_world, |settings| {
+                settings.child(display_checkbox(
+                    index,
+                    "link",
+                    "Link in world",
+                    display.link_world,
+                    |display, link| {
+                        display.link_world = link;
+                        Ok(())
+                    },
+                    cx,
+                ))
+            })
+            .when(overlaid && !anatomical, |settings| {
                 settings.child(
                     div()
                         .text_xs()
@@ -223,6 +88,152 @@ impl Viewer {
                 )
             })
             .into_any_element()
+    }
+
+    /// Settings of a layer shown as a label map
+    fn render_label_settings(&self, index: usize, cx: &mut Context<Self>) -> Div {
+        let muted = cx.theme().muted_foreground;
+        let display = &self.layers[index].display;
+        let id = |name: &'static str| (name, index as u64);
+        v_flex()
+            .gap_2()
+            .child(
+                ui::setting_row("Labels", muted)
+                    .child(
+                        div()
+                            .flex_1()
+                            .child(format!("{} labels", display.label_count())),
+                    )
+                    .child(
+                        Button::new(id("statistics"))
+                            .xsmall()
+                            .label("Statistics\u{2026}")
+                            .on_click(cx.listener(move |viewer, _, window, cx| {
+                                viewer.show_statistics(index, window, cx);
+                            })),
+                    ),
+            )
+            .child(
+                Checkbox::new(id("outline"))
+                    .label("Outline")
+                    .checked(display.outline)
+                    .on_click(cx.listener(move |viewer, checked: &bool, _, cx| {
+                        viewer.layers[index].display.outline = *checked;
+                        cx.notify();
+                    })),
+            )
+    }
+
+    /// Settings of a layer shown with a colormap
+    fn render_intensity_settings(&self, index: usize, cx: &mut Context<Self>) -> Div {
+        let muted = cx.theme().muted_foreground;
+        let layer = &self.layers[index];
+        let display = &layer.display;
+        let window = display.window;
+        let id = |name: &'static str| (name, index as u64);
+        v_flex()
+            .gap_2()
+            .child(
+                ui::setting_row("Window", muted)
+                    .child(div().flex_1().text_xs().child(format!(
+                        "W {}  L {}",
+                        format_value(window.width),
+                        format_value(window.level)
+                    )))
+                    .child(self.presets_button(index, cx))
+                    .child(
+                        Button::new(id("auto"))
+                            .ghost()
+                            .xsmall()
+                            .icon(Carbon::AutoWindow)
+                            .tooltip_with_action(
+                                "Fit to the current frame",
+                                &AutoContrast,
+                                Some(shortcuts::CONTEXT),
+                            )
+                            .on_click(cx.listener(move |viewer, _, _, cx| {
+                                viewer.auto_window(index, cx);
+                            })),
+                    ),
+            )
+            .child(self.render_histogram(index, cx))
+            .child(self.render_colormaps(index, cx))
+            .child(
+                Checkbox::new(id("clip-low"))
+                    .label("Transparent below window")
+                    .checked(display.clip_low)
+                    .on_click(cx.listener(move |viewer, checked: &bool, _, cx| {
+                        viewer.layers[index].display.clip_low = *checked;
+                        cx.notify();
+                    })),
+            )
+            .child(
+                h_flex()
+                    .gap_2()
+                    .child(
+                        Checkbox::new(id("suv"))
+                            .label("SUV")
+                            .checked(display.scale() != 1.0)
+                            .disabled(layer.suv.is_none())
+                            .on_click(cx.listener(move |viewer, checked: &bool, _, cx| {
+                                viewer.set_suv(index, *checked, cx);
+                            })),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .text_xs()
+                            .text_color(muted)
+                            .child(layer.suv.map_or("no sidecar", |(_, source)| source)),
+                    )
+                    .child(
+                        Button::new(id("suv-edit"))
+                            .ghost()
+                            .xsmall()
+                            .label("Edit\u{2026}")
+                            .tooltip("Edit SUV calculation")
+                            .on_click(cx.listener(move |viewer, _, window, cx| {
+                                viewer.edit_suv(index, window, cx);
+                            })),
+                    ),
+            )
+            .when(display.range().is_none(), |settings| {
+                settings.child(
+                    div()
+                        .text_xs()
+                        .text_color(muted)
+                        .child("No finite values in this frame"),
+                )
+            })
+    }
+
+    /// One color strip per colormap. Clicking a color strip "icon" picks that colormap
+    fn render_colormaps(&self, index: usize, cx: &mut Context<Self>) -> Div {
+        let theme = cx.theme();
+        let (muted, info) = (theme.muted_foreground, theme.info);
+        let current = self.layers[index].display.colormap;
+        ui::setting_row("Colormap", muted).child(h_flex().flex_1().gap_1().children(
+            Colormap::ALL.into_iter().map(|colormap| {
+                let name = colormap.name();
+                div()
+                    .id(SharedString::from(format!("colormap-{name}")))
+                    .flex_1()
+                    .p_0p5()
+                    .rounded_sm()
+                    .border_1()
+                    .border_color(if colormap == current {
+                        info
+                    } else {
+                        transparent_black()
+                    })
+                    .child(colormap_strip(colormap, false, 8))
+                    .tooltip(move |window, cx| Tooltip::new(name).build(window, cx))
+                    .on_click(cx.listener(move |viewer, _, _, cx| {
+                        viewer.layers[index].display.colormap = colormap;
+                        cx.notify();
+                    }))
+            }),
+        ))
     }
 
     fn render_histogram(&self, index: usize, cx: &mut Context<Self>) -> impl IntoElement {
@@ -481,6 +492,24 @@ impl Viewer {
                 menu
             })
     }
+}
+
+/// Checkbox that changes a display setting of the layer at `index`.
+fn display_checkbox(
+    index: usize,
+    id: &'static str,
+    label: &'static str,
+    checked: bool,
+    set: fn(&mut VolumeDisplay, bool) -> illuminator_core::Result<()>,
+    cx: &mut Context<Viewer>,
+) -> Checkbox {
+    Checkbox::new((id, index as u64))
+        .label(label)
+        .checked(checked)
+        .on_click(cx.listener(move |viewer, checked: &bool, _, cx| {
+            let checked = *checked;
+            viewer.change(index, |display| set(display, checked), cx);
+        }))
 }
 
 /// The colors along the histogram's value axis, as the views show them
