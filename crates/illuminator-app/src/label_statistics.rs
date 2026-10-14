@@ -1,5 +1,5 @@
 use gpui_kit::component::button::{Button, ButtonVariants};
-use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
+use gpui_kit::component::menu::DropdownMenu;
 use gpui_kit::component::{ActiveTheme, Disableable, Sizable, h_flex, v_flex};
 use gpui_kit::*;
 use illuminator_core::geometry::VolumeGeometry;
@@ -10,7 +10,7 @@ use illuminator_core::volume::Volume;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use crate::ui::{format_value, rgb_to_rgba, tabular_nums};
+use crate::ui::{choice_items, format_value, rgb_to_rgba, tabular_nums};
 
 const COLUMN: f32 = 76.0;
 const NO_VALUES: &str = "None (volumes only)";
@@ -137,18 +137,15 @@ impl StatisticsView {
         Button::new("values")
             .xsmall()
             .label(label)
-            .dropdown_menu(move |mut menu, _, _| {
-                for (index, name) in names.iter().enumerate() {
-                    let view = view.clone();
-                    menu = menu.item(PopupMenuItem::new(name.clone()).on_click(move |_, _, cx| {
-                        let _ = view.update(cx, |view, cx| view.choose(Some(index), cx));
-                    }));
-                }
-                let view = view.clone();
-                menu.separator()
-                    .item(PopupMenuItem::new(NO_VALUES).on_click(move |_, _, cx| {
-                        let _ = view.update(cx, |view, cx| view.choose(None, cx));
-                    }))
+            .dropdown_menu(move |menu, _, _| {
+                let candidates = names.iter().cloned().zip((0..).map(Some));
+                let menu = choice_items(menu, &view, candidates, |view, chosen, _, cx| {
+                    view.choose(chosen, cx);
+                });
+                let none = [(NO_VALUES, None)];
+                choice_items(menu.separator(), &view, none, |view, chosen, _, cx| {
+                    view.choose(chosen, cx);
+                })
             })
     }
 }

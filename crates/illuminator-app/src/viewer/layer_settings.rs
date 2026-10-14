@@ -479,15 +479,15 @@ impl Viewer {
                     if n > 0 {
                         menu = menu.separator();
                     }
-                    menu = menu.label(*group);
-                    for &(name, preset) in *presets {
-                        let viewer = viewer.clone();
-                        menu = menu.item(PopupMenuItem::new(name).on_click(move |_, _, cx| {
-                            let _ = viewer.update(cx, |viewer, cx| {
-                                viewer.apply_preset(index, preset, cx);
-                            });
-                        }));
-                    }
+                    let choices = presets.iter().copied();
+                    menu = ui::choice_items(
+                        menu.label(*group),
+                        &viewer,
+                        choices,
+                        move |viewer, preset, _, cx| {
+                            viewer.apply_preset(index, preset, cx);
+                        },
+                    );
                 }
                 menu
             })

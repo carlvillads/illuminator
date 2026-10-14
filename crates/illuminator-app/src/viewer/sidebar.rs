@@ -217,13 +217,11 @@ impl Viewer {
     /// How many lightbox views and how far apart each view is
     fn render_lightbox_settings(&self, cx: &mut Context<Self>) -> Div {
         let muted = cx.theme().muted_foreground;
-        let viewer = cx.entity().downgrade();
         let grid_label = |(columns, rows): (usize, usize)| format!("{columns} \u{d7} {rows}");
         let step_label = |step: usize| match step {
             1 => "1 step".to_string(),
             step => format!("{step} steps"),
         };
-        let grids = viewer.clone();
         ui::setting_row("Lightbox", muted)
             .child(
                 Button::new("lightbox-grid")
@@ -231,18 +229,14 @@ impl Viewer {
                     .xsmall()
                     .label(grid_label(self.lightbox_grid))
                     .tooltip("Columns \u{d7} rows")
-                    .dropdown_menu(move |mut menu, _, _| {
-                        for grid in LIGHTBOX_GRIDS {
-                            let viewer = grids.clone();
-                            menu = menu.item(PopupMenuItem::new(grid_label(grid)).on_click(
-                                move |_, _, cx| {
-                                    let _ = viewer.update(cx, |viewer, cx| {
-                                        viewer.set_lightbox_grid(grid, cx);
-                                    });
-                                },
-                            ));
+                    .dropdown_menu({
+                        let viewer = cx.entity().downgrade();
+                        move |menu, _, _| {
+                            let choices = LIGHTBOX_GRIDS.map(|grid| (grid_label(grid), grid));
+                            ui::choice_items(menu, &viewer, choices, |viewer, grid, _, cx| {
+                                viewer.set_lightbox_grid(grid, cx);
+                            })
                         }
-                        menu
                     }),
             )
             .child(
@@ -251,19 +245,15 @@ impl Viewer {
                     .xsmall()
                     .label(step_label(self.lightbox_step))
                     .tooltip("Step size")
-                    .dropdown_menu(move |mut menu, _, _| {
-                        for step in LIGHTBOX_STEPS {
-                            let viewer = viewer.clone();
-                            menu = menu.item(PopupMenuItem::new(step_label(step)).on_click(
-                                move |_, _, cx| {
-                                    let _ = viewer.update(cx, |viewer, cx| {
-                                        viewer.lightbox_step = step;
-                                        cx.notify();
-                                    });
-                                },
-                            ));
+                    .dropdown_menu({
+                        let viewer = cx.entity().downgrade();
+                        move |menu, _, _| {
+                            let choices = LIGHTBOX_STEPS.map(|step| (step_label(step), step));
+                            ui::choice_items(menu, &viewer, choices, |viewer, step, _, cx| {
+                                viewer.lightbox_step = step;
+                                cx.notify();
+                            })
                         }
-                        menu
                     }),
             )
     }
@@ -335,22 +325,17 @@ impl Viewer {
                                 .xsmall()
                                 .label(format!("{} fps", self.time_fps))
                                 .tooltip("Frames per second")
-                                .dropdown_menu(move |mut menu, _, _| {
-                                    for rate in TIMEPOINT_FRAME_RATES {
-                                        let viewer = viewer.clone();
-                                        menu = menu.item(
-                                            PopupMenuItem::new(format!("{rate} fps")).on_click(
-                                                move |_, window, cx| {
-                                                    let _ = viewer.update(cx, |viewer, cx| {
-                                                        viewer.set_frames_per_second(
-                                                            rate, window, cx,
-                                                        );
-                                                    });
-                                                },
-                                            ),
-                                        );
-                                    }
-                                    menu
+                                .dropdown_menu(move |menu, _, _| {
+                                    let choices = TIMEPOINT_FRAME_RATES
+                                        .map(|rate| (format!("{rate} fps"), rate));
+                                    ui::choice_items(
+                                        menu,
+                                        &viewer,
+                                        choices,
+                                        |viewer, rate, window, cx| {
+                                            viewer.set_frames_per_second(rate, window, cx);
+                                        },
+                                    )
                                 }),
                         ),
                 )

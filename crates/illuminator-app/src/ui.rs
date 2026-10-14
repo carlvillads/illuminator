@@ -1,7 +1,9 @@
+use gpui_kit::component::menu::{PopupMenu, PopupMenuItem};
 use gpui_kit::component::{ActiveTheme, h_flex, v_flex};
 use gpui_kit::*;
 use illuminator_core::labels::label_color;
 use illuminator_core::slicer::Colormap;
+use std::rc::Rc;
 use std::sync::Arc;
 
 const CAPTION_WIDTH: f32 = 64.0;
@@ -80,6 +82,23 @@ pub fn tabular_nums() -> FontFeatures {
 
 pub fn rgb_to_rgba([r, g, b]: [u8; 3]) -> Rgba {
     rgb(u32::from_be_bytes([0, r, g, b]))
+}
+
+/// Adds one menu item per (label, choice) to menu.
+pub fn choice_items<E: 'static, L: Into<SharedString>, T: Copy + 'static>(
+    mut menu: PopupMenu,
+    entity: &WeakEntity<E>,
+    choices: impl IntoIterator<Item = (L, T)>,
+    choose: impl Fn(&mut E, T, &mut Window, &mut Context<E>) + 'static,
+) -> PopupMenu {
+    let choose = Rc::new(choose);
+    for (label, choice) in choices {
+        let (entity, choose) = (entity.clone(), Rc::clone(&choose));
+        menu = menu.item(PopupMenuItem::new(label).on_click(move |_, window, cx| {
+            let _ = entity.update(cx, |entity, cx| choose(entity, choice, window, cx));
+        }));
+    }
+    menu
 }
 
 #[cfg(test)]

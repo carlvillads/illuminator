@@ -1,10 +1,11 @@
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::{Input, InputState};
-use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
+use gpui_kit::component::menu::DropdownMenu;
 use gpui_kit::component::{ActiveTheme, Sizable, WindowExt, h_flex, v_flex};
 use gpui_kit::*;
 use illuminator_core::suv::{SuvInputs, TRACERS};
 
+use crate::ui::choice_items;
 use crate::viewer::Viewer;
 
 pub struct SuvForm {
@@ -94,18 +95,13 @@ impl SuvForm {
         Button::new("tracer")
             .xsmall()
             .label(label)
-            .dropdown_menu(move |mut menu, _, _| {
-                for &(name, minutes) in &TRACERS {
-                    let form = form.clone();
-                    let item = PopupMenuItem::new(format!("{name} ({minutes} min)"));
-                    menu = menu.item(item.on_click(move |_, _, cx| {
-                        let _ = form.update(cx, |form, cx| {
-                            form.half_life_minutes = minutes;
-                            cx.notify();
-                        });
-                    }));
-                }
-                menu
+            .dropdown_menu(move |menu, _, _| {
+                let tracers =
+                    TRACERS.map(|(name, minutes)| (format!("{name} ({minutes} min)"), minutes));
+                choice_items(menu, &form, tracers, |form, minutes, _, cx| {
+                    form.half_life_minutes = minutes;
+                    cx.notify();
+                })
             })
     }
 }
