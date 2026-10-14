@@ -4,6 +4,7 @@
 //!
 
 use super::*;
+use illuminator_core::meta::strip_extension;
 
 impl Viewer {
     pub(super) fn copy_image(
@@ -41,7 +42,7 @@ impl Viewer {
         let path = base.volume().path();
         let directory = path.parent().map(PathBuf::from).unwrap_or_default();
         let name = base.name();
-        let stem = name.split('.').next().unwrap_or("illuminator");
+        let stem = strip_extension(&name);
         let chosen = cx.prompt_for_new_path(&directory, Some(&format!("{stem}.png")));
         cx.spawn(async move |_, cx| {
             let Ok(Ok(Some(path))) = chosen.await else {

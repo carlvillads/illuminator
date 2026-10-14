@@ -23,24 +23,8 @@ pub enum DataType {
 }
 
 impl DataType {
-    pub fn from_code(code: i16) -> Result<Self> {
-        match code {
-            2 => Ok(Self::U8),
-            4 => Ok(Self::I16),
-            8 => Ok(Self::I32),
-            16 => Ok(Self::F32),
-            64 => Ok(Self::F64),
-            256 => Ok(Self::I8),
-            512 => Ok(Self::U16),
-            768 => Ok(Self::U32),
-            _ => Err(Error::invalid(
-                "Unsupported datatype: expected 8/16/32-bit scalar integer, or 32- or 64-bit float",
-            )),
-        }
-    }
-
     /// Bytes per voxel
-    pub fn size(self) -> usize {
+    pub(crate) fn size(self) -> usize {
         match self {
             Self::U8 | Self::I8 => 1,
             Self::U16 | Self::I16 => 2,
@@ -65,16 +49,16 @@ impl DataType {
 
 /// Voxel data byteorder on disk
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Endian {
+pub(crate) enum Endian {
     Little,
     Big,
 }
 
 /// Intensity scaling = raw * slope + intercept
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Scaling {
-    pub slope: f64,
-    pub intercept: f64,
+pub(crate) struct Scaling {
+    pub(crate) slope: f64,
+    pub(crate) intercept: f64,
 }
 
 impl Default for Scaling {
@@ -87,48 +71,24 @@ impl Default for Scaling {
 }
 
 impl Scaling {
-    pub fn from_header(slope: f32, intercept: f32) -> Result<Self> {
-        if slope == 0.0 {
-            return Ok(Self::default());
-        }
-        if !slope.is_finite() || !intercept.is_finite() {
-            return Err(Error::invalid("Invalid nifti intensity scaling"));
-        }
-        Ok(Self {
-            slope: slope as f64,
-            intercept: intercept as f64,
-        })
-    }
-
-    pub fn apply(self, raw: f64) -> f64 {
+    pub(crate) fn apply(self, raw: f64) -> f64 {
         raw * self.slope + self.intercept
     }
 }
 
-pub fn checked_mul(a: usize, b: usize) -> Result<usize> {
+pub(crate) fn checked_mul(a: usize, b: usize) -> Result<usize> {
     a.checked_mul(b)
-        .ok_or_else(|| Error::invalid("Nifti size overflow!"))
+        .ok_or_else(|| Error::invalid("Volume size overflow!"))
 }
 
 /// Check that 'data_bytes' starting at 'offset' fit in the file
-pub fn validate_region(file_bytes: usize, offset: usize, data_bytes: usize) -> Result<()> {
+pub(crate) fn validate_region(file_bytes: usize, offset: usize, data_bytes: usize) -> Result<()> {
     if offset > file_bytes || data_bytes > file_bytes - offset {
         return Err(Error::invalid(
-            "Nifti has an invalid offset or data is truncated",
+            "The data is truncated or its offset is invalid",
         ));
     }
     Ok(())
-}
-
-pub fn label_id(value: f64) -> Result<i64> {
-    // avoid that i64::MAX rounds up
-    const POWER_63: f64 = 9223372036854775808_f64; // 2^63
-    if !value.is_finite() || value != value.trunc() || value < -POWER_63 || value >= POWER_63 {
-        return Err(Error::invalid(
-            "Segmentation labels must be finite and integral 64-bit IDs",
-        ));
-    }
-    Ok(value as i64)
 }
 
 /// Scalar voxel type that can be decoded from raw bytes
@@ -204,7 +164,12 @@ macro_rules! with_scalar {
 pub(crate) use with_scalar;
 
 /// Read voxel index af unscaled float64, returns none if outside of bytes
-pub fn read_value(bytes: &[u8], index: usize, data_type: DataType, endian: Endian) -> Option<f64> {
+pub(crate) fn read_value(
+    bytes: &[u8],
+    index: usize,
+    data_type: DataType,
+    endian: Endian,
+) -> Option<f64> {
     let size = data_type.size();
     let start = index.checked_mul(size)?;
     let chunk = bytes.get(start..start.checked_add(size)?)?;
@@ -212,7 +177,12 @@ pub fn read_value(bytes: &[u8], index: usize, data_type: DataType, endian: Endia
 }
 
 /// Calls `f(idx, val)` for every voxel in `bytes`, stopping at first error.
-pub fn for_each_value<F>(bytes: &[u8], data_type: DataType, endian: Endian, mut f: F) -> Result<()>
+pub(crate) fn for_each_value<F>(
+    bytes: &[u8],
+    data_type: DataType,
+    endian: Endian,
+    mut f: F,
+) -> Result<()>
 where
     F: FnMut(usize, f64) -> Result<()>,
 {
@@ -231,14 +201,14 @@ where
 
 const PIECE: usize = 1 << 16;
 
-pub struct Values<'a> {
+pub(crate) struct Values<'a> {
     bytes: &'a [u8],
     data_type: DataType,
     endian: Endian,
 }
 
 impl<'a> Values<'a> {
-    pub fn new(bytes: &'a [u8], data_type: DataType, endian: Endian) -> Self {
+    pub(crate) fn new(bytes: &'a [u8], data_type: DataType, endian: Endian) -> Self {
         Self {
             bytes,
             data_type,
@@ -246,7 +216,7 @@ impl<'a> Values<'a> {
         }
     }
 
-    pub fn fold<A, I, F, M>(
+    pub(crate) fn fold<A, I, F, M>(
         &self,
         progress: &Progress,
         stage: &str,
@@ -327,13 +297,6 @@ mod tests {
     }
 
     #[test]
-    fn datatype_codes() {
-        assert_eq!(DataType::from_code(4).unwrap(), DataType::I16);
-        assert_eq!(DataType::from_code(16).unwrap().size(), 4);
-        assert!(DataType::from_code(128).is_err());
-    }
-
-    #[test]
     fn reads_both_byte_orders() {
         let little = 0x1234u16.to_le_bytes();
         let big = 0x1234u16.to_be_bytes();
@@ -383,22 +346,6 @@ mod tests {
         });
         assert!(matches!(result, Err(Error::Cancelled)));
         assert_eq!(visited, 1);
-    }
-
-    #[test]
-    fn scaling() {
-        assert_eq!(Scaling::from_header(0.0, 5.0).unwrap(), Scaling::default());
-        assert_eq!(Scaling::from_header(2.0, 1.0).unwrap().apply(3.0), 7.0);
-        assert!(Scaling::from_header(f32::NAN, 0.0).is_err());
-    }
-
-    #[test]
-    fn label_ids() {
-        assert_eq!(label_id(42.0).unwrap(), 42);
-        assert_eq!(label_id(-(2f64.powi(63))).unwrap(), i64::MIN);
-        assert!(label_id(1.5).is_err());
-        assert!(label_id(f64::NAN).is_err());
-        assert!(label_id(2f64.powi(63)).is_err());
     }
 
     #[test]

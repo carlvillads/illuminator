@@ -8,6 +8,7 @@ use serde_json::Value;
 use std::path::{Path, PathBuf};
 
 use crate::error::{Error, Result};
+use crate::meta::strip_extension;
 
 /// Tracer half-life in minutes from <https://www.nndc.bnl.gov/nudat3/indx_dec.jsp>
 pub const TRACERS: [(&str, f64); 9] = [
@@ -62,7 +63,7 @@ impl SuvInputs {
         )
     }
 
-    pub fn from_json(text: &str) -> Result<Self> {
+    pub(crate) fn from_json(text: &str) -> Result<Self> {
         let sidecar = Sidecar(
             serde_json::from_str(text)
                 .map_err(|error| Error::invalid(format!("Invalid JSON: {error}")))?,
@@ -191,7 +192,7 @@ fn mbq_per(unit: &str) -> Result<f64> {
     }
 }
 
-pub fn half_life_of(name: &str) -> Option<f64> {
+pub(crate) fn half_life_of(name: &str) -> Option<f64> {
     let key = |name: &str| {
         let letters: String = name
             .chars()
@@ -208,20 +209,12 @@ pub fn half_life_of(name: &str) -> Option<f64> {
         .map(|&(_, minutes)| minutes)
 }
 
-pub fn sidecar_path(volume: &Path) -> PathBuf {
+pub(crate) fn sidecar_path(volume: &Path) -> PathBuf {
     let name = volume
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_default();
-    let lower = name.to_ascii_lowercase();
-    let suffixes = [
-        ".nii.gz", ".nii", ".nrrd", ".nhdr", ".hdr", ".img.gz", ".img",
-    ];
-    let stem = suffixes
-        .iter()
-        .find(|suffix| lower.ends_with(*suffix))
-        .map_or(name.as_str(), |suffix| &name[..name.len() - suffix.len()]);
-    volume.with_file_name(format!("{stem}.json"))
+    volume.with_file_name(format!("{}.json", strip_extension(&name)))
 }
 
 #[cfg(test)]

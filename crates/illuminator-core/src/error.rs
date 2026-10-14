@@ -20,7 +20,7 @@ pub enum Error {
 
 impl Error {
     /// "Error::Invalid(message.into())" shorthand
-    pub fn invalid(message: impl Into<String>) -> Self {
+    pub(crate) fn invalid(message: impl Into<String>) -> Self {
         Self::Invalid(message.into())
     }
 }

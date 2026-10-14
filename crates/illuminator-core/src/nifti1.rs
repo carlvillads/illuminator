@@ -16,7 +16,7 @@ use crate::voxel::{self, DataType, Endian, Scaling};
 
 const MAGIC_OFFSET: usize = 344;
 
-pub fn read(path: &Path) -> Result<VolumeMeta> {
+pub(crate) fn read(path: &Path) -> Result<VolumeMeta> {
     let header_path = header_path_for(path)?;
     let (raw, analyze) = read_header(&header_path).map_err(|reason| {
         Error::invalid(format!(
@@ -61,7 +61,7 @@ fn from_nifti(raw: &NiftiHeader, analyze: bool, path: &Path) -> Result<VolumeMet
         Endianness::Big => Endian::Big,
         Endianness::Little => Endian::Little,
     };
-    let datatype = DataType::from_code(raw.datatype)?;
+    let datatype = data_type(raw.datatype)?;
 
     let ndim = usize::from(raw.dim[0]);
     if !(2..=7).contains(&ndim) {
@@ -88,7 +88,7 @@ fn from_nifti(raw: &NiftiHeader, analyze: bool, path: &Path) -> Result<VolumeMet
     // account for the different header structure of analyze
     let (units, scaling, transform) = if analyze {
         // analyze is always in mm
-        let scaling = Scaling::from_header(finite_or_zero(raw.scl_slope), 0.0)?;
+        let scaling = intensity_scaling(finite_or_zero(raw.scl_slope), 0.0)?;
         (SpatialUnits::Millimeter, scaling, None)
     } else {
         let units = match raw.xyzt_units & 0x07 {
@@ -98,7 +98,7 @@ fn from_nifti(raw: &NiftiHeader, analyze: bool, path: &Path) -> Result<VolumeMet
             _ => SpatialUnits::Unknown,
         };
         let scaling =
-            Scaling::from_header(finite_or_zero(raw.scl_slope), finite_or_zero(raw.scl_inter))?;
+            intensity_scaling(finite_or_zero(raw.scl_slope), finite_or_zero(raw.scl_inter))?;
         (units, scaling, transform(raw))
     };
 
@@ -131,6 +131,37 @@ fn from_nifti(raw: &NiftiHeader, analyze: bool, path: &Path) -> Result<VolumeMet
             bytes: data_bytes,
             start: 0,
         },
+    })
+}
+
+/// The voxel type of a NIfTI file.
+fn data_type(code: i16) -> Result<DataType> {
+    match code {
+        2 => Ok(DataType::U8),
+        4 => Ok(DataType::I16),
+        8 => Ok(DataType::I32),
+        16 => Ok(DataType::F32),
+        64 => Ok(DataType::F64),
+        256 => Ok(DataType::I8),
+        512 => Ok(DataType::U16),
+        768 => Ok(DataType::U32),
+        _ => Err(Error::invalid(
+            "Unsupported datatype: expected 8/16/32-bit scalar integer, or 32/64-bit float",
+        )),
+    }
+}
+
+/// The scaling from `scl_slope` and `scl_inter`.
+fn intensity_scaling(slope: f32, intercept: f32) -> Result<Scaling> {
+    if slope == 0.0 {
+        return Ok(Scaling::default());
+    }
+    if !slope.is_finite() || !intercept.is_finite() {
+        return Err(Error::invalid("Invalid nifti intensity scaling"));
+    }
+    Ok(Scaling {
+        slope: slope as f64,
+        intercept: intercept as f64,
     })
 }
 
@@ -268,6 +299,20 @@ mod tests {
         let mut raw = test_header();
         edit(&mut raw);
         from_nifti(&raw, false, Path::new("test.nii"))
+    }
+
+    #[test]
+    fn datatype_codes() {
+        assert_eq!(data_type(4).unwrap(), DataType::I16);
+        assert_eq!(data_type(16).unwrap().size(), 4);
+        assert!(data_type(128).is_err());
+    }
+
+    #[test]
+    fn scaling() {
+        assert_eq!(intensity_scaling(0.0, 5.0).unwrap(), Scaling::default());
+        assert_eq!(intensity_scaling(2.0, 1.0).unwrap().apply(3.0), 7.0);
+        assert!(intensity_scaling(f32::NAN, 0.0).is_err());
     }
 
     #[test]

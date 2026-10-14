@@ -1,7 +1,7 @@
 //! main.rs
 //!
 //! The Illuminator viewer application.
-//! Usage: illuminate [OPTIONS] [FILE]... (see illuminate --help)
+//! Usage: `illuminate [OPTIONS] [FILE]...` (see `illuminate --help`)
 //!
 
 // no console on windows in release builds

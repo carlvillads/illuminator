@@ -33,11 +33,12 @@ use gpui_kit::component::{
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use illuminator_core::cache::VolumeCache;
+use illuminator_core::colormap::Colormap;
 use illuminator_core::display::{SampleKey, SliceJob, VolumeDisplay};
 use illuminator_core::geometry::{Point3D, SlicePlane, ViewPlane};
 use illuminator_core::histogram::Histogram;
 use illuminator_core::loader::{LoadState, VolumeLoader};
-use illuminator_core::slicer::{Coloring, Colormap, SampledSlice, SliceImage, fit_size};
+use illuminator_core::slicer::{Coloring, SampledSlice, SliceImage, fit_size};
 use illuminator_core::suv::SuvInputs;
 use illuminator_core::volume::Volume;
 use image::{Frame, RgbaImage};

@@ -200,12 +200,7 @@ impl Viewer {
         cx.notify();
     }
 
-    pub(crate) fn set_suv_inputs(
-        &mut self,
-        load_id: u64,
-        inputs: SuvInputs,
-        cx: &mut Context<Self>,
-    ) {
+    pub fn set_suv_inputs(&mut self, load_id: u64, inputs: SuvInputs, cx: &mut Context<Self>) {
         if let Some(index) = self
             .layers
             .iter()

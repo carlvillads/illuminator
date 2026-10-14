@@ -10,6 +10,7 @@ use gpui_kit::component::{ActiveTheme, Disableable, Sizable, h_flex, v_flex};
 use gpui_kit::*;
 use illuminator_core::geometry::VolumeGeometry;
 use illuminator_core::labels::label_color;
+use illuminator_core::meta::strip_extension;
 use illuminator_core::progress::Progress;
 use illuminator_core::stats::{self, Region, Source};
 use illuminator_core::volume::Volume;
@@ -112,7 +113,7 @@ impl StatisticsView {
         };
         let path = self.labels.volume.path();
         let directory = path.parent().map(PathBuf::from).unwrap_or_default();
-        let name = self.labels.name.split('.').next().unwrap_or("labels");
+        let name = strip_extension(&self.labels.name);
         let chosen = cx.prompt_for_new_path(&directory, Some(&format!("{name}_stats.csv")));
         cx.spawn(async move |this, cx| {
             let Ok(Ok(Some(path))) = chosen.await else {

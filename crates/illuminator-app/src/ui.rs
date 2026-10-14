@@ -6,15 +6,15 @@
 use gpui_kit::component::menu::{PopupMenu, PopupMenuItem};
 use gpui_kit::component::{ActiveTheme, h_flex, v_flex};
 use gpui_kit::*;
+use illuminator_core::colormap::Colormap;
 use illuminator_core::labels::label_color;
-use illuminator_core::slicer::Colormap;
 use std::rc::Rc;
 use std::sync::Arc;
 
 const CAPTION_WIDTH: f32 = 64.0;
-pub(crate) const ORIENTATION_COLOR: u32 = 0xe8c547;
-pub(crate) const ACTIVE_VIEW_COLOR: u32 = 0xc86b98;
-pub(crate) const CROSSHAIR_COLOR: u32 = 0x00ccffb3; // cyan, 70% opacity
+pub const ORIENTATION_COLOR: u32 = 0xe8c547;
+pub const ACTIVE_VIEW_COLOR: u32 = 0xc86b98;
+pub const CROSSHAIR_COLOR: u32 = 0x00ccffb3; // cyan, 70% opacity
 
 pub trait AppStyle: Styled + Sized {
     fn truncate_start(self) -> Self {

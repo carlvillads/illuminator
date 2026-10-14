@@ -75,7 +75,7 @@ impl Viewer {
         let picked = if hit.mip {
             display.pick_brightest(hit.axis, radiological, hit.s, hit.t)
         } else {
-            display.pick_on(hit.plane, hit.s, hit.t)
+            display.pick(hit.plane, hit.s, hit.t)
         };
         if picked {
             self.sync_from(hit.base);

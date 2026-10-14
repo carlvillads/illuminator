@@ -9,16 +9,16 @@ use crate::geometry::{Point3D, SlicePlane, VolumeGeometry};
 use crate::volume::Volume;
 use crate::voxel::{Scalar, with_scalar};
 
-pub struct Projection {
-    pub frame: usize,
-    pub axis: usize,
+pub(crate) struct Projection {
+    pub(crate) frame: usize,
+    pub(crate) axis: usize,
     dims: [usize; 2],
     max: Vec<f32>,
     depth_of_max: Vec<u32>,
 }
 
 impl Projection {
-    pub fn of(volume: &Volume, frame: usize, axis: usize) -> Self {
+    pub(crate) fn of(volume: &Volume, frame: usize, axis: usize) -> Self {
         let frame = volume.clamp_frame(frame);
         let meta = volume.meta();
         let (max, depth_of_max) =
@@ -33,12 +33,12 @@ impl Projection {
         }
     }
 
-    pub fn nearest(&self, voxel: Point3D) -> f32 {
+    pub(crate) fn nearest(&self, voxel: Point3D) -> f32 {
         let [i, j] = self.cell(voxel, 0.5);
         self.max[i + self.dims[0] * j]
     }
 
-    pub fn linear(&self, voxel: Point3D) -> f32 {
+    pub(crate) fn linear(&self, voxel: Point3D) -> f32 {
         let [a, b] = other_axes(self.axis);
         let (x, y) = (voxel[a].max(0.0), voxel[b].max(0.0));
         let [i, j] = self.cell(voxel, 0.0);
@@ -55,7 +55,7 @@ impl Projection {
         top * (1.0 - fy) + bottom * fy
     }
 
-    pub fn brightest(&self, voxel: Point3D) -> Option<[usize; 3]> {
+    pub(crate) fn brightest(&self, voxel: Point3D) -> Option<[usize; 3]> {
         let [i, j] = self.cell(voxel, 0.5);
         let index = i + self.dims[0] * j;
         if self.max[index].is_nan() {
@@ -78,7 +78,7 @@ impl Projection {
     }
 }
 
-pub fn other_axes(axis: usize) -> [usize; 2] {
+pub(crate) fn other_axes(axis: usize) -> [usize; 2] {
     match axis {
         0 => [1, 2],
         1 => [0, 2],
@@ -86,7 +86,7 @@ pub fn other_axes(axis: usize) -> [usize; 2] {
     }
 }
 
-pub fn depth_axis(geometry: &VolumeGeometry, plane: &SlicePlane) -> usize {
+pub(crate) fn depth_axis(geometry: &VolumeGeometry, plane: &SlicePlane) -> usize {
     let normal = plane.u.cross(plane.v);
     let to_voxel = &geometry.world_to_voxel;
     let step = to_voxel.point(plane.origin + normal) - to_voxel.point(plane.origin);

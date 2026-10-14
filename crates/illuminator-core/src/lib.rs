@@ -4,6 +4,7 @@
 //!
 
 pub mod cache;
+pub mod colormap;
 pub mod display;
 pub mod error;
 pub mod geometry;
@@ -11,10 +12,10 @@ pub mod histogram;
 pub mod labels;
 pub mod loader;
 pub mod meta;
-pub mod nifti1;
-pub mod nrrd;
+mod nifti1;
+mod nrrd;
 pub mod progress;
-pub mod projection;
+mod projection;
 pub mod slicer;
 pub mod stats;
 pub mod suv;

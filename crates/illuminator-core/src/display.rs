@@ -5,6 +5,7 @@
 
 use std::sync::Arc;
 
+use crate::colormap::Colormap;
 use crate::error::{Error, Result};
 use crate::geometry::{GeometryOptions, Point3D, SlicePlane, ViewPlane, VolumeGeometry};
 use crate::labels;
@@ -12,25 +13,25 @@ use crate::loader::LoadedVolume;
 use crate::meta::{SpatialUnits, VolumeMeta};
 use crate::progress::Progress;
 use crate::projection;
-use crate::slicer::{Coloring, Colormap, SampledSlice, Slice};
+use crate::slicer::{Coloring, SampledSlice, Slice};
 use crate::volume::{Range, Volume};
 
 const LABEL_LIMIT: usize = 1 << 20;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct SampleKey {
-    pub volume: u64,
-    pub geometry: VolumeGeometry,
-    pub plane: SlicePlane,
+    pub(crate) volume: u64,
+    pub(crate) geometry: VolumeGeometry,
+    pub(crate) plane: SlicePlane,
     pub frame: usize,
-    pub labels: bool,
-    pub mip: bool,
-    pub width: usize,
-    pub height: usize,
+    pub(crate) labels: bool,
+    pub(crate) mip: bool,
+    pub(crate) width: usize,
+    pub(crate) height: usize,
 }
 
 pub struct SliceJob {
-    pub volume: Arc<Volume>,
+    pub(crate) volume: Arc<Volume>,
     pub key: SampleKey,
 }
 
@@ -56,12 +57,12 @@ impl SliceJob {
 pub struct IntensityWindow {
     pub level: f64,
     pub width: f64,
-    pub min_width: f64,
-    pub step: f64,
+    pub(crate) min_width: f64,
+    pub(crate) step: f64,
 }
 
 impl IntensityWindow {
-    pub fn spanning(low: f64, high: f64) -> Result<Self> {
+    pub(crate) fn spanning(low: f64, high: f64) -> Result<Self> {
         let span = high - low;
         if !span.is_finite() {
             return Err(Error::invalid("Intensity range cannot be represented"));
@@ -281,7 +282,7 @@ impl VolumeDisplay {
         self.snap_to_voxel();
     }
 
-    pub fn slice_axis(&self, axis: ViewPlane) -> (usize, f64) {
+    pub(crate) fn slice_axis(&self, axis: ViewPlane) -> (usize, f64) {
         let world_axis = match axis {
             ViewPlane::Axial => 2,
             ViewPlane::Coronal => 1,
@@ -470,11 +471,9 @@ impl VolumeDisplay {
         true
     }
 
-    pub fn pick(&mut self, axis: ViewPlane, radiological: bool, s: f64, t: f64) -> bool {
-        self.pick_on(self.plane(axis, radiological), s, t)
-    }
-
-    pub fn pick_on(&mut self, plane: SlicePlane, s: f64, t: f64) -> bool {
+    /// Moves the cursor to (`s`, `t`) on `plane`.
+    /// False if that is outside the plane or the volume.
+    pub fn pick(&mut self, plane: SlicePlane, s: f64, t: f64) -> bool {
         if !(0.0..1.0).contains(&s) || !(0.0..1.0).contains(&t) {
             return false;
         }
@@ -627,11 +626,11 @@ mod tests {
     fn picking_moves_the_cursor() {
         let dir = tempfile::tempdir().unwrap();
         let mut display = display(&dir, &Fixture::default());
-        assert!(display.pick(ViewPlane::Axial, false, 0.125, 0.5));
+        assert!(display.pick(display.plane(ViewPlane::Axial, false), 0.125, 0.5));
         assert_eq!(display.cursor(), Point3D::new(0.0, 1.0, 1.0));
-        assert!(!display.pick(ViewPlane::Axial, false, 1.5, 0.5));
+        assert!(!display.pick(display.plane(ViewPlane::Axial, false), 1.5, 0.5));
         assert_eq!(display.cursor(), Point3D::new(0.0, 1.0, 1.0));
-        assert!(display.pick(ViewPlane::Axial, true, 0.125, 0.5));
+        assert!(display.pick(display.plane(ViewPlane::Axial, true), 0.125, 0.5));
         assert_eq!(display.cursor(), Point3D::new(3.0, 1.0, 1.0));
     }
 
@@ -651,7 +650,7 @@ mod tests {
         display.set_native(true).unwrap();
         assert!(!display.geometry().anatomical && !display.world_linked());
         assert_eq!(display.cursor(), Point3D::new(1.0, 1.0, 1.0));
-        assert!(display.pick(ViewPlane::Axial, false, 0.3, 0.5));
+        assert!(display.pick(display.plane(ViewPlane::Axial, false), 0.3, 0.5));
         assert_eq!(display.cursor(), Point3D::new(1.0, 1.0, 1.0));
     }
 
@@ -691,7 +690,7 @@ mod tests {
         assert_eq!(display.slice_plane(ViewPlane::Axial, slice, false), here);
         let last = display.slice_plane(ViewPlane::Axial, 3, false);
         assert_eq!(last.origin.z, 3.0);
-        assert!(display.pick_on(last, 0.125, 0.5));
+        assert!(display.pick(last, 0.125, 0.5));
         assert_eq!(display.cursor(), Point3D::new(0.0, 1.0, 3.0));
         assert_eq!(display.slice_position(ViewPlane::Axial), (3, 4));
     }

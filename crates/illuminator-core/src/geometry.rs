@@ -20,15 +20,15 @@ impl Point3D {
         Self { x, y, z }
     }
 
-    pub fn from_array([x, y, z]: [f64; 3]) -> Self {
+    pub(crate) fn from_array([x, y, z]: [f64; 3]) -> Self {
         Self { x, y, z }
     }
 
-    pub fn dot(self, other: Self) -> f64 {
+    pub(crate) fn dot(self, other: Self) -> f64 {
         self.x * other.x + self.y * other.y + self.z * other.z
     }
 
-    pub fn cross(self, other: Self) -> Self {
+    pub(crate) fn cross(self, other: Self) -> Self {
         Self::new(
             self.y * other.z - self.z * other.y,
             self.z * other.x - self.x * other.z,
@@ -36,15 +36,15 @@ impl Point3D {
         )
     }
 
-    pub fn length(self) -> f64 {
+    pub(crate) fn length(self) -> f64 {
         self.x.hypot(self.y).hypot(self.z)
     }
 
-    pub fn is_finite(self) -> bool {
+    pub(crate) fn is_finite(self) -> bool {
         self.x.is_finite() && self.y.is_finite() && self.z.is_finite()
     }
 
-    pub fn min(self, other: Self) -> Self {
+    pub(crate) fn min(self, other: Self) -> Self {
         Self::new(
             self.x.min(other.x),
             self.y.min(other.y),
@@ -52,7 +52,7 @@ impl Point3D {
         )
     }
 
-    pub fn max(self, other: Self) -> Self {
+    pub(crate) fn max(self, other: Self) -> Self {
         Self::new(
             self.x.max(other.x),
             self.y.max(other.y),
@@ -119,12 +119,12 @@ impl IndexMut<usize> for Point3D {
 
 /// Transform with implicit last row (0, 0, 0, 1)
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Affine {
-    pub m: Mat3x4,
+pub(crate) struct Affine {
+    pub(crate) m: Mat3x4,
 }
 
 impl Affine {
-    pub const IDENTITY: Self = Self {
+    pub(crate) const IDENTITY: Self = Self {
         m: [
             [1.0, 0.0, 0.0, 0.0],
             [0.0, 1.0, 0.0, 0.0],
@@ -132,12 +132,12 @@ impl Affine {
         ],
     };
 
-    pub fn point(&self, p: Point3D) -> Point3D {
+    pub(crate) fn point(&self, p: Point3D) -> Point3D {
         let row = |r: [f64; 4]| r[0] * p.x + r[1] * p.y + r[2] * p.z + r[3];
         Point3D::new(row(self.m[0]), row(self.m[1]), row(self.m[2]))
     }
 
-    pub fn inverse(&self) -> Result<Self> {
+    pub(crate) fn inverse(&self) -> Result<Self> {
         if self.m.iter().flatten().any(|value| !value.is_finite()) {
             return Err(Error::invalid("Nonfinite image affine"));
         }
@@ -179,30 +179,30 @@ impl Affine {
     }
 
     /// Determinant of the 3x3 matrix without the last implicit row.
-    pub fn determinant(&self) -> f64 {
+    pub(crate) fn determinant(&self) -> f64 {
         let [[a, b, c, _], [d, e, f, _], [g, h, i, _]] = self.m;
         a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g)
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Bounds3D {
-    pub min: Point3D,
-    pub max: Point3D,
+pub(crate) struct Bounds3D {
+    pub(crate) min: Point3D,
+    pub(crate) max: Point3D,
 }
 
 impl Bounds3D {
-    pub const EMPTY: Self = Self {
+    pub(crate) const EMPTY: Self = Self {
         min: Point3D::new(f64::INFINITY, f64::INFINITY, f64::INFINITY),
         max: Point3D::new(f64::NEG_INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY),
     };
 
-    pub fn include(&mut self, p: Point3D) {
+    pub(crate) fn include(&mut self, p: Point3D) {
         self.min = self.min.min(p);
         self.max = self.max.max(p);
     }
 
-    pub fn extent(&self) -> Point3D {
+    pub(crate) fn extent(&self) -> Point3D {
         self.max - self.min
     }
 }
@@ -255,20 +255,20 @@ pub struct GeometryOptions {
 /// Where a volumes voxels sit in world space in mm
 #[derive(Debug, Clone, PartialEq)]
 pub struct VolumeGeometry {
-    pub voxel_to_world: Affine,
-    pub world_to_voxel: Affine,
-    pub bounds: Bounds3D,
-    pub cursor_bounds: Bounds3D,
-    pub dimensions: [usize; 3],
+    pub(crate) voxel_to_world: Affine,
+    pub(crate) world_to_voxel: Affine,
+    pub(crate) bounds: Bounds3D,
+    pub(crate) cursor_bounds: Bounds3D,
+    pub(crate) dimensions: [usize; 3],
     /// True when placed by an sform/qform in known units
     pub anatomical: bool,
-    pub units_known: bool,
+    pub(crate) units_known: bool,
     pub transform_name: &'static str,
     pub unit_name: &'static str,
 }
 
 impl VolumeGeometry {
-    pub fn new(meta: &VolumeMeta, options: GeometryOptions) -> Result<Self> {
+    pub(crate) fn new(meta: &VolumeMeta, options: GeometryOptions) -> Result<Self> {
         let (factor, units_known, unit_name) = match meta.units {
             SpatialUnits::Meter => (1000.0, true, "meters"),
             SpatialUnits::Millimeter => (1.0, true, "mm"),
@@ -340,7 +340,7 @@ impl VolumeGeometry {
         })
     }
 
-    pub fn contains_voxel(&self, p: Point3D) -> bool {
+    pub(crate) fn contains_voxel(&self, p: Point3D) -> bool {
         p.is_finite()
             && (0..3).all(|axis| p[axis] >= -0.5 && p[axis] < self.dimensions[axis] as f64 - 0.5)
     }
@@ -350,7 +350,7 @@ impl VolumeGeometry {
     }
 
     /// Voxel whose center is the closest to the world point `p` if `p` is in the volume.
-    pub fn nearest_voxel(&self, p: Point3D) -> Option<[usize; 3]> {
+    pub(crate) fn nearest_voxel(&self, p: Point3D) -> Option<[usize; 3]> {
         let voxel = self.world_to_voxel.point(p);
         if !self.contains_voxel(voxel) {
             return None;
@@ -358,7 +358,7 @@ impl VolumeGeometry {
         Some([0, 1, 2].map(|axis| (voxel[axis] + 0.5).floor() as usize))
     }
 
-    pub fn plane(&self, axis: ViewPlane, cursor: Point3D, radiological: bool) -> SlicePlane {
+    pub(crate) fn plane(&self, axis: ViewPlane, cursor: Point3D, radiological: bool) -> SlicePlane {
         let min = self.bounds.min;
         let extent = self.bounds.extent();
         let mut plane = match axis {
@@ -386,7 +386,12 @@ impl VolumeGeometry {
     }
 }
 
-pub fn aspect_scale(view_w: f32, view_h: f32, physical_w: f64, physical_h: f64) -> (f32, f32) {
+pub(crate) fn aspect_scale(
+    view_w: f32,
+    view_h: f32,
+    physical_w: f64,
+    physical_h: f64,
+) -> (f32, f32) {
     if view_w <= 0.0 || view_h <= 0.0 || physical_w <= 0.0 || physical_h <= 0.0 {
         return (1.0, 1.0);
     }

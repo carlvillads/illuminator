@@ -21,12 +21,12 @@ use crate::progress::Progress;
 const GIB: f64 = 1024.0 * 1024.0 * 1024.0;
 
 #[derive(Debug)]
-pub struct CacheLease {
+pub(crate) struct CacheLease {
     path: PathBuf,
 }
 
 impl CacheLease {
-    pub fn path(&self) -> &Path {
+    pub(crate) fn path(&self) -> &Path {
         &self.path
     }
 }
@@ -49,7 +49,7 @@ pub struct VolumeCache {
 }
 
 impl VolumeCache {
-    pub fn new(directory: impl Into<PathBuf>, budget_bytes: u64) -> Result<Self> {
+    pub(crate) fn new(directory: impl Into<PathBuf>, budget_bytes: u64) -> Result<Self> {
         if budget_bytes == 0 {
             return Err(Error::invalid("Cache budget must be more than zero"));
         }
@@ -98,7 +98,8 @@ impl VolumeCache {
         self.budget
     }
 
-    pub fn acquire(
+    #[cfg(test)]
+    fn acquire(
         &self,
         source: &Path,
         min_bytes: u64,
@@ -107,7 +108,7 @@ impl VolumeCache {
         self.acquire_from(source, 0, min_bytes, progress)
     }
 
-    pub fn acquire_from(
+    pub(crate) fn acquire_from(
         &self,
         source: &Path,
         start: u64,
@@ -173,7 +174,7 @@ impl VolumeCache {
             progress,
         )?;
         if total < min_bytes {
-            return Err(Error::invalid("Decompressed NIfTI payload is truncated"));
+            return Err(Error::invalid("Decompressed data is truncated"));
         }
         if file_stamp(&source)? != stamp {
             return Err(Error::invalid(

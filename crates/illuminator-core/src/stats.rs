@@ -11,6 +11,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::error::Result;
 use crate::geometry::{Point3D, VolumeGeometry};
+use crate::labels::label_id;
 use crate::progress::Progress;
 use crate::volume::Volume;
 use crate::voxel;
@@ -32,7 +33,7 @@ pub struct Region {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Summary {
-    pub count: usize,
+    pub(crate) count: usize,
     pub mean: f64,
     pub std: f64,
     pub min: f64,
@@ -88,7 +89,7 @@ fn measure_slice(
         for x in 0..width {
             let index = x + width * (y + height * z);
             let raw = voxel::read_value(bytes, index, meta.datatype, meta.endian).unwrap_or(0.0);
-            let label = voxel::label_id(meta.scaling.apply(raw))?;
+            let label = label_id(meta.scaling.apply(raw))?;
             if label == 0 {
                 continue;
             }

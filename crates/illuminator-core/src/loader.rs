@@ -18,8 +18,8 @@ const MAX_WORKERS: usize = 4;
 
 pub struct LoadedVolume {
     pub load_id: u64,
-    pub volume: Volume,
-    pub range: Option<Range>,
+    pub(crate) volume: Volume,
+    pub(crate) range: Option<Range>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -32,7 +32,7 @@ pub enum LoadState {
 }
 
 impl LoadState {
-    pub fn is_active(&self) -> bool {
+    pub(crate) fn is_active(&self) -> bool {
         matches!(self, Self::Queued | Self::Loading)
     }
 }

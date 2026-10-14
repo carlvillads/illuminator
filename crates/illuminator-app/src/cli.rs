@@ -5,8 +5,8 @@
 
 use clap::error::ErrorKind;
 use clap::{CommandFactory, FromArgMatches, Parser, ValueEnum};
+use illuminator_core::colormap::Colormap;
 use illuminator_core::geometry::ViewPlane;
-use illuminator_core::slicer::Colormap;
 use std::ffi::OsString;
 use std::path::PathBuf;
 
@@ -157,7 +157,7 @@ fn window_size(text: &str) -> Result<(f32, f32), String> {
 mod tests {
     use super::{Cli, LayoutName, PlaneName};
     use clap::CommandFactory;
-    use illuminator_core::slicer::Colormap;
+    use illuminator_core::colormap::Colormap;
     use std::path::PathBuf;
 
     fn read(args: &[&str]) -> Result<Cli, clap::Error> {

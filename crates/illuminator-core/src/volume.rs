@@ -24,8 +24,8 @@ const NUM_MIP: usize = 6;
 /// Value range
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Range {
-    pub min: f64,
-    pub max: f64,
+    pub(crate) min: f64,
+    pub(crate) max: f64,
 }
 
 fn next_id() -> u64 {
@@ -48,7 +48,7 @@ pub struct Volume {
 }
 
 impl Volume {
-    pub fn load(path: &Path, cache: &VolumeCache, progress: &Progress) -> Result<Self> {
+    pub(crate) fn load(path: &Path, cache: &VolumeCache, progress: &Progress) -> Result<Self> {
         progress.check()?;
         let meta = VolumeMeta::read(path)?;
         let assume_mm = GeometryOptions {
@@ -92,7 +92,7 @@ impl Volume {
         let map = unsafe { Mmap::map(&file)? };
         if map.len() < needed {
             return Err(Error::invalid(
-                "Nifti data is truncated or has an invalid offset",
+                "The data is truncated or its offset is invalid",
             ));
         }
         progress.check()?;
@@ -117,7 +117,7 @@ impl Volume {
         &self.path
     }
 
-    pub fn rescaled(&self, factor: f64) -> Self {
+    pub(crate) fn rescaled(&self, factor: f64) -> Self {
         let mut meta = self.meta.clone();
         meta.scaling.slope *= factor;
         meta.scaling.intercept *= factor;
@@ -133,7 +133,7 @@ impl Volume {
         }
     }
 
-    pub fn projection(&self, frame: usize, axis: usize) -> Arc<Projection> {
+    pub(crate) fn projection(&self, frame: usize, axis: usize) -> Arc<Projection> {
         let frame = self.clamp_frame(frame);
         let lock = || {
             self.projections
@@ -162,22 +162,22 @@ impl Volume {
         self.id
     }
 
-    pub fn geometry(&self, options: GeometryOptions) -> Result<VolumeGeometry> {
+    pub(crate) fn geometry(&self, options: GeometryOptions) -> Result<VolumeGeometry> {
         VolumeGeometry::new(&self.meta, options)
     }
 
     /// ALL voxel bytes
-    pub fn data(&self) -> &[u8] {
+    pub(crate) fn data(&self) -> &[u8] {
         &self.map[self.offset..self.offset + self.meta.data.bytes]
     }
 
-    /// Frames > available t just show the last available frame
-    pub fn clamp_frame(&self, t: usize) -> usize {
+    /// Frames > available `t` just show the last available frame
+    pub(crate) fn clamp_frame(&self, t: usize) -> usize {
         t.min(self.meta.timepoints() - 1)
     }
 
     /// Bytes from one 3D frame
-    pub fn frame(&self, t: usize) -> &[u8] {
+    pub(crate) fn frame(&self, t: usize) -> &[u8] {
         // Should not be able to overflow?
         let frame_bytes = self.meta.frame_voxels() * self.meta.datatype.size();
         let start = self.clamp_frame(t) * frame_bytes;
@@ -185,7 +185,7 @@ impl Volume {
     }
 
     /// Scaled value for one voxel, None if outside volume
-    pub fn sample_value(&self, [x, y, z]: [usize; 3], t: usize) -> Option<f64> {
+    pub(crate) fn sample_value(&self, [x, y, z]: [usize; 3], t: usize) -> Option<f64> {
         let meta = &self.meta;
         if x >= meta.width() || y >= meta.height() || z >= meta.depth() {
             return None;
@@ -219,7 +219,7 @@ impl Volume {
             .collect()
     }
 
-    pub fn frame_range(&self, t: usize, progress: &Progress) -> Result<Option<Range>> {
+    pub(crate) fn frame_range(&self, t: usize, progress: &Progress) -> Result<Option<Range>> {
         let meta = &self.meta;
         let scaling = meta.scaling;
         let (min, max) = voxel::Values::new(self.frame(t), meta.datatype, meta.endian).fold(

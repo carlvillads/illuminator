@@ -16,7 +16,7 @@ use crate::voxel::{self, DataType, Endian, Scaling};
 
 const MAX_HDR_BYTES: u64 = 1 << 20;
 
-pub fn read(path: &Path) -> Result<VolumeMeta> {
+pub(crate) fn read(path: &Path) -> Result<VolumeMeta> {
     let header = Header::read(path)?;
     parse(&header, path).map_err(|error| match error {
         Error::Invalid(reason) => Error::invalid(format!("{}: {reason}", path.display())),

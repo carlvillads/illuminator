@@ -89,7 +89,7 @@ actions!(
 );
 
 pub const CONTEXT: &str = "Viewer";
-pub(crate) const SECONDARY: &str = if cfg!(target_os = "macos") {
+pub const SECONDARY: &str = if cfg!(target_os = "macos") {
     "\u{2318}"
 } else {
     "Ctrl+"
