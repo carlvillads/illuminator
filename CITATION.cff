@@ -1,0 +1,16 @@
+cff-version: 1.2.0
+title: Illuminator
+message: <3
+type: software
+authors:
+  - given-names: Carl Villads
+    family-names: Priisholm
+    email: me@cvrp.dk
+    orcid: 'https://orcid.org/0009-0000-2000-7363'
+repository-code: 'https://github.com/carlvillads/illuminator'
+url: 'https://github.com/carlvillads/illuminator'
+keywords:
+  - nifti
+  - viewer
+  - medical imaging
+license: Apache-2.0
