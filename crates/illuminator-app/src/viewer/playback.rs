@@ -27,15 +27,8 @@ impl Viewer {
                         }
                     }
                 });
-                loop {
-                    cx.background_executor()
-                        .timer(Duration::from_millis(5))
-                        .await;
-                    match this.update_in(cx, |viewer, window, _| viewer.frame_drawn(window)) {
-                        Ok(true) => break,
-                        Ok(false) => continue,
-                        Err(_) => return, // viewer is gone here
-                    }
+                if !wait_until_drawn(&this, cx).await {
+                    return; // viewer is gone here
                 }
                 futures::join!(timer, read_ahead);
                 let stepped = this.update_in(cx, |viewer, window, cx| {
@@ -175,5 +168,19 @@ impl Viewer {
             }
         }
         cx.notify();
+    }
+}
+
+/// Waits until every visible layer shows the current frame.
+async fn wait_until_drawn(viewer: &WeakEntity<Viewer>, cx: &mut AsyncWindowContext) -> bool {
+    loop {
+        cx.background_executor()
+            .timer(Duration::from_millis(5))
+            .await;
+        match viewer.update_in(cx, |viewer, window, _| viewer.frame_drawn(window)) {
+            Ok(true) => return true,
+            Ok(false) => continue,
+            Err(_) => return false,
+        }
     }
 }

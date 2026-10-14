@@ -5,64 +5,50 @@ use super::*;
 impl Viewer {
     /// Starts a background render for each panel whose image is out of date since last draw
     pub(super) fn schedule_renders(&mut self, window: &Window, cx: &mut Context<Self>) {
-        // overlaid layers are all drawn on the base layers plane
         for view in self.views(window) {
-            let (width, height) = view.image_pixels;
-            if width == 0 || height == 0 {
-                continue;
-            }
-            let plane = view.visible.apply(view.plane);
-            let slot = view.slot;
-            for index in view.layers {
-                let layer = &self.layers[index];
-                let panel = layer.panel(slot);
-                if !layer.visible || panel.is_some_and(|panel| panel.rendering) {
+            // overlaid layers are all drawn on the base layers plane
+            for index in view.layers.clone() {
+                let Some(render) = self.render_needed(&view, index) else {
                     continue;
-                }
-
-                let job = layer.display.job_on(plane, width, height, view.mip);
-                let key = ImageKey {
-                    sample: job.key.clone(),
-                    coloring: layer.display.coloring(),
                 };
-                if panel
-                    .and_then(|panel| panel.image.as_ref())
-                    .is_some_and(|image| image.key == key)
-                {
-                    continue;
-                }
-                let reuse = panel
-                    .and_then(|panel| panel.samples.as_ref())
-                    .filter(|(sample, _)| *sample == key.sample)
-                    .map(|(_, samples)| Arc::clone(samples));
-                let load_id = layer.load_id;
-
-                cx.spawn_in(window, async move |viewer, cx| {
-                    let coloring = key.coloring;
-                    let (samples, image) = cx
-                        .background_spawn(async move {
-                            let samples = reuse.unwrap_or_else(|| Arc::new(job.sample()));
-                            let image = to_render_image(samples.colorize(coloring));
-                            (samples, image)
-                        })
-                        .await;
-                    let _ = viewer.update_in(cx, |viewer, window, cx| {
-                        let Some(layer) = viewer.layer_by_id(load_id) else {
-                            return;
-                        };
-                        let panel = layer.panel_mut(slot);
-                        panel.rendering = false;
-                        panel.samples = Some((key.sample.clone(), samples));
-                        if let Some(old) = panel.image.replace(PanelImage { key, image }) {
-                            cx.drop_image(old.image, Some(window));
-                        }
-                        cx.notify();
-                    });
-                })
-                .detach();
-                self.layers[index].panel_mut(slot).rendering = true;
+                spawn_render(render, window, cx);
+                self.layers[index].panel_mut(view.slot).rendering = true;
             }
         }
+    }
+
+    /// What to render for layer `index` in `view`. None if its image is up to date
+    fn render_needed(&self, view: &View, index: usize) -> Option<RenderRequest> {
+        let (width, height) = view.image_pixels;
+        let layer = &self.layers[index];
+        let panel = layer.panel(view.slot);
+        let rendering = panel.is_some_and(|panel| panel.rendering);
+        if width == 0 || height == 0 || !layer.visible || rendering {
+            return None;
+        }
+        let plane = view.visible.apply(view.plane);
+        let job = layer.display.job_on(plane, width, height, view.mip);
+        let key = ImageKey {
+            sample: job.key.clone(),
+            coloring: layer.display.coloring(),
+        };
+        if panel
+            .and_then(|panel| panel.image.as_ref())
+            .is_some_and(|image| image.key == key)
+        {
+            return None;
+        }
+        let reuse = panel
+            .and_then(|panel| panel.samples.as_ref())
+            .filter(|(sample, _)| *sample == key.sample)
+            .map(|(_, samples)| Arc::clone(samples));
+        Some(RenderRequest {
+            load_id: layer.load_id,
+            slot: view.slot,
+            job,
+            key,
+            reuse,
+        })
     }
 
     /// Counts the selected layers values in the background once per frame
@@ -156,6 +142,50 @@ impl Viewer {
         })
         .detach();
     }
+}
+
+/// One panel image to render
+struct RenderRequest {
+    load_id: u64,
+    slot: usize,
+    job: SliceJob,
+    key: ImageKey,
+    /// The samples of the last render when only the coloring changed
+    reuse: Option<Arc<SampledSlice>>,
+}
+
+/// Samples and colors a panels image
+fn spawn_render(render: RenderRequest, window: &Window, cx: &mut Context<Viewer>) {
+    let RenderRequest {
+        load_id,
+        slot,
+        job,
+        key,
+        reuse,
+    } = render;
+    cx.spawn_in(window, async move |viewer, cx| {
+        let coloring = key.coloring;
+        let (samples, image) = cx
+            .background_spawn(async move {
+                let samples = reuse.unwrap_or_else(|| Arc::new(job.sample()));
+                let image = to_render_image(samples.colorize(coloring));
+                (samples, image)
+            })
+            .await;
+        let _ = viewer.update_in(cx, |viewer, window, cx| {
+            let Some(layer) = viewer.layer_by_id(load_id) else {
+                return;
+            };
+            let panel = layer.panel_mut(slot);
+            panel.rendering = false;
+            panel.samples = Some((key.sample.clone(), samples));
+            if let Some(old) = panel.image.replace(PanelImage { key, image }) {
+                cx.drop_image(old.image, Some(window));
+            }
+            cx.notify();
+        });
+    })
+    .detach();
 }
 
 /// Slice to GPUI image (BGRA)

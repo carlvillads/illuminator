@@ -38,9 +38,7 @@ pub fn label_statistics(
     values: Option<Source>,
     progress: &Progress,
 ) -> Result<Vec<Region>> {
-    let meta = labels.volume.meta();
-    let [width, height, depth] = labels.geometry.dimensions;
-    let bytes = labels.volume.frame(labels.frame);
+    let depth = labels.geometry.dimensions[2];
     let done = AtomicUsize::new(0);
     let regions = (0..depth)
         .into_par_iter()
@@ -48,36 +46,13 @@ pub fn label_statistics(
             HashMap::new,
             |mut regions: HashMap<i64, Counts>, z| -> Result<_> {
                 progress.check()?;
-                for y in 0..height {
-                    for x in 0..width {
-                        let index = x + width * (y + height * z);
-                        let raw = voxel::read_value(bytes, index, meta.datatype, meta.endian)
-                            .unwrap_or(0.0);
-                        let label = voxel::label_id(meta.scaling.apply(raw))?;
-                        if label == 0 {
-                            continue;
-                        }
-                        let counts = regions.entry(label).or_default();
-                        counts.voxels += 1;
-                        let voxel = Point3D::new(x as f64, y as f64, z as f64);
-                        let world = labels.geometry.voxel_to_world.point(voxel);
-                        if let Some(value) = values.and_then(|values| value_at(values, world)) {
-                            counts.values.push(value);
-                        }
-                    }
-                }
+                measure_slice(labels, values, z, &mut regions)?;
                 let done = done.fetch_add(1, Ordering::Relaxed) + 1;
                 progress.report(done as f64 / depth as f64, "Measuring labels")?;
                 Ok(regions)
             },
         )
-        .try_reduce(HashMap::new, |mut a, b| {
-            for (label, counts) in b {
-                let merged = a.remove(&label).unwrap_or_default().merge(counts);
-                a.insert(label, merged);
-            }
-            Ok(a)
-        })?;
+        .try_reduce(HashMap::new, |a, b| Ok(merge_regions(a, b)))?;
 
     let voxel_ml = labels.geometry.voxel_to_world.determinant().abs() / 1000.0;
     let mut regions: Vec<Region> = regions
@@ -91,6 +66,45 @@ pub fn label_statistics(
         .collect();
     regions.sort_by_key(|region| region.label);
     Ok(regions)
+}
+
+/// Adds every labelled voxel of slice `z` to `regions`
+fn measure_slice(
+    labels: Source,
+    values: Option<Source>,
+    z: usize,
+    regions: &mut HashMap<i64, Counts>,
+) -> Result<()> {
+    let meta = labels.volume.meta();
+    let [width, height, _] = labels.geometry.dimensions;
+    let bytes = labels.volume.frame(labels.frame);
+    for y in 0..height {
+        for x in 0..width {
+            let index = x + width * (y + height * z);
+            let raw = voxel::read_value(bytes, index, meta.datatype, meta.endian).unwrap_or(0.0);
+            let label = voxel::label_id(meta.scaling.apply(raw))?;
+            if label == 0 {
+                continue;
+            }
+            let counts = regions.entry(label).or_default();
+            counts.voxels += 1;
+            let voxel = Point3D::new(x as f64, y as f64, z as f64);
+            let world = labels.geometry.voxel_to_world.point(voxel);
+            if let Some(value) = values.and_then(|values| value_at(values, world)) {
+                counts.values.push(value);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Combines the regions that two threads measured
+fn merge_regions(mut a: HashMap<i64, Counts>, b: HashMap<i64, Counts>) -> HashMap<i64, Counts> {
+    for (label, counts) in b {
+        let merged = a.remove(&label).unwrap_or_default().merge(counts);
+        a.insert(label, merged);
+    }
+    a
 }
 
 fn value_at(values: Source, world: Point3D) -> Option<f64> {

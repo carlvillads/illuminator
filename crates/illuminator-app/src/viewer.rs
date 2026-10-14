@@ -30,7 +30,7 @@ use gpui_kit::component::{
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use illuminator_core::cache::VolumeCache;
-use illuminator_core::display::{SampleKey, VolumeDisplay};
+use illuminator_core::display::{SampleKey, SliceJob, VolumeDisplay};
 use illuminator_core::geometry::{Point3D, SlicePlane, ViewPlane};
 use illuminator_core::histogram::Histogram;
 use illuminator_core::loader::{LoadState, VolumeLoader};
