@@ -1,7 +1,8 @@
-//! display state for one volume
+//! How one volume is shown (cursor, frame, contrast window, colormap, labels).
 
 use std::sync::Arc;
 
+use crate::colormap::Colormap;
 use crate::error::{Error, Result};
 use crate::geometry::{GeometryOptions, Point3D, SlicePlane, ViewPlane, VolumeGeometry};
 use crate::labels;
@@ -9,25 +10,25 @@ use crate::loader::LoadedVolume;
 use crate::meta::{SpatialUnits, VolumeMeta};
 use crate::progress::Progress;
 use crate::projection;
-use crate::slicer::{Coloring, Colormap, SampledSlice, Slice};
+use crate::slicer::{Coloring, SampledSlice, Slice};
 use crate::volume::{Range, Volume};
 
 const LABEL_LIMIT: usize = 1 << 20;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct SampleKey {
-    pub volume: u64,
-    pub geometry: VolumeGeometry,
-    pub plane: SlicePlane,
+    pub(crate) volume: u64,
+    pub(crate) geometry: VolumeGeometry,
+    pub(crate) plane: SlicePlane,
     pub frame: usize,
-    pub labels: bool,
-    pub mip: bool,
-    pub width: usize,
-    pub height: usize,
+    pub(crate) labels: bool,
+    pub(crate) mip: bool,
+    pub(crate) width: usize,
+    pub(crate) height: usize,
 }
 
 pub struct SliceJob {
-    pub volume: Arc<Volume>,
+    pub(crate) volume: Arc<Volume>,
     pub key: SampleKey,
 }
 
@@ -53,12 +54,12 @@ impl SliceJob {
 pub struct IntensityWindow {
     pub level: f64,
     pub width: f64,
-    pub min_width: f64,
-    pub step: f64,
+    pub(crate) min_width: f64,
+    pub(crate) step: f64,
 }
 
 impl IntensityWindow {
-    pub fn spanning(low: f64, high: f64) -> Result<Self> {
+    pub(crate) fn spanning(low: f64, high: f64) -> Result<Self> {
         let span = high - low;
         if !span.is_finite() {
             return Err(Error::invalid("Intensity range cannot be represented"));
@@ -93,7 +94,7 @@ impl IntensityWindow {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PanelLabels {
+pub struct OrientationLabels {
     pub title: &'static str,
     pub left: &'static str,
     pub right: &'static str,
@@ -200,11 +201,11 @@ impl VolumeDisplay {
     }
 
     pub fn reset_cursor(&mut self) {
-        let h = self.volume.meta();
+        let meta = self.volume.meta();
         let center = Point3D::new(
-            ((h.width() - 1) / 2) as f64,
-            ((h.height() - 1) / 2) as f64,
-            ((h.depth() - 1) / 2) as f64,
+            ((meta.width() - 1) / 2) as f64,
+            ((meta.height() - 1) / 2) as f64,
+            ((meta.depth() - 1) / 2) as f64,
         );
         self.cursor = self.geometry.voxel_to_world.point(center);
     }
@@ -278,7 +279,7 @@ impl VolumeDisplay {
         self.snap_to_voxel();
     }
 
-    pub fn slice_axis(&self, axis: ViewPlane) -> (usize, f64) {
+    pub(crate) fn slice_axis(&self, axis: ViewPlane) -> (usize, f64) {
         let world_axis = match axis {
             ViewPlane::Axial => 2,
             ViewPlane::Coronal => 1,
@@ -435,18 +436,8 @@ impl VolumeDisplay {
         self.geometry.plane(axis, through, radiological)
     }
 
-    /// What to render for one panel of w x h pixels
-    pub fn job(
-        &self,
-        axis: ViewPlane,
-        radiological: bool,
-        width: usize,
-        height: usize,
-    ) -> SliceJob {
-        self.job_on(self.plane(axis, radiological), width, height, false)
-    }
-
-    pub fn job_on(&self, plane: SlicePlane, width: usize, height: usize, mip: bool) -> SliceJob {
+    /// What to render for one panel: `plane` at `width` x `height` pixels, as a MIP if `mip`
+    pub fn job(&self, plane: SlicePlane, width: usize, height: usize, mip: bool) -> SliceJob {
         SliceJob {
             volume: Arc::clone(&self.volume),
             key: SampleKey {
@@ -477,11 +468,9 @@ impl VolumeDisplay {
         true
     }
 
-    pub fn pick(&mut self, axis: ViewPlane, radiological: bool, s: f64, t: f64) -> bool {
-        self.pick_on(self.plane(axis, radiological), s, t)
-    }
-
-    pub fn pick_on(&mut self, plane: SlicePlane, s: f64, t: f64) -> bool {
+    /// Moves the cursor to (`s`, `t`) on `plane`.
+    /// False if that is outside the plane or the volume.
+    pub fn pick(&mut self, plane: SlicePlane, s: f64, t: f64) -> bool {
         if !(0.0..1.0).contains(&s) || !(0.0..1.0).contains(&t) {
             return false;
         }
@@ -503,55 +492,46 @@ impl VolumeDisplay {
     }
 
     pub fn sample_world(&self, p: Point3D) -> Option<([usize; 3], f64)> {
-        let voxel = self.geometry.world_to_voxel.point(p);
-        if !self.geometry.contains_voxel(voxel) {
-            return None;
-        }
-        let nearest = [0, 1, 2].map(|axis| (voxel[axis] + 0.5).floor() as usize);
+        let nearest = self.geometry.nearest_voxel(p)?;
         let value = self.volume.sample_value(nearest, self.frame)?;
         Some((nearest, value))
     }
 
-    pub fn labels(&self, axis: ViewPlane, radiological: bool) -> PanelLabels {
-        let sagittal = axis == ViewPlane::Sagittal;
-        let axial = axis == ViewPlane::Axial;
-        if self.geometry.anatomical {
-            PanelLabels {
-                title: match axis {
-                    ViewPlane::Axial => "Axial",
-                    ViewPlane::Coronal => "Coronal",
-                    ViewPlane::Sagittal => "Sagittal",
-                },
-                left: if sagittal {
-                    "P"
-                } else if radiological {
-                    "R"
-                } else {
-                    "L"
-                },
-                right: if sagittal {
-                    "A"
-                } else if radiological {
-                    "L"
-                } else {
-                    "R"
-                },
-                top: if axial { "A" } else { "S" },
-                bottom: if axial { "P" } else { "I" },
-            }
-        } else {
-            PanelLabels {
-                title: match axis {
-                    ViewPlane::Axial => "Native K",
-                    ViewPlane::Coronal => "Native J",
-                    ViewPlane::Sagittal => "Native I",
-                },
-                left: if sagittal { "J-" } else { "I-" },
-                right: if sagittal { "J+" } else { "I+" },
-                top: if axial { "J+" } else { "K+" },
-                bottom: if axial { "J-" } else { "K-" },
-            }
+    pub fn orientation_labels(&self, axis: ViewPlane, radiological: bool) -> OrientationLabels {
+        if !self.geometry.anatomical {
+            return native_labels(axis);
         }
+        let (title, mut left, mut right, top, bottom) = match axis {
+            ViewPlane::Axial => ("Axial", "L", "R", "A", "P"),
+            ViewPlane::Coronal => ("Coronal", "L", "R", "S", "I"),
+            ViewPlane::Sagittal => ("Sagittal", "P", "A", "S", "I"),
+        };
+        if radiological && axis != ViewPlane::Sagittal {
+            (left, right) = (right, left);
+        }
+        OrientationLabels {
+            title,
+            left,
+            right,
+            top,
+            bottom,
+        }
+    }
+}
+
+/// Labels for images without an orientation. Uses voxel axes (I, J, K)
+fn native_labels(axis: ViewPlane) -> OrientationLabels {
+    let (title, left, right, top, bottom) = match axis {
+        ViewPlane::Axial => ("Native K", "I-", "I+", "J+", "J-"),
+        ViewPlane::Coronal => ("Native J", "I-", "I+", "K+", "K-"),
+        ViewPlane::Sagittal => ("Native I", "J-", "J+", "K+", "K-"),
+    };
+    OrientationLabels {
+        title,
+        left,
+        right,
+        top,
+        bottom,
     }
 }
 
@@ -560,18 +540,14 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
-    use crate::cache::VolumeCache;
-    use crate::test_util::Fixture;
+    use crate::test_util::{Fixture, load};
     use crate::voxel::DataType;
 
     fn display(dir: &TempDir, fixture: &Fixture) -> VolumeDisplay {
-        let path = dir.path().join("display.nii");
-        fixture.write(&path);
-        let cache = VolumeCache::new(dir.path().join("cache"), 1 << 20).unwrap();
-        let volume = Volume::load(&path, &cache, &Progress::default()).unwrap();
+        let volume = load(dir, fixture, "display.nii");
         let range = volume.frame_range(0, &Progress::default()).unwrap();
         VolumeDisplay::new(LoadedVolume {
-            id: 1,
+            load_id: 1,
             volume,
             range,
         })
@@ -647,11 +623,11 @@ mod tests {
     fn picking_moves_the_cursor() {
         let dir = tempfile::tempdir().unwrap();
         let mut display = display(&dir, &Fixture::default());
-        assert!(display.pick(ViewPlane::Axial, false, 0.125, 0.5));
+        assert!(display.pick(display.plane(ViewPlane::Axial, false), 0.125, 0.5));
         assert_eq!(display.cursor(), Point3D::new(0.0, 1.0, 1.0));
-        assert!(!display.pick(ViewPlane::Axial, false, 1.5, 0.5));
+        assert!(!display.pick(display.plane(ViewPlane::Axial, false), 1.5, 0.5));
         assert_eq!(display.cursor(), Point3D::new(0.0, 1.0, 1.0));
-        assert!(display.pick(ViewPlane::Axial, true, 0.125, 0.5));
+        assert!(display.pick(display.plane(ViewPlane::Axial, true), 0.125, 0.5));
         assert_eq!(display.cursor(), Point3D::new(3.0, 1.0, 1.0));
     }
 
@@ -671,7 +647,7 @@ mod tests {
         display.set_native(true).unwrap();
         assert!(!display.geometry().anatomical && !display.world_linked());
         assert_eq!(display.cursor(), Point3D::new(1.0, 1.0, 1.0));
-        assert!(display.pick(ViewPlane::Axial, false, 0.3, 0.5));
+        assert!(display.pick(display.plane(ViewPlane::Axial, false), 0.3, 0.5));
         assert_eq!(display.cursor(), Point3D::new(1.0, 1.0, 1.0));
     }
 
@@ -711,7 +687,7 @@ mod tests {
         assert_eq!(display.slice_plane(ViewPlane::Axial, slice, false), here);
         let last = display.slice_plane(ViewPlane::Axial, 3, false);
         assert_eq!(last.origin.z, 3.0);
-        assert!(display.pick_on(last, 0.125, 0.5));
+        assert!(display.pick(last, 0.125, 0.5));
         assert_eq!(display.cursor(), Point3D::new(0.0, 1.0, 3.0));
         assert_eq!(display.slice_position(ViewPlane::Axial), (3, 4));
     }
@@ -782,12 +758,15 @@ mod tests {
     }
 
     #[test]
-    fn panel_labels() {
+    fn orientation_labels() {
         let dir = tempfile::tempdir().unwrap();
         let display = display(&dir, &Fixture::default());
-        let axial = display.labels(ViewPlane::Axial, false);
+        let axial = display.orientation_labels(ViewPlane::Axial, false);
         assert_eq!((axial.title, axial.left, axial.top), ("Axial", "L", "A"));
-        assert_eq!(display.labels(ViewPlane::Axial, true).left, "R");
-        assert_eq!(display.labels(ViewPlane::Sagittal, true).left, "P");
+        assert_eq!(display.orientation_labels(ViewPlane::Axial, true).left, "R");
+        assert_eq!(
+            display.orientation_labels(ViewPlane::Sagittal, true).left,
+            "P"
+        );
     }
 }

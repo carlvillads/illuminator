@@ -1,18 +1,24 @@
+//! The label statistics window.
+//!
+//! Shows the size and values of each label, which can be copied or saved as CSV.
+
 use gpui_kit::component::button::{Button, ButtonVariants};
-use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
+use gpui_kit::component::menu::DropdownMenu;
 use gpui_kit::component::{ActiveTheme, Disableable, Sizable, h_flex, v_flex};
 use gpui_kit::*;
 use illuminator_core::geometry::VolumeGeometry;
 use illuminator_core::labels::label_color;
+use illuminator_core::meta::strip_extension;
 use illuminator_core::progress::Progress;
 use illuminator_core::stats::{self, Region, Source};
 use illuminator_core::volume::Volume;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use crate::viewer::format_value;
+use crate::ui::{choice_items, format_value, rgb_to_rgba, tabular_nums};
 
 const COLUMN: f32 = 76.0;
+const NO_VALUES: &str = "None (volumes only)";
 
 #[derive(Clone)]
 pub struct Snapshot {
@@ -105,7 +111,7 @@ impl StatisticsView {
         };
         let path = self.labels.volume.path();
         let directory = path.parent().map(PathBuf::from).unwrap_or_default();
-        let name = self.labels.name.split('.').next().unwrap_or("labels");
+        let name = strip_extension(&self.labels.name);
         let chosen = cx.prompt_for_new_path(&directory, Some(&format!("{name}_stats.csv")));
         cx.spawn(async move |this, cx| {
             let Ok(Ok(Some(path))) = chosen.await else {
@@ -131,25 +137,20 @@ impl StatisticsView {
         let names: Vec<SharedString> = self.candidates.iter().map(|c| c.name.clone()).collect();
         let label = match self.chosen {
             Some(index) => names[index].clone(),
-            None => "No label maps loaded.".into(),
+            None => NO_VALUES.into(),
         };
         Button::new("values")
             .xsmall()
             .label(label)
-            .dropdown_menu(move |mut menu, _, _| {
-                for (index, name) in names.iter().enumerate() {
-                    let view = view.clone();
-                    menu = menu.item(PopupMenuItem::new(name.clone()).on_click(move |_, _, cx| {
-                        let _ = view.update(cx, |view, cx| view.choose(Some(index), cx));
-                    }));
-                }
-                let view = view.clone();
-                menu.separator()
-                    .item(
-                        PopupMenuItem::new("No label maps loaded.").on_click(move |_, _, cx| {
-                            let _ = view.update(cx, |view, cx| view.choose(None, cx));
-                        }),
-                    )
+            .dropdown_menu(move |menu, _, _| {
+                let candidates = names.iter().cloned().zip((0..).map(Some));
+                let menu = choice_items(menu, &view, candidates, |view, chosen, _, cx| {
+                    view.choose(chosen, cx);
+                });
+                let none = [(NO_VALUES, None)];
+                choice_items(menu.separator(), &view, none, |view, chosen, _, cx| {
+                    view.choose(chosen, cx);
+                })
             })
     }
 }
@@ -214,12 +215,7 @@ impl Render for StatisticsView {
                             h_flex()
                                 .flex_1()
                                 .gap_2()
-                                .child(
-                                    div()
-                                        .size(px(10.0))
-                                        .rounded_sm()
-                                        .bg(rgb(u32::from_be_bytes([0, r, g, b]))),
-                                )
+                                .child(div().size(px(10.0)).rounded_sm().bg(rgb_to_rgba([r, g, b])))
                                 .child(region.label.to_string()),
                         )
                         .child(cell(region.voxels.to_string()))
@@ -261,7 +257,7 @@ impl Render for StatisticsView {
             )
             .child(
                 v_flex()
-                    .font_features(tabular_figures())
+                    .font_features(tabular_nums())
                     .child(header)
                     .child(body),
             )
@@ -292,8 +288,4 @@ impl Render for StatisticsView {
                     ),
             )
     }
-}
-
-fn tabular_figures() -> FontFeatures {
-    FontFeatures(Arc::new(vec![("tnum".into(), 1)]))
 }

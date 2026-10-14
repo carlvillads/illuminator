@@ -17,7 +17,6 @@ tempfile = "3"
 nifti = { version = "0.18", default-features = false }
 memmap2 = "0.9.11"
 rayon = "1.12.0"
-png = "0.18.1"
 gpui-kit = "=0.7.1"
 futures = "0.3"
 image = { version = "0.25", default-features = false }
@@ -32,3 +31,6 @@ clap = { version = "4.6", features = ["derive"] }
 lto = "thin"
 codegen-units = 1
 strip = true
+
+[workspace.lints.clippy]
+undocumented_unsafe_blocks = "warn"

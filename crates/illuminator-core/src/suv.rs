@@ -1,7 +1,12 @@
+//! SUV calculations for PET.
+//!
+//! The inputs can come from a JSON sidecar.
+
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 
 use crate::error::{Error, Result};
+use crate::meta::strip_extension;
 
 /// Tracer half-life in minutes from <https://www.nndc.bnl.gov/nudat3/indx_dec.jsp>
 pub const TRACERS: [(&str, f64); 9] = [
@@ -56,72 +61,70 @@ impl SuvInputs {
         )
     }
 
-    pub fn from_json(text: &str) -> Result<Self> {
-        let json: Value = serde_json::from_str(text)
-            .map_err(|error| Error::invalid(format!("Invalid JSON: {error}")))?;
-        let number = |key: &str| json.get(key).and_then(Value::as_f64);
-        let text = |key: &str| json.get(key).and_then(Value::as_str);
+    pub(crate) fn from_json(text: &str) -> Result<Self> {
+        let sidecar = Sidecar(
+            serde_json::from_str(text)
+                .map_err(|error| Error::invalid(format!("Invalid JSON: {error}")))?,
+        );
         let missing = |what: &str| Error::invalid(format!("The sidecar has no {what}"));
 
-        let weight_kg = number("BodyWeight")
-            .or(number("PatientWeight"))
+        let weight_kg = sidecar
+            .number("BodyWeight")
+            .or(sidecar.number("PatientWeight"))
             .ok_or_else(|| missing("body weight"))?;
-        let dose_mbq = match number("InjectedRadioactivity") {
-            Some(dose) => dose * mbq_per(text("InjectedRadioactivityUnits").unwrap_or("MBq"))?,
-            None => number("RadionuclideTotalDose")
+        let dose_mbq = match sidecar.number("InjectedRadioactivity") {
+            Some(dose) => {
+                dose * mbq_per(sidecar.text("InjectedRadioactivityUnits").unwrap_or("MBq"))?
+            }
+            None => sidecar
+                .number("RadionuclideTotalDose")
                 .map(|bq| bq / 1e6)
                 .ok_or_else(|| missing("injected dose"))?,
         };
-        let half_life_minutes = match number("RadionuclideHalfLife") {
+        let half_life_minutes = match sidecar.number("RadionuclideHalfLife") {
             Some(seconds) => seconds / 60.0,
-            None => text("TracerRadionuclide")
+            None => sidecar
+                .text("TracerRadionuclide")
                 .and_then(half_life_of)
                 .ok_or_else(|| missing("known tracer or half-life"))?,
         };
-        let bq_ml_per_unit = match text("Units") {
+        let bq_ml_per_unit = match sidecar.text("Units") {
+            Some(unit) => bq_ml_per(unit)?,
             None => 1.0,
-            Some(unit) => match unit.to_ascii_lowercase().replace('/', "").as_str() {
-                "bqml" => 1.0,
-                "kbqml" => 1e3,
-                "mbqml" => 1e6,
-                _ => {
-                    return Err(Error::invalid(format!(
-                        "The image is in {unit}, not an activity (like Bq/mL)"
-                    )));
-                }
-            },
         };
         Ok(Self {
             weight_kg,
             dose_mbq,
-            minutes_after_injection: decay_minutes(&json)?,
+            minutes_after_injection: decay_minutes(&sidecar)?,
             half_life_minutes,
             bq_ml_per_unit,
         })
     }
 }
 
-fn decay_minutes(json: &Value) -> Result<f64> {
-    let number = |key: &str| json.get(key).and_then(Value::as_f64);
-    let text = |key: &str| json.get(key).and_then(Value::as_str);
+fn decay_minutes(sidecar: &Sidecar) -> Result<f64> {
     let uncorrected =
         || Error::invalid("The image isn't decay corrected, so SUV depends on the frame time");
-    if json.get("ImageDecayCorrected").and_then(Value::as_bool) == Some(false) {
+    if sidecar.flag("ImageDecayCorrected") == Some(false) {
         return Err(uncorrected());
     }
-    if let (Some(corrected), Some(injected)) =
-        (number("ImageDecayCorrectionTime"), number("InjectionStart"))
-    {
+    if let (Some(corrected), Some(injected)) = (
+        sidecar.number("ImageDecayCorrectionTime"),
+        sidecar.number("InjectionStart"),
+    ) {
         return Ok((corrected - injected) / 60.0);
     }
-    match text("DecayCorrection") {
+    match sidecar.text("DecayCorrection") {
         Some("ADMIN") => return Ok(0.0),
         Some("NONE") => return Err(uncorrected()),
         Some("START") => {
-            let start = text("AcquisitionTime")
-                .or(text("SeriesTime"))
+            let start = sidecar
+                .text("AcquisitionTime")
+                .or(sidecar.text("SeriesTime"))
                 .and_then(clock_seconds);
-            let injection = text("RadiopharmaceuticalStartTime").and_then(clock_seconds);
+            let injection = sidecar
+                .text("RadiopharmaceuticalStartTime")
+                .and_then(clock_seconds);
             if let (Some(start), Some(injection)) = (start, injection) {
                 // a scan after midnight
                 let seconds = (start - injection).rem_euclid(24.0 * 3600.0);
@@ -135,6 +138,23 @@ fn decay_minutes(json: &Value) -> Result<f64> {
     ))
 }
 
+/// BIDS or dcm2niix sidecar
+struct Sidecar(Value);
+
+impl Sidecar {
+    fn number(&self, key: &str) -> Option<f64> {
+        self.0.get(key).and_then(Value::as_f64)
+    }
+
+    fn text(&self, key: &str) -> Option<&str> {
+        self.0.get(key).and_then(Value::as_str)
+    }
+
+    fn flag(&self, key: &str) -> Option<bool> {
+        self.0.get(key).and_then(Value::as_bool)
+    }
+}
+
 fn clock_seconds(text: &str) -> Option<f64> {
     let digits: String = text.chars().filter(|c| *c != ':').collect();
     let (whole, fraction) = digits.split_once('.').unwrap_or((&digits, ""));
@@ -144,6 +164,18 @@ fn clock_seconds(text: &str) -> Option<f64> {
     let part = |range: std::ops::Range<usize>| whole[range].parse::<f64>().ok();
     let fraction = format!("0.{fraction}").parse::<f64>().unwrap_or(0.0);
     Some(part(0..2)? * 3600.0 + part(2..4)? * 60.0 + part(4..6)? + fraction)
+}
+
+/// How many Bq/mL one unit of the image is
+fn bq_ml_per(unit: &str) -> Result<f64> {
+    match unit.to_ascii_lowercase().replace('/', "").as_str() {
+        "bqml" => Ok(1.0),
+        "kbqml" => Ok(1e3),
+        "mbqml" => Ok(1e6),
+        _ => Err(Error::invalid(format!(
+            "The image is in {unit}. Should be an activity (e.g. Bq/mL)"
+        ))),
+    }
 }
 
 fn mbq_per(unit: &str) -> Result<f64> {
@@ -158,7 +190,7 @@ fn mbq_per(unit: &str) -> Result<f64> {
     }
 }
 
-pub fn half_life_of(name: &str) -> Option<f64> {
+pub(crate) fn half_life_of(name: &str) -> Option<f64> {
     let key = |name: &str| {
         let letters: String = name
             .chars()
@@ -175,20 +207,12 @@ pub fn half_life_of(name: &str) -> Option<f64> {
         .map(|&(_, minutes)| minutes)
 }
 
-pub fn sidecar_path(volume: &Path) -> PathBuf {
+pub(crate) fn sidecar_path(volume: &Path) -> PathBuf {
     let name = volume
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_default();
-    let lower = name.to_ascii_lowercase();
-    let suffixes = [
-        ".nii.gz", ".nii", ".nrrd", ".nhdr", ".hdr", ".img.gz", ".img",
-    ];
-    let stem = suffixes
-        .iter()
-        .find(|suffix| lower.ends_with(*suffix))
-        .map_or(name.as_str(), |suffix| &name[..name.len() - suffix.len()]);
-    volume.with_file_name(format!("{stem}.json"))
+    volume.with_file_name(format!("{}.json", strip_extension(&name)))
 }
 
 #[cfg(test)]

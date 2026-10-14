@@ -1,3 +1,5 @@
+//! Loads volumes on background threads and tracks the progress of each load.
+
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -12,9 +14,9 @@ use crate::volume::{Range, Volume};
 const MAX_WORKERS: usize = 4;
 
 pub struct LoadedVolume {
-    pub id: u64,
-    pub volume: Volume,
-    pub range: Option<Range>,
+    pub load_id: u64,
+    pub(crate) volume: Volume,
+    pub(crate) range: Option<Range>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -27,14 +29,14 @@ pub enum LoadState {
 }
 
 impl LoadState {
-    pub fn is_active(&self) -> bool {
+    pub(crate) fn is_active(&self) -> bool {
         matches!(self, Self::Queued | Self::Loading)
     }
 }
 
 #[derive(Debug, Clone)]
 pub struct LoadStatus {
-    pub id: u64,
+    pub load_id: u64,
     pub path: PathBuf,
     pub state: LoadState,
     pub stage: String,
@@ -57,7 +59,7 @@ struct Shared {
 
 impl Shared {
     fn job_mut(&mut self, id: u64) -> Option<&mut Job> {
-        self.jobs.iter_mut().find(|job| job.status.id == id)
+        self.jobs.iter_mut().find(|job| job.status.load_id == id)
     }
 }
 
@@ -120,7 +122,7 @@ impl VolumeLoader {
             shared.next_id += 1;
             shared.jobs.push(Job {
                 status: LoadStatus {
-                    id,
+                    load_id: id,
                     path: path.into(),
                     state: LoadState::Queued,
                     stage: "Queued".into(),
@@ -210,12 +212,17 @@ fn run(inner: &Arc<Inner>) {
 
         {
             let mut shared = inner.lock();
-            // if a cancel arrives after the work is done, it still wins. See illuminator_cpp
+            // a cancel that arrives after the work is done will still win. the user has asked to cancel this
+            // volume opening, so it must not show up anyway after they've cancelled.
             let cancelled = cancel.load(Ordering::Relaxed);
             let (state, stage) = match result {
                 Ok(_) if cancelled => (LoadState::Cancelled, "Cancelled"),
                 Ok((volume, range)) => {
-                    shared.completed.push(LoadedVolume { id, volume, range });
+                    shared.completed.push(LoadedVolume {
+                        load_id: id,
+                        volume,
+                        range,
+                    });
                     (LoadState::Ready, "Ready")
                 }
                 Err(Error::Cancelled) => (LoadState::Cancelled, "Cancelled"),
@@ -281,7 +288,7 @@ mod tests {
 
         let completed = loader.take_completed();
         assert_eq!(completed.len(), 1);
-        assert_eq!(completed[0].id, ok);
+        assert_eq!(completed[0].load_id, ok);
         assert_eq!(completed[0].volume.sample_value([3, 2, 3], 0), Some(47.0));
         assert_eq!(
             completed[0].range,

@@ -1,3 +1,5 @@
+//! Progress reports and cancelling for long work such as loading or measuring.
+
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -26,7 +28,7 @@ impl Default for Progress {
 }
 
 impl Progress {
-    pub fn new(
+    pub(crate) fn new(
         cancelled: Arc<AtomicBool>,
         report: impl Fn(f64, &str) + Send + Sync + 'static,
     ) -> Self {
@@ -37,7 +39,7 @@ impl Progress {
         }
     }
 
-    pub fn part(&self, start: f64, extent: f64) -> Self {
+    pub(crate) fn part(&self, start: f64, extent: f64) -> Self {
         Self {
             start: self.start + self.extent * start,
             extent: self.extent * extent,
@@ -45,14 +47,14 @@ impl Progress {
         }
     }
 
-    pub fn check(&self) -> Result<()> {
+    pub(crate) fn check(&self) -> Result<()> {
         match &self.cancelled {
             Some(flag) if flag.load(Ordering::Relaxed) => Err(Error::Cancelled),
             _ => Ok(()),
         }
     }
 
-    pub fn report(&self, fraction: f64, stage: &str) -> Result<()> {
+    pub(crate) fn report(&self, fraction: f64, stage: &str) -> Result<()> {
         self.check()?;
         if let Some(report) = &self.report {
             report(self.start + self.extent * fraction.clamp(0.0, 1.0), stage);

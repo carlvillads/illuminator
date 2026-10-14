@@ -1,15 +1,16 @@
-//! Illuminator viwer application
-//! Usage: illuminate [OPTIONS] [FILE]... (see illuminate --help)
+//! The Illuminator viewer application.
+//!
+//! Usage: `illuminate [OPTIONS] [FILE]...` (see `illuminate --help`)
 
 // no console on windows in release builds
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod assets;
 mod cli;
+mod label_statistics;
 mod picture;
 mod shortcuts;
 mod single_instance;
-mod statistics;
 mod suv_form;
 mod theme;
 mod ui;
@@ -95,9 +96,13 @@ fn main() {
     });
 }
 
+/// Release builds won't have a console of their own on Windows. We borrow the terminal that started
+/// illuminator, if it was opened from one.
 #[cfg(windows)]
 fn attach_console() {
     use windows_sys::Win32::System::Console::{ATTACH_PARENT_PROCESS, AttachConsole};
+    // SAFETY: AttachConsole takes no pointers. Without a parent console it returns 0, which should be fine
+    // to ignore.
     unsafe { AttachConsole(ATTACH_PARENT_PROCESS) };
 }
 

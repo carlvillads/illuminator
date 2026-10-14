@@ -1,5 +1,6 @@
-//! Reads NIfTI-1 and Analyze 7.5 headers
-//! Should support `.nii`, `.nii.gz` files and `.hdr` + `.img` pairs.
+//! Reads NIfTI-1 and Analyze 7.5 headers.
+//!
+//! Supports `.nii` and `.nii.gz` files, and `.hdr` + `.img` pairs.
 
 use flate2::read::MultiGzDecoder;
 use nifti::{Endianness, NiftiHeader};
@@ -11,9 +12,9 @@ use crate::error::{Error, Result};
 use crate::meta::{DataFile, Format, Mat3x4, SpatialUnits, Transform, VolumeMeta};
 use crate::voxel::{self, DataType, Endian, Scaling};
 
-const MAGIC: usize = 344;
+const MAGIC_OFFSET: usize = 344;
 
-pub fn read(path: &Path) -> Result<VolumeMeta> {
+pub(crate) fn read(path: &Path) -> Result<VolumeMeta> {
     let header_path = header_path_for(path)?;
     let (raw, analyze) = read_header(&header_path).map_err(|reason| {
         Error::invalid(format!(
@@ -33,11 +34,12 @@ fn read_header(path: &Path) -> std::result::Result<(NiftiHeader, bool), String> 
         file.read_exact(&mut bytes)
     };
     read.map_err(|error| error.to_string())?;
-    let analyze = !matches!(&bytes[MAGIC..MAGIC + 4], b"n+1\0" | b"ni1\0");
+    let analyze = !matches!(&bytes[MAGIC_OFFSET..MAGIC_OFFSET + 4], b"n+1\0" | b"ni1\0");
     if analyze {
-        bytes[MAGIC..MAGIC + 4].copy_from_slice(b"ni1\0");
+        bytes[MAGIC_OFFSET..MAGIC_OFFSET + 4].copy_from_slice(b"ni1\0");
     }
     let raw = NiftiHeader::from_reader(&bytes[..]).map_err(|error| match error {
+        // The nifti crates Io error has no message, so we show the message of the io::Error inside it.
         nifti::NiftiError::Io(error) => error.to_string(),
         other => other.to_string(),
     })?;
@@ -57,7 +59,7 @@ fn from_nifti(raw: &NiftiHeader, analyze: bool, path: &Path) -> Result<VolumeMet
         Endianness::Big => Endian::Big,
         Endianness::Little => Endian::Little,
     };
-    let datatype = DataType::from_code(raw.datatype)?;
+    let datatype = data_type(raw.datatype)?;
 
     let ndim = usize::from(raw.dim[0]);
     if !(2..=7).contains(&ndim) {
@@ -78,13 +80,13 @@ fn from_nifti(raw: &NiftiHeader, analyze: bool, path: &Path) -> Result<VolumeMet
     })?;
 
     let spacing = [1, 2, 3].map(|axis| f64::from(raw.pixdim[axis]));
-    let (cal_min, cal_max) = (finite(raw.cal_min), finite(raw.cal_max));
+    let (cal_min, cal_max) = (finite_or_zero(raw.cal_min), finite_or_zero(raw.cal_max));
     let display_range = (cal_max > cal_min).then(|| (f64::from(cal_min), f64::from(cal_max)));
 
     // account for the different header structure of analyze
     let (units, scaling, transform) = if analyze {
         // analyze is always in mm
-        let scaling = Scaling::from_header(finite(raw.scl_slope), 0.0)?;
+        let scaling = intensity_scaling(finite_or_zero(raw.scl_slope), 0.0)?;
         (SpatialUnits::Millimeter, scaling, None)
     } else {
         let units = match raw.xyzt_units & 0x07 {
@@ -93,7 +95,8 @@ fn from_nifti(raw: &NiftiHeader, analyze: bool, path: &Path) -> Result<VolumeMet
             3 => SpatialUnits::Micron,
             _ => SpatialUnits::Unknown,
         };
-        let scaling = Scaling::from_header(finite(raw.scl_slope), finite(raw.scl_inter))?;
+        let scaling =
+            intensity_scaling(finite_or_zero(raw.scl_slope), finite_or_zero(raw.scl_inter))?;
         (units, scaling, transform(raw))
     };
 
@@ -129,6 +132,37 @@ fn from_nifti(raw: &NiftiHeader, analyze: bool, path: &Path) -> Result<VolumeMet
     })
 }
 
+/// The voxel type of a NIfTI file.
+fn data_type(code: i16) -> Result<DataType> {
+    match code {
+        2 => Ok(DataType::U8),
+        4 => Ok(DataType::I16),
+        8 => Ok(DataType::I32),
+        16 => Ok(DataType::F32),
+        64 => Ok(DataType::F64),
+        256 => Ok(DataType::I8),
+        512 => Ok(DataType::U16),
+        768 => Ok(DataType::U32),
+        _ => Err(Error::invalid(
+            "Unsupported datatype: expected 8/16/32-bit scalar integer, or 32/64-bit float",
+        )),
+    }
+}
+
+/// The scaling from `scl_slope` and `scl_inter`.
+fn intensity_scaling(slope: f32, intercept: f32) -> Result<Scaling> {
+    if slope == 0.0 {
+        return Ok(Scaling::default());
+    }
+    if !slope.is_finite() || !intercept.is_finite() {
+        return Err(Error::invalid("Invalid nifti intensity scaling"));
+    }
+    Ok(Scaling {
+        slope: slope as f64,
+        intercept: intercept as f64,
+    })
+}
+
 /// sform if possible, else qform
 fn transform(raw: &NiftiHeader) -> Option<Transform> {
     if raw.sform_code > 0 {
@@ -141,8 +175,8 @@ fn transform(raw: &NiftiHeader) -> Option<Transform> {
     (raw.qform_code > 0).then(|| Transform {
         name: "qform",
         matrix: quaternion_to_matrix(
-            [raw.quatern_b, raw.quatern_c, raw.quatern_d].map(finite),
-            [raw.quatern_x, raw.quatern_y, raw.quatern_z].map(finite),
+            [raw.quatern_b, raw.quatern_c, raw.quatern_d].map(finite_or_zero),
+            [raw.quatern_x, raw.quatern_y, raw.quatern_z].map(finite_or_zero),
             [raw.pixdim[1], raw.pixdim[2], raw.pixdim[3]],
             raw.pixdim[0] < 0.0,
         ),
@@ -150,7 +184,7 @@ fn transform(raw: &NiftiHeader) -> Option<Transform> {
 }
 
 /// Copy nifti_clib behaviour: 'FIXED_FLOAT' -> non finite values become 0
-fn finite(value: f32) -> f32 {
+fn finite_or_zero(value: f32) -> f32 {
     if value.is_finite() { value } else { 0.0 }
 }
 
@@ -263,6 +297,20 @@ mod tests {
         let mut raw = test_header();
         edit(&mut raw);
         from_nifti(&raw, false, Path::new("test.nii"))
+    }
+
+    #[test]
+    fn datatype_codes() {
+        assert_eq!(data_type(4).unwrap(), DataType::I16);
+        assert_eq!(data_type(16).unwrap().size(), 4);
+        assert!(data_type(128).is_err());
+    }
+
+    #[test]
+    fn scaling() {
+        assert_eq!(intensity_scaling(0.0, 5.0).unwrap(), Scaling::default());
+        assert_eq!(intensity_scaling(2.0, 1.0).unwrap().apply(3.0), 7.0);
+        assert!(intensity_scaling(f32::NAN, 0.0).is_err());
     }
 
     #[test]

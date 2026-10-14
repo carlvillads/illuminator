@@ -1,10 +1,13 @@
+//! The dialog for entering or editing a layer's SUV inputs.
+
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::{Input, InputState};
-use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
+use gpui_kit::component::menu::DropdownMenu;
 use gpui_kit::component::{ActiveTheme, Sizable, WindowExt, h_flex, v_flex};
 use gpui_kit::*;
 use illuminator_core::suv::{SuvInputs, TRACERS};
 
+use crate::ui::choice_items;
 use crate::viewer::Viewer;
 
 pub struct SuvForm {
@@ -13,7 +16,7 @@ pub struct SuvForm {
     weight: Entity<InputState>,
     dose: Entity<InputState>,
     minutes: Entity<InputState>,
-    tracer: usize,
+    half_life_minutes: f64,
     bq_ml_per_unit: f64,
     error: Option<SharedString>,
 }
@@ -33,20 +36,13 @@ impl SuvForm {
         let weight = input(known.map(|k| k.weight_kg));
         let dose = input(known.map(|k| k.dose_mbq));
         let minutes = input(known.map(|k| k.minutes_after_injection));
-        let tracer = known
-            .and_then(|k| {
-                TRACERS
-                    .iter()
-                    .position(|&(_, minutes)| minutes == k.half_life_minutes)
-            })
-            .unwrap_or(0);
         Self {
             load_id,
             viewer,
             weight,
             dose,
             minutes,
-            tracer,
+            half_life_minutes: known.map_or(TRACERS[0].1, |k| k.half_life_minutes),
             bq_ml_per_unit: known.map_or(1.0, |k| k.bq_ml_per_unit),
             error: None,
         }
@@ -71,7 +67,7 @@ impl SuvForm {
                 weight_kg,
                 dose_mbq,
                 minutes_after_injection,
-                half_life_minutes: TRACERS[self.tracer].1,
+                half_life_minutes: self.half_life_minutes,
                 bq_ml_per_unit: self.bq_ml_per_unit,
             },
             _ => {
@@ -94,21 +90,20 @@ impl SuvForm {
 
     fn tracer_button(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let form = cx.entity().downgrade();
+        let label = match tracer_name(self.half_life_minutes) {
+            Some(name) => name.to_string(),
+            None => format!("{:.2} min", self.half_life_minutes),
+        };
         Button::new("tracer")
             .xsmall()
-            .label(TRACERS[self.tracer].0)
-            .dropdown_menu(move |mut menu, _, _| {
-                for (index, (name, minutes)) in TRACERS.iter().enumerate() {
-                    let form = form.clone();
-                    let item = PopupMenuItem::new(format!("{name} ({minutes} min)"));
-                    menu = menu.item(item.on_click(move |_, _, cx| {
-                        let _ = form.update(cx, |form, cx| {
-                            form.tracer = index;
-                            cx.notify();
-                        });
-                    }));
-                }
-                menu
+            .label(label)
+            .dropdown_menu(move |menu, _, _| {
+                let tracers =
+                    TRACERS.map(|(name, minutes)| (format!("{name} ({minutes} min)"), minutes));
+                choice_items(menu, &form, tracers, |form, minutes, _, cx| {
+                    form.half_life_minutes = minutes;
+                    cx.notify();
+                })
             })
     }
 }
@@ -156,5 +151,24 @@ impl Render for SuvForm {
                         .on_click(cx.listener(|form, _, window, cx| form.apply(window, cx))),
                 ),
             )
+    }
+}
+
+fn tracer_name(half_life: f64) -> Option<&'static str> {
+    TRACERS
+        .iter()
+        .find(|&&(_, minutes)| (minutes - half_life).abs() <= minutes * 0.01)
+        .map(|&(name, _)| name)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::tracer_name;
+
+    #[test]
+    fn tracers_are_recognized_despite_rounding() {
+        assert_eq!(tracer_name(109.77), Some("F-18"));
+        assert_eq!(tracer_name(1221.66 / 60.0), Some("C-11"));
+        assert_eq!(tracer_name(360.4), None);
     }
 }

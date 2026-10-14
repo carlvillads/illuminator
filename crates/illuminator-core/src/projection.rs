@@ -1,4 +1,4 @@
-//! Maximum intensity projection
+//! Maximum intensity projection.
 
 use rayon::prelude::*;
 
@@ -6,36 +6,37 @@ use crate::geometry::{Point3D, SlicePlane, VolumeGeometry};
 use crate::volume::Volume;
 use crate::voxel::{Scalar, with_scalar};
 
-pub struct Projection {
-    pub frame: usize,
-    pub axis: usize,
+pub(crate) struct Projection {
+    pub(crate) frame: usize,
+    pub(crate) axis: usize,
     dims: [usize; 2],
     max: Vec<f32>,
-    at: Vec<u32>,
+    depth_of_max: Vec<u32>,
 }
 
 impl Projection {
-    pub fn of(volume: &Volume, frame: usize, axis: usize) -> Self {
+    pub(crate) fn of(volume: &Volume, frame: usize, axis: usize) -> Self {
         let frame = volume.clamp_frame(frame);
         let meta = volume.meta();
-        let (max, at) = with_scalar!(meta.datatype, |T| project::<T>(volume, frame, axis));
-        let [a, b] = others(axis);
+        let (max, depth_of_max) =
+            with_scalar!(meta.datatype, |T| project::<T>(volume, frame, axis));
+        let [a, b] = other_axes(axis);
         Self {
             frame,
             axis,
             dims: [meta.dims[a], meta.dims[b]],
             max,
-            at,
+            depth_of_max,
         }
     }
 
-    pub fn nearest(&self, voxel: Point3D) -> f32 {
+    pub(crate) fn nearest(&self, voxel: Point3D) -> f32 {
         let [i, j] = self.cell(voxel, 0.5);
         self.max[i + self.dims[0] * j]
     }
 
-    pub fn linear(&self, voxel: Point3D) -> f32 {
-        let [a, b] = others(self.axis);
+    pub(crate) fn linear(&self, voxel: Point3D) -> f32 {
+        let [a, b] = other_axes(self.axis);
         let (x, y) = (voxel[a].max(0.0), voxel[b].max(0.0));
         let [i, j] = self.cell(voxel, 0.0);
         let (i1, j1) = ((i + 1).min(self.dims[0] - 1), (j + 1).min(self.dims[1] - 1));
@@ -51,22 +52,22 @@ impl Projection {
         top * (1.0 - fy) + bottom * fy
     }
 
-    pub fn brightest(&self, voxel: Point3D) -> Option<[usize; 3]> {
+    pub(crate) fn brightest(&self, voxel: Point3D) -> Option<[usize; 3]> {
         let [i, j] = self.cell(voxel, 0.5);
         let index = i + self.dims[0] * j;
         if self.max[index].is_nan() {
             return None;
         }
-        let [a, b] = others(self.axis);
+        let [a, b] = other_axes(self.axis);
         let mut found = [0; 3];
         found[a] = i;
         found[b] = j;
-        found[self.axis] = self.at[index] as usize;
+        found[self.axis] = self.depth_of_max[index] as usize;
         Some(found)
     }
 
     fn cell(&self, voxel: Point3D, round: f64) -> [usize; 2] {
-        let [a, b] = others(self.axis);
+        let [a, b] = other_axes(self.axis);
         let index = |coordinate: f64, size: usize| {
             ((coordinate + round).floor().max(0.0) as usize).min(size - 1)
         };
@@ -74,7 +75,7 @@ impl Projection {
     }
 }
 
-pub fn others(axis: usize) -> [usize; 2] {
+pub(crate) fn other_axes(axis: usize) -> [usize; 2] {
     match axis {
         0 => [1, 2],
         1 => [0, 2],
@@ -82,13 +83,8 @@ pub fn others(axis: usize) -> [usize; 2] {
     }
 }
 
-pub fn depth_axis(geometry: &VolumeGeometry, plane: &SlicePlane) -> usize {
-    let (u, v) = (plane.u, plane.v);
-    let normal = Point3D::new(
-        u.y * v.z - u.z * v.y,
-        u.z * v.x - u.x * v.z,
-        u.x * v.y - u.y * v.x,
-    );
+pub(crate) fn depth_axis(geometry: &VolumeGeometry, plane: &SlicePlane) -> usize {
+    let normal = plane.u.cross(plane.v);
     let to_voxel = &geometry.world_to_voxel;
     let step = to_voxel.point(plane.origin + normal) - to_voxel.point(plane.origin);
     (0..3)
@@ -102,7 +98,7 @@ fn project<T: Scalar>(volume: &Volume, frame: usize, axis: usize) -> (Vec<f32>, 
     let (scaling, endian) = (meta.scaling, meta.endian);
     let dims = [meta.dims[0], meta.dims[1], meta.dims[2]];
     let strides = [1, dims[0], dims[0] * dims[1]];
-    let [a, b] = others(axis);
+    let [a, b] = other_axes(axis);
     // one line of the projection per task
     let rows: Vec<(Vec<f32>, Vec<u32>)> = (0..dims[b])
         .into_par_iter()
@@ -136,22 +132,13 @@ fn project<T: Scalar>(volume: &Volume, frame: usize, axis: usize) -> (Vec<f32>, 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cache::VolumeCache;
     use crate::geometry::{GeometryOptions, ViewPlane};
-    use crate::progress::Progress;
-    use crate::test_util::Fixture;
-
-    fn load(dir: &tempfile::TempDir, name: &str, fixture: &Fixture) -> Volume {
-        let path = dir.path().join(name);
-        fixture.write(&path);
-        let cache = VolumeCache::new(dir.path().join("cache"), 1 << 20).unwrap();
-        Volume::load(&path, &cache, &Progress::default()).unwrap()
-    }
+    use crate::test_util::{Fixture, load};
 
     #[test]
     fn projects_the_highest_value_along_each_line() {
         let dir = tempfile::tempdir().unwrap();
-        let volume = load(&dir, "values.nii", &Fixture::default());
+        let volume = load(&dir, &Fixture::default(), "values.nii");
         let mip = Projection::of(&volume, 0, 1);
         assert_eq!(mip.dims, [4, 4]);
         assert_eq!(mip.nearest(Point3D::new(1.0, 0.0, 3.0)), 45.0);
@@ -162,7 +149,7 @@ mod tests {
             value: |i| if i == 17 { 100.0 } else { 0.0 },
             ..Fixture::default()
         };
-        let volume = load(&dir, "peaked.nii", &peaked);
+        let volume = load(&dir, &peaked, "peaked.nii");
         let mip = Projection::of(&volume, 0, 2);
         assert_eq!(mip.brightest(Point3D::new(1.0, 1.0, 0.0)), Some([1, 1, 1]));
         assert_eq!(mip.nearest(Point3D::new(0.0, 0.0, 0.0)), 0.0);
@@ -171,7 +158,7 @@ mod tests {
     #[test]
     fn looks_along_the_axis_closest_to_the_view() {
         let dir = tempfile::tempdir().unwrap();
-        let volume = load(&dir, "values.nii", &Fixture::default());
+        let volume = load(&dir, &Fixture::default(), "values.nii");
         let geometry = volume.geometry(GeometryOptions::default()).unwrap();
         let cursor = Point3D::new(1.0, 1.0, 1.0);
         let axis = |plane| depth_axis(&geometry, &geometry.plane(plane, cursor, false));

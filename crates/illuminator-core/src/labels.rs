@@ -1,3 +1,5 @@
+//! Label maps. Counting their labels and giving each label a distinct color.
+
 use std::collections::HashSet;
 
 use crate::error::{Error, Result};
@@ -6,9 +8,13 @@ use crate::volume::Volume;
 use crate::voxel;
 
 /// Counts the number of distinct labels in frame `t` without background.
-///
 /// Fails if a voxel isn't an integer or if there are more than `limit` labels.
-pub fn count_labels(volume: &Volume, t: usize, limit: usize, progress: &Progress) -> Result<usize> {
+pub(crate) fn count_labels(
+    volume: &Volume,
+    t: usize,
+    limit: usize,
+    progress: &Progress,
+) -> Result<usize> {
     let meta = volume.meta();
     let voxel_count = meta.frame_voxels();
     let mut labels = HashSet::new();
@@ -18,7 +24,7 @@ pub fn count_labels(volume: &Volume, t: usize, limit: usize, progress: &Progress
         if i % 65536 == 0 {
             progress.report(i as f64 / voxel_count as f64, "Preparing labels")?;
         }
-        let label = voxel::label_id(meta.scaling.apply(raw))?;
+        let label = label_id(meta.scaling.apply(raw))?;
         if label != previous {
             previous = label;
             if label != 0 && labels.insert(label) && labels.len() > limit {
@@ -31,6 +37,18 @@ pub fn count_labels(volume: &Volume, t: usize, limit: usize, progress: &Progress
     })?;
     progress.report(1.0, "Prepared labels")?;
     Ok(labels.len())
+}
+
+/// The label ID of a voxel value. Fails unless the value is a whole number that fits an `i64`.
+pub(crate) fn label_id(value: f64) -> Result<i64> {
+    // avoid that i64::MAX rounds up
+    const POWER_63: f64 = 9223372036854775808_f64; // 2^63
+    if !value.is_finite() || value != value.trunc() || value < -POWER_63 || value >= POWER_63 {
+        return Err(Error::invalid(
+            "Segmentation labels must be finite and integral 64-bit IDs",
+        ));
+    }
+    Ok(value as i64)
 }
 
 pub fn label_color(label: i64) -> [u8; 4] {
@@ -69,16 +87,8 @@ fn hsv_to_rgb(h: f32, s: f32, v: f32) -> [f32; 3] {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cache::VolumeCache;
-    use crate::test_util::Fixture;
+    use crate::test_util::{Fixture, load};
     use crate::voxel::DataType;
-
-    fn load(dir: &tempfile::TempDir, fixture: &Fixture) -> Volume {
-        let path = dir.path().join("labels.nii");
-        fixture.write(&path);
-        let cache = VolumeCache::new(dir.path().join("cache"), 1 << 20).unwrap();
-        Volume::load(&path, &cache, &Progress::default()).unwrap()
-    }
 
     #[test]
     fn counts_the_labels_of_one_frame() {
@@ -92,7 +102,7 @@ mod tests {
             },
             ..Fixture::default()
         };
-        let volume = load(&dir, &fixture);
+        let volume = load(&dir, &fixture, "labels.nii");
         let none = Progress::default();
 
         assert_eq!(count_labels(&volume, 0, 256, &none).unwrap(), 3);
@@ -108,8 +118,17 @@ mod tests {
             value: |i| i as f64 + 0.25,
             ..Fixture::default()
         };
-        let volume = load(&dir, &fixture);
+        let volume = load(&dir, &fixture, "labels.nii");
         assert!(count_labels(&volume, 0, 256, &Progress::default()).is_err());
+    }
+
+    #[test]
+    fn label_ids() {
+        assert_eq!(label_id(42.0).unwrap(), 42);
+        assert_eq!(label_id(-(2f64.powi(63))).unwrap(), i64::MIN);
+        assert!(label_id(1.5).is_err());
+        assert!(label_id(f64::NAN).is_err());
+        assert!(label_id(2f64.powi(63)).is_err());
     }
 
     #[test]

@@ -1,3 +1,5 @@
+//! A loaded volume. Its header, and its voxels mapped into memory.
+
 use memmap2::Mmap;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
@@ -18,8 +20,8 @@ const NUM_MIP: usize = 6;
 /// Value range
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Range {
-    pub min: f64,
-    pub max: f64,
+    pub(crate) min: f64,
+    pub(crate) max: f64,
 }
 
 fn next_id() -> u64 {
@@ -27,7 +29,8 @@ fn next_id() -> u64 {
     NEXT_ID.fetch_add(1, Ordering::Relaxed)
 }
 
-/// Loaded nifti volume
+/// Loaded volume.
+/// Can be NIfTI, Analyze, or NRRD.
 pub struct Volume {
     meta: VolumeMeta,
     path: PathBuf,
@@ -37,11 +40,11 @@ pub struct Volume {
     offset: usize,
     projections: Mutex<Vec<Arc<Projection>>>,
     /// Keeps a decompressed cache file from being evicted.
-    _lease: Option<Arc<CacheLease>>,
+    lease: Option<Arc<CacheLease>>,
 }
 
 impl Volume {
-    pub fn load(path: &Path, cache: &VolumeCache, progress: &Progress) -> Result<Self> {
+    pub(crate) fn load(path: &Path, cache: &VolumeCache, progress: &Progress) -> Result<Self> {
         progress.check()?;
         let meta = VolumeMeta::read(path)?;
         let assume_mm = GeometryOptions {
@@ -77,12 +80,15 @@ impl Volume {
             .map_err(|_| Error::invalid("Volume data file is too large"))?;
         voxel::validate_region(file_bytes, offset, data.bytes)?;
 
-        // NOTE: I haven't done anything about what happens if someone changes a uncompressed file while open.
-
+        // SAFETY: Memory map is only sound while no one else modifies the file.
+        // Decompressed volumes are written once into the cache and never changed in place. However,
+        // uncompressed volumes aren't stored in our cache, so if another program truncates or rewrites one
+        // while it is open, the views may change, or the app may crash. I think the risk is relatively low,
+        // and its an alright trade-off to avoid copying whole uncompressed volumes to memory.
         let map = unsafe { Mmap::map(&file)? };
         if map.len() < needed {
             return Err(Error::invalid(
-                "Nifti data is truncated or has an invalid offset",
+                "The data is truncated or its offset is invalid",
             ));
         }
         progress.check()?;
@@ -95,7 +101,7 @@ impl Volume {
             data_path,
             offset,
             projections: Mutex::default(),
-            _lease: lease,
+            lease,
         })
     }
 
@@ -107,7 +113,7 @@ impl Volume {
         &self.path
     }
 
-    pub fn rescaled(&self, factor: f64) -> Self {
+    pub(crate) fn rescaled(&self, factor: f64) -> Self {
         let mut meta = self.meta.clone();
         meta.scaling.slope *= factor;
         meta.scaling.intercept *= factor;
@@ -119,11 +125,11 @@ impl Volume {
             data_path: self.data_path.clone(),
             offset: self.offset,
             projections: Mutex::default(),
-            _lease: self._lease.clone(),
+            lease: self.lease.clone(),
         }
     }
 
-    pub fn projection(&self, frame: usize, axis: usize) -> Arc<Projection> {
+    pub(crate) fn projection(&self, frame: usize, axis: usize) -> Arc<Projection> {
         let frame = self.clamp_frame(frame);
         let lock = || {
             self.projections
@@ -152,22 +158,22 @@ impl Volume {
         self.id
     }
 
-    pub fn geometry(&self, options: GeometryOptions) -> Result<VolumeGeometry> {
+    pub(crate) fn geometry(&self, options: GeometryOptions) -> Result<VolumeGeometry> {
         VolumeGeometry::new(&self.meta, options)
     }
 
     /// ALL voxel bytes
-    pub fn data(&self) -> &[u8] {
+    pub(crate) fn data(&self) -> &[u8] {
         &self.map[self.offset..self.offset + self.meta.data.bytes]
     }
 
-    /// Frames > available t just show the last available frame
-    pub fn clamp_frame(&self, t: usize) -> usize {
+    /// Frames > available `t` just show the last available frame
+    pub(crate) fn clamp_frame(&self, t: usize) -> usize {
         t.min(self.meta.timepoints() - 1)
     }
 
     /// Bytes from one 3D frame
-    pub fn frame(&self, t: usize) -> &[u8] {
+    pub(crate) fn frame(&self, t: usize) -> &[u8] {
         // Should not be able to overflow?
         let frame_bytes = self.meta.frame_voxels() * self.meta.datatype.size();
         let start = self.clamp_frame(t) * frame_bytes;
@@ -175,14 +181,14 @@ impl Volume {
     }
 
     /// Scaled value for one voxel, None if outside volume
-    pub fn sample_value(&self, [x, y, z]: [usize; 3], t: usize) -> Option<f64> {
-        let h = &self.meta;
-        if x >= h.width() || y >= h.height() || z >= h.depth() {
+    pub(crate) fn sample_value(&self, [x, y, z]: [usize; 3], t: usize) -> Option<f64> {
+        let meta = &self.meta;
+        if x >= meta.width() || y >= meta.height() || z >= meta.depth() {
             return None;
         }
-        let index = x + h.width() * (y + h.height() * z);
-        let raw = voxel::read_value(self.frame(t), index, h.datatype, h.endian)?;
-        Some(h.scaling.apply(raw))
+        let index = x + meta.width() * (y + meta.height() * z);
+        let raw = voxel::read_value(self.frame(t), index, meta.datatype, meta.endian)?;
+        Some(meta.scaling.apply(raw))
     }
 
     pub fn read_ahead(&self, t: usize) -> std::io::Result<u64> {
@@ -209,10 +215,10 @@ impl Volume {
             .collect()
     }
 
-    pub fn frame_range(&self, t: usize, progress: &Progress) -> Result<Option<Range>> {
-        let h = &self.meta;
-        let scaling = h.scaling;
-        let (min, max) = voxel::Values::new(self.frame(t), h.datatype, h.endian).fold(
+    pub(crate) fn frame_range(&self, t: usize, progress: &Progress) -> Result<Option<Range>> {
+        let meta = &self.meta;
+        let scaling = meta.scaling;
+        let (min, max) = voxel::Values::new(self.frame(t), meta.datatype, meta.endian).fold(
             progress,
             "Measuring contrast",
             || (f64::INFINITY, f64::NEG_INFINITY),
@@ -233,18 +239,9 @@ impl Volume {
 
 #[cfg(test)]
 mod tests {
-    use tempfile::TempDir;
-
     use super::*;
-    use crate::test_util::Fixture;
+    use crate::test_util::{Fixture, load};
     use crate::voxel::DataType;
-
-    fn load(dir: &TempDir, fixture: &Fixture, name: &str) -> Result<Volume> {
-        let path = dir.path().join(name);
-        fixture.write(&path);
-        let cache = VolumeCache::new(dir.path().join("cache"), 1 << 20)?;
-        Volume::load(&path, &cache, &Progress::default())
-    }
 
     fn range(volume: &Volume, t: usize) -> Option<Range> {
         volume.frame_range(t, &Progress::default()).unwrap()
@@ -272,7 +269,7 @@ mod tests {
                         ..Fixture::default()
                     };
                     let name = format!("{datatype:?}-{big_endian}.{extension}");
-                    let volume = load(&dir, &fixture, &name).expect(&name);
+                    let volume = load(&dir, &fixture, &name);
                     assert_eq!(volume.sample_value([3, 2, 3], 0), Some(47.0), "{name}");
                     assert_eq!(volume.sample_value([4, 0, 0], 0), None, "{name}");
                     assert_eq!(volume.sample_value([0, 0, 4], 0), None, "{name}");
@@ -297,7 +294,7 @@ mod tests {
             intercept: 100.0,
             ..Fixture::default()
         };
-        let volume = load(&dir, &zero_slope, "zero.nii").unwrap();
+        let volume = load(&dir, &zero_slope, "zero.nii");
         assert_eq!(volume.sample_value([3, 0, 0], 0), Some(3.0));
         let doubled = volume.rescaled(2.0);
         assert_eq!(doubled.sample_value([3, 0, 0], 0), Some(6.0));
@@ -308,7 +305,7 @@ mod tests {
             intercept: 10.0,
             ..Fixture::default()
         };
-        let volume = load(&dir, &negative, "negative.nii").unwrap();
+        let volume = load(&dir, &negative, "negative.nii");
         assert_eq!(volume.sample_value([3, 0, 0], 0), Some(4.0));
         assert_eq!(
             range(&volume, 0),
@@ -326,7 +323,7 @@ mod tests {
             dims: vec![4, 3, 4, 2],
             ..Fixture::default()
         };
-        let volume = load(&dir, &four_d, "4d.nii").unwrap();
+        let volume = load(&dir, &four_d, "4d.nii");
         assert_eq!(volume.time_curve([1, 0, 0]), Some(vec![1.0, 49.0]));
         assert_eq!(volume.time_curve([4, 0, 0]), None);
         assert_eq!(volume.read_ahead(1).unwrap(), 4 * 3 * 4 * 2);
@@ -349,11 +346,11 @@ mod tests {
             dims: vec![4, 3],
             ..Fixture::default()
         };
-        let volume = load(&dir, &flat, "2d.nii").unwrap();
+        let volume = load(&dir, &flat, "2d.nii");
         assert_eq!((volume.meta().depth(), volume.meta().timepoints()), (1, 1));
         assert_eq!(volume.sample_value([3, 2, 0], 0), Some(11.0));
 
-        let pair = load(&dir, &Fixture::default(), "pair.hdr").unwrap();
+        let pair = load(&dir, &Fixture::default(), "pair.hdr");
         assert_eq!(pair.sample_value([3, 2, 3], 0), Some(47.0));
     }
 
@@ -365,7 +362,7 @@ mod tests {
             value: |i| 16_777_217.0 + i as f64,
             ..Fixture::default()
         };
-        let volume = load(&dir, &large, "exact.nii").unwrap();
+        let volume = load(&dir, &large, "exact.nii");
         assert_eq!(volume.sample_value([0, 0, 0], 0), Some(16_777_217.0));
     }
 
@@ -377,7 +374,7 @@ mod tests {
             value: |_| f64::NAN,
             ..Fixture::default()
         };
-        let volume = load(&dir, &all_nan, "nan.nii").unwrap();
+        let volume = load(&dir, &all_nan, "nan.nii");
         assert_eq!(range(&volume, 0), None);
 
         let one_infinity = Fixture {
@@ -385,7 +382,7 @@ mod tests {
             value: |i| if i == 0 { f64::INFINITY } else { i as f64 },
             ..Fixture::default()
         };
-        let volume = load(&dir, &one_infinity, "inf.nii").unwrap();
+        let volume = load(&dir, &one_infinity, "inf.nii");
         assert_eq!(
             range(&volume, 0),
             Some(Range {
@@ -413,8 +410,8 @@ mod tests {
     #[test]
     fn every_volume_gets_its_own_id() {
         let dir = tempfile::tempdir().unwrap();
-        let a = load(&dir, &Fixture::default(), "a.nii").unwrap();
-        let b = load(&dir, &Fixture::default(), "b.nii").unwrap();
+        let a = load(&dir, &Fixture::default(), "a.nii");
+        let b = load(&dir, &Fixture::default(), "b.nii");
         assert_ne!(a.id(), b.id());
     }
 }

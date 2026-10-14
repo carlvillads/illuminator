@@ -1,4 +1,7 @@
-//! Icons from IBM's Carbon Design System, licensed under Apache 2.0: https://carbondesignsystem.com
+//! The app icons.
+//!
+//! Icons from IBM's Carbon Design System, licensed under Apache 2.0:
+//! <https://carbondesignsystem.com>
 
 use gpui_kit::assets::{Assets, IconNamed};
 use gpui_kit::{AssetSource, Result, SharedString};
@@ -38,7 +41,7 @@ carbon_icons! {
     AutoWindow => "window--auto.svg",
     Close => "close.svg",
     Compare => "hanging-protocol.svg",
-    CornerText => "text-annotation-toggle.svg",
+    CornerText => "dicom--overlay.svg",
     Crosshair => "3D-cursor--alt.svg",
     FolderOpen => "folder--open.svg",
     Grid => "grid.svg",

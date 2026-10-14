@@ -1,13 +1,13 @@
-//! Command line options
+//! Command line options.
 
 use clap::error::ErrorKind;
 use clap::{CommandFactory, FromArgMatches, Parser, ValueEnum};
+use illuminator_core::colormap::Colormap;
 use illuminator_core::geometry::ViewPlane;
-use illuminator_core::slicer::Colormap;
 use std::ffi::OsString;
 use std::path::PathBuf;
 
-/// A viewer for nfiti volumes and more.
+/// A viewer for NIfTI volumes and more.
 #[derive(Debug, Parser)]
 #[command(name = "illuminate", version, about)]
 pub struct Cli {
@@ -109,19 +109,18 @@ impl Cli {
                 .unwrap_or_default()
         };
         let (files, labels) = (positions("files"), positions("labels"));
+        let conflict = |message: &str| Self::command().error(ErrorKind::ArgumentConflict, message);
         cli.colormaps = vec![None; cli.files.len()];
         for (position, &colormap) in positions("colormap").into_iter().zip(&cli.colormap) {
             let file = files.iter().rposition(|&file| file < position);
             let label = labels.iter().rfind(|&&label| label < position);
-            let message = match (file, label) {
+            match (file, label) {
                 (Some(file), label) if label.is_none_or(|&label| label < files[file]) => {
                     cli.colormaps[file] = Some(colormap.into());
-                    continue;
                 }
-                (_, Some(_)) => "label maps do not accept the -c argument",
-                _ => "the -c arg comes after the FILE it is for",
-            };
-            return Err(Self::command().error(ErrorKind::ArgumentConflict, message));
+                (_, Some(_)) => return Err(conflict("label maps do not accept the -c argument")),
+                _ => return Err(conflict("the -c arg comes after the FILE it is for")),
+            }
         }
         Ok(cli)
     }
@@ -137,7 +136,7 @@ impl Cli {
 }
 
 fn window_size(text: &str) -> Result<(f32, f32), String> {
-    let expected = || "expected a width and height: f.x. 1440x900".to_string();
+    let expected = || "expected a width and height, e.g. 1440x900".to_string();
     let (width, height) = text.split_once(['x', 'X']).ok_or_else(expected)?;
     let length = |part: &str| {
         part.trim()
@@ -155,7 +154,7 @@ fn window_size(text: &str) -> Result<(f32, f32), String> {
 mod tests {
     use super::{Cli, LayoutName, PlaneName};
     use clap::CommandFactory;
-    use illuminator_core::slicer::Colormap;
+    use illuminator_core::colormap::Colormap;
     use std::path::PathBuf;
 
     fn read(args: &[&str]) -> Result<Cli, clap::Error> {

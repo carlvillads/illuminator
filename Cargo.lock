@@ -3405,7 +3405,6 @@ dependencies = [
  "flate2",
  "memmap2",
  "nifti",
- "png 0.18.1",
  "rayon",
  "serde_json",
  "tempfile",

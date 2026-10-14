@@ -1,3 +1,7 @@
+//! A cache of decompressed `.gz` volumes, so they can be memory-mapped like other files.
+//!
+//! When it would grow past its budget, it first removes the oldest files that no volume uses.
+
 use flate2::read::MultiGzDecoder;
 use std::collections::{HashMap, HashSet};
 use std::env::VarError;
@@ -15,12 +19,12 @@ use crate::progress::Progress;
 const GIB: f64 = 1024.0 * 1024.0 * 1024.0;
 
 #[derive(Debug)]
-pub struct CacheLease {
+pub(crate) struct CacheLease {
     path: PathBuf,
 }
 
 impl CacheLease {
-    pub fn path(&self) -> &Path {
+    pub(crate) fn path(&self) -> &Path {
         &self.path
     }
 }
@@ -43,7 +47,7 @@ pub struct VolumeCache {
 }
 
 impl VolumeCache {
-    pub fn new(directory: impl Into<PathBuf>, budget_bytes: u64) -> Result<Self> {
+    pub(crate) fn new(directory: impl Into<PathBuf>, budget_bytes: u64) -> Result<Self> {
         if budget_bytes == 0 {
             return Err(Error::invalid("Cache budget must be more than zero"));
         }
@@ -92,7 +96,8 @@ impl VolumeCache {
         self.budget
     }
 
-    pub fn acquire(
+    #[cfg(test)]
+    fn acquire(
         &self,
         source: &Path,
         min_bytes: u64,
@@ -101,7 +106,7 @@ impl VolumeCache {
         self.acquire_from(source, 0, min_bytes, progress)
     }
 
-    pub fn acquire_from(
+    pub(crate) fn acquire_from(
         &self,
         source: &Path,
         start: u64,
@@ -147,7 +152,7 @@ impl VolumeCache {
             self.make_room(&mut state, min_bytes)?;
             state.reserved += min_bytes;
             state.writing.insert(target.clone());
-            Writing {
+            PendingWrite {
                 cache: self,
                 target: target.clone(),
                 reserved: min_bytes,
@@ -167,7 +172,7 @@ impl VolumeCache {
             progress,
         )?;
         if total < min_bytes {
-            return Err(Error::invalid("Decompressed NIfTI payload is truncated"));
+            return Err(Error::invalid("Decompressed data is truncated"));
         }
         if file_stamp(&source)? != stamp {
             return Err(Error::invalid(
@@ -197,7 +202,7 @@ impl VolumeCache {
         source: &Path,
         start: u64,
         output: &mut impl Write,
-        writing: &mut Writing<'_>,
+        writing: &mut PendingWrite<'_>,
         min_bytes: u64,
         progress: &Progress,
     ) -> Result<u64> {
@@ -286,13 +291,13 @@ impl VolumeCache {
     }
 }
 
-struct Writing<'a> {
+struct PendingWrite<'a> {
     cache: &'a VolumeCache,
     target: PathBuf,
     reserved: u64,
 }
 
-impl Writing<'_> {
+impl PendingWrite<'_> {
     fn grow(&mut self, total: u64) -> Result<()> {
         if total <= self.reserved {
             return Ok(());
@@ -306,7 +311,7 @@ impl Writing<'_> {
     }
 }
 
-impl Drop for Writing<'_> {
+impl Drop for PendingWrite<'_> {
     fn drop(&mut self) {
         let mut state = self
             .cache

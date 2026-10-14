@@ -1,5 +1,7 @@
-//! Reads NRRD files. See <https://teem.sourceforge.net/nrrd/format.html>
-//! Should support `.nrrd` and `.nhdr` files.
+//! Reads NRRD files.
+//!
+//! Supports `.nrrd` and `.nhdr` files.
+//! See <https://teem.sourceforge.net/nrrd/format.html>
 
 use std::collections::HashMap;
 use std::fs::File;
@@ -7,12 +9,13 @@ use std::io::{BufRead, BufReader};
 use std::path::Path;
 
 use crate::error::{Error, Result};
+use crate::geometry::Point3D;
 use crate::meta::{DataFile, Format, Mat3x4, SpatialUnits, Transform, VolumeMeta};
 use crate::voxel::{self, DataType, Endian, Scaling};
 
 const MAX_HDR_BYTES: u64 = 1 << 20;
 
-pub fn read(path: &Path) -> Result<VolumeMeta> {
+pub(crate) fn read(path: &Path) -> Result<VolumeMeta> {
     let header = Header::read(path)?;
     parse(&header, path).map_err(|error| match error {
         Error::Invalid(reason) => Error::invalid(format!("{}: {reason}", path.display())),
@@ -184,14 +187,9 @@ fn space(
     }
     let mut columns: Vec<[f64; 3]> = directions.into_iter().flatten().collect();
     if columns.len() == 2 {
-        let [u, v] = [columns[0], columns[1]];
-        let normal = [
-            u[1] * v[2] - u[2] * v[1],
-            u[2] * v[0] - u[0] * v[2],
-            u[0] * v[1] - u[1] * v[0],
-        ];
-        let length = normal.iter().map(|x| x * x).sum::<f64>().sqrt();
-        columns.push(normal.map(|x| x / length));
+        let normal = Point3D::from_array(columns[0]).cross(Point3D::from_array(columns[1]));
+        let length = normal.dot(normal).sqrt();
+        columns.push([normal.x / length, normal.y / length, normal.z / length]);
     }
 
     let flip = match header.field("space") {
@@ -220,29 +218,30 @@ fn space(
     });
     let spacing = [0, 1, 2].map(|axis| columns[axis].iter().map(|x| x * x).sum::<f64>().sqrt());
 
-    let units = match header.field("space units") {
-        Some(text) => {
-            let units: Vec<&str> = text
-                .split_whitespace()
-                .map(|unit| unit.trim_matches('"'))
-                .collect();
-            match units.first() {
-                Some(&first) if units.iter().all(|&unit| unit == first) => match first {
-                    "mm" => SpatialUnits::Millimeter,
-                    "m" => SpatialUnits::Meter,
-                    "um" | "µm" => SpatialUnits::Micron,
-                    _ => SpatialUnits::Unknown,
-                },
-                _ => SpatialUnits::Unknown,
-            }
-        }
-        None => SpatialUnits::Millimeter,
-    };
+    let units = header
+        .field("space units")
+        .map_or(SpatialUnits::Millimeter, parse_spatial_units);
     let transform = Transform {
         name: "space directions",
         matrix,
     };
     Ok((spacing, units, Some(transform)))
+}
+
+fn parse_spatial_units(text: &str) -> SpatialUnits {
+    let mut units = text.split_whitespace().map(|unit| unit.trim_matches('"'));
+    let Some(first) = units.next() else {
+        return SpatialUnits::Unknown;
+    };
+    if units.any(|unit| unit != first) {
+        return SpatialUnits::Unknown;
+    }
+    match first {
+        "mm" => SpatialUnits::Millimeter,
+        "m" => SpatialUnits::Meter,
+        "um" | "µm" => SpatialUnits::Micron,
+        _ => SpatialUnits::Unknown,
+    }
 }
 
 fn vectors(text: &str) -> Result<Vec<Option<[f64; 3]>>> {
@@ -374,6 +373,16 @@ space origin: (10,20,30)";
     }
 
     #[test]
+    fn reads_the_space_units_field() {
+        let dir = tempfile::tempdir().unwrap();
+        let fields = format!(
+            "type: short\ndimension: 3\nsizes: 4 3 4\nencoding: raw\nendian: little\n{LPS}\nspace units: \"m\" \"m\" \"m\""
+        );
+        let path = write(&dir, "meters.nrrd", &[&header(&fields), &voxels(false)]);
+        assert_eq!(VolumeMeta::read(&path).unwrap().units, SpatialUnits::Meter);
+    }
+
+    #[test]
     fn reads_attached_gzip_data() {
         let dir = tempfile::tempdir().unwrap();
         let head =
@@ -416,6 +425,20 @@ space origin: (10,20,30)";
         let fields = format!("type: uchar\ndimension: 4\nsizes: 3 2 2 2\nencoding: raw\n{space}");
         let path = write(&dir, "dwi.nrrd", &[&header(&fields), &[0; 24]]);
         assert!(VolumeMeta::read(&path).is_err());
+    }
+
+    #[test]
+    fn space_units_must_be_the_same_on_every_axis() {
+        assert_eq!(
+            parse_spatial_units(r#""mm" "mm" "mm""#),
+            SpatialUnits::Millimeter
+        );
+        assert_eq!(parse_spatial_units(r#""um" "um""#), SpatialUnits::Micron);
+        assert_eq!(
+            parse_spatial_units(r#""mm" "m" "mm""#),
+            SpatialUnits::Unknown
+        );
+        assert_eq!(parse_spatial_units(""), SpatialUnits::Unknown);
     }
 
     #[test]

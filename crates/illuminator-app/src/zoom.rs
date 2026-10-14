@@ -1,3 +1,5 @@
+//! Zoom and pan inside a view.
+
 use illuminator_core::geometry::SlicePlane;
 
 #[derive(Debug, Clone, Copy, PartialEq)]

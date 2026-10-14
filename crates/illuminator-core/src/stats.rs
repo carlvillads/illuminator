@@ -1,3 +1,5 @@
+//! Label statistics. The size of each label, and a summary of another volume's values inside it.
+
 use rayon::prelude::*;
 use std::collections::HashMap;
 use std::fmt::Write;
@@ -5,6 +7,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::error::Result;
 use crate::geometry::{Point3D, VolumeGeometry};
+use crate::labels::label_id;
 use crate::progress::Progress;
 use crate::volume::Volume;
 use crate::voxel;
@@ -26,7 +29,7 @@ pub struct Region {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Summary {
-    pub count: usize,
+    pub(crate) count: usize,
     pub mean: f64,
     pub std: f64,
     pub min: f64,
@@ -38,9 +41,7 @@ pub fn label_statistics(
     values: Option<Source>,
     progress: &Progress,
 ) -> Result<Vec<Region>> {
-    let meta = labels.volume.meta();
-    let [width, height, depth] = labels.geometry.dimensions;
-    let bytes = labels.volume.frame(labels.frame);
+    let depth = labels.geometry.dimensions[2];
     let done = AtomicUsize::new(0);
     let regions = (0..depth)
         .into_par_iter()
@@ -48,38 +49,15 @@ pub fn label_statistics(
             HashMap::new,
             |mut regions: HashMap<i64, Counts>, z| -> Result<_> {
                 progress.check()?;
-                for y in 0..height {
-                    for x in 0..width {
-                        let index = x + width * (y + height * z);
-                        let raw = voxel::read_value(bytes, index, meta.datatype, meta.endian)
-                            .unwrap_or(0.0);
-                        let label = voxel::label_id(meta.scaling.apply(raw))?;
-                        if label == 0 {
-                            continue;
-                        }
-                        let counts = regions.entry(label).or_default();
-                        counts.voxels += 1;
-                        let voxel = Point3D::new(x as f64, y as f64, z as f64);
-                        let world = labels.geometry.voxel_to_world.point(voxel);
-                        if let Some(value) = values.and_then(|values| value_at(values, world)) {
-                            counts.values.push(value);
-                        }
-                    }
-                }
+                measure_slice(labels, values, z, &mut regions)?;
                 let done = done.fetch_add(1, Ordering::Relaxed) + 1;
                 progress.report(done as f64 / depth as f64, "Measuring labels")?;
                 Ok(regions)
             },
         )
-        .try_reduce(HashMap::new, |mut a, b| {
-            for (label, counts) in b {
-                let merged = a.remove(&label).unwrap_or_default().merge(counts);
-                a.insert(label, merged);
-            }
-            Ok(a)
-        })?;
+        .try_reduce(HashMap::new, |a, b| Ok(merge_regions(a, b)))?;
 
-    let voxel_ml = voxel_volume_mm3(labels.geometry) / 1000.0;
+    let voxel_ml = labels.geometry.voxel_to_world.determinant().abs() / 1000.0;
     let mut regions: Vec<Region> = regions
         .into_iter()
         .map(|(label, counts)| Region {
@@ -93,30 +71,57 @@ pub fn label_statistics(
     Ok(regions)
 }
 
-fn value_at(values: Source, world: Point3D) -> Option<f64> {
-    let voxel = values.geometry.world_to_voxel.point(world);
-    if !values.geometry.contains_voxel(voxel) {
-        return None;
+/// Adds every labelled voxel of slice `z` to `regions`
+fn measure_slice(
+    labels: Source,
+    values: Option<Source>,
+    z: usize,
+    regions: &mut HashMap<i64, Counts>,
+) -> Result<()> {
+    let meta = labels.volume.meta();
+    let [width, height, _] = labels.geometry.dimensions;
+    let bytes = labels.volume.frame(labels.frame);
+    for y in 0..height {
+        for x in 0..width {
+            let index = x + width * (y + height * z);
+            let raw = voxel::read_value(bytes, index, meta.datatype, meta.endian).unwrap_or(0.0);
+            let label = label_id(meta.scaling.apply(raw))?;
+            if label == 0 {
+                continue;
+            }
+            let counts = regions.entry(label).or_default();
+            counts.voxels += 1;
+            let voxel = Point3D::new(x as f64, y as f64, z as f64);
+            let world = labels.geometry.voxel_to_world.point(voxel);
+            if let Some(value) = values.and_then(|values| value_at(values, world)) {
+                counts.values.push(value);
+            }
+        }
     }
-    let nearest = [0, 1, 2].map(|axis| (voxel[axis] + 0.5).floor() as usize);
+    Ok(())
+}
+
+/// Combines the regions that two threads measured
+fn merge_regions(mut a: HashMap<i64, Counts>, b: HashMap<i64, Counts>) -> HashMap<i64, Counts> {
+    for (label, counts) in b {
+        let merged = a.remove(&label).unwrap_or_default().merge(counts);
+        a.insert(label, merged);
+    }
+    a
+}
+
+fn value_at(values: Source, world: Point3D) -> Option<f64> {
+    let nearest = values.geometry.nearest_voxel(world)?;
     values
         .volume
         .sample_value(nearest, values.frame)
         .filter(|value| value.is_finite())
 }
 
-fn voxel_volume_mm3(geometry: &VolumeGeometry) -> f64 {
-    let m = &geometry.voxel_to_world.m;
-    let det = m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1])
-        - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0])
-        + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]);
-    det.abs()
-}
-
 #[derive(Default)]
 struct Counts {
     voxels: usize,
-    values: Running,
+    values: RunningStats,
 }
 
 impl Counts {
@@ -129,7 +134,7 @@ impl Counts {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct Running {
+struct RunningStats {
     count: usize,
     mean: f64,
     m2: f64,
@@ -137,7 +142,7 @@ struct Running {
     max: f64,
 }
 
-impl Default for Running {
+impl Default for RunningStats {
     fn default() -> Self {
         Self {
             count: 0,
@@ -149,7 +154,7 @@ impl Default for Running {
     }
 }
 
-impl Running {
+impl RunningStats {
     fn push(&mut self, value: f64) {
         self.count += 1;
         let delta = value - self.mean;
@@ -214,9 +219,8 @@ pub fn to_csv(regions: &[Region]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cache::VolumeCache;
     use crate::geometry::GeometryOptions;
-    use crate::test_util::Fixture;
+    use crate::test_util::{Fixture, load};
 
     fn close(a: f64, b: f64) -> bool {
         (a - b).abs() < 1e-9
@@ -225,15 +229,15 @@ mod tests {
     #[test]
     fn running_statistics_merge_like_one_pass() {
         let values = [3.0, -1.0, 4.0, 1.0, 5.0, 9.0, 2.0];
-        let mut whole = Running::default();
+        let mut whole = RunningStats::default();
         values.iter().for_each(|&v| whole.push(v));
-        let (mut a, mut b) = (Running::default(), Running::default());
+        let (mut a, mut b) = (RunningStats::default(), RunningStats::default());
         values[..3].iter().for_each(|&v| a.push(v));
         values[3..].iter().for_each(|&v| b.push(v));
         let (whole, merged) = (whole.summary().unwrap(), a.merge(b).summary().unwrap());
         assert!(close(whole.mean, merged.mean) && close(whole.std, merged.std));
         assert_eq!((merged.min, merged.max, merged.count), (-1.0, 9.0, 7));
-        let mut five = Running::default();
+        let mut five = RunningStats::default();
         (1..=5).for_each(|v| five.push(f64::from(v)));
         assert!(close(five.summary().unwrap().std, 2.5f64.sqrt()));
     }
@@ -241,11 +245,8 @@ mod tests {
     #[test]
     fn measures_values_inside_labels() {
         let dir = tempfile::tempdir().unwrap();
-        let cache = VolumeCache::new(dir.path().join("cache"), 1 << 20).unwrap();
-        let load = |fixture: &Fixture, name: &str| {
-            let path = dir.path().join(name);
-            fixture.write(&path);
-            let volume = Volume::load(&path, &cache, &Progress::default()).unwrap();
+        let load_with_geometry = |fixture: &Fixture, name: &str| {
+            let volume = load(&dir, fixture, name);
             let geometry = volume.geometry(GeometryOptions::default()).unwrap();
             (volume, geometry)
         };
@@ -253,8 +254,8 @@ mod tests {
             value: |i| (i % 3) as f64,
             ..Fixture::default()
         };
-        let (label_volume, label_geometry) = load(&labels, "labels.nii");
-        let (value_volume, value_geometry) = load(&Fixture::default(), "values.nii");
+        let (label_volume, label_geometry) = load_with_geometry(&labels, "labels.nii");
+        let (value_volume, value_geometry) = load_with_geometry(&Fixture::default(), "values.nii");
         let source = |volume, geometry| Source {
             volume,
             geometry,
@@ -293,7 +294,6 @@ mod tests {
     #[test]
     fn follows_the_world_across_grids() {
         let dir = tempfile::tempdir().unwrap();
-        let cache = VolumeCache::new(dir.path().join("cache"), 1 << 20).unwrap();
         let labels = Fixture {
             dims: vec![2, 2, 2],
             value: |i| if i == 0 { 5.0 } else { 0.0 },
@@ -304,12 +304,8 @@ mod tests {
             ],
             ..Fixture::default()
         };
-        let label_path = dir.path().join("coarse.nii");
-        labels.write(&label_path);
-        let value_path = dir.path().join("fine.nii");
-        Fixture::default().write(&value_path);
-        let label_volume = Volume::load(&label_path, &cache, &Progress::default()).unwrap();
-        let value_volume = Volume::load(&value_path, &cache, &Progress::default()).unwrap();
+        let label_volume = load(&dir, &labels, "coarse.nii");
+        let value_volume = load(&dir, &Fixture::default(), "fine.nii");
         let label_geometry = label_volume.geometry(GeometryOptions::default()).unwrap();
         let value_geometry = value_volume.geometry(GeometryOptions::default()).unwrap();
         let regions = label_statistics(

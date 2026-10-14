@@ -1,10 +1,29 @@
+//! A volume's header in the same form for every file format.
+//!
+//! `VolumeMeta::read` picks the reader from the file name and [`strip_extension`] removes
+//! the extensions of volume files.
+
 use std::path::{Path, PathBuf};
 
 use crate::error::Result;
 use crate::voxel::{DataType, Endian, Scaling};
 use crate::{nifti1, nrrd};
 
-pub type Mat3x4 = [[f64; 4]; 3];
+pub(crate) type Mat3x4 = [[f64; 4]; 3];
+
+/// The file extensions illuminator supports
+const EXTENSIONS: [&str; 8] = [
+    ".nii.gz", ".nii", ".nrrd", ".nhdr", ".hdr.gz", ".hdr", ".img.gz", ".img",
+];
+
+/// Removes file extension from a string.
+pub fn strip_extension(name: &str) -> &str {
+    let lower = name.to_ascii_lowercase();
+    EXTENSIONS
+        .iter()
+        .find(|extension| lower.ends_with(*extension))
+        .map_or(name, |extension| &name[..name.len() - extension.len()])
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Format {
@@ -26,7 +45,7 @@ impl Format {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SpatialUnits {
+pub(crate) enum SpatialUnits {
     Unknown,
     Meter,
     Millimeter,
@@ -34,36 +53,36 @@ pub enum SpatialUnits {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct Transform {
-    pub name: &'static str,
-    pub matrix: Mat3x4,
+pub(crate) struct Transform {
+    pub(crate) name: &'static str,
+    pub(crate) matrix: Mat3x4,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct DataFile {
-    pub path: PathBuf,
-    pub start: u64,
-    pub offset: u64,
-    pub bytes: usize,
-    pub gzip: bool,
+pub(crate) struct DataFile {
+    pub(crate) path: PathBuf,
+    pub(crate) start: u64,
+    pub(crate) offset: u64,
+    pub(crate) bytes: usize,
+    pub(crate) gzip: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct VolumeMeta {
     pub format: Format,
-    pub dims: [usize; 4],
+    pub(crate) dims: [usize; 4],
     pub spacing: [f64; 3],
-    pub units: SpatialUnits,
-    pub transform: Option<Transform>,
+    pub(crate) units: SpatialUnits,
+    pub(crate) transform: Option<Transform>,
     pub datatype: DataType,
-    pub endian: Endian,
-    pub scaling: Scaling,
-    pub display_range: Option<(f64, f64)>,
-    pub data: DataFile,
+    pub(crate) endian: Endian,
+    pub(crate) scaling: Scaling,
+    pub(crate) display_range: Option<(f64, f64)>,
+    pub(crate) data: DataFile,
 }
 
 impl VolumeMeta {
-    pub fn read(path: &Path) -> Result<Self> {
+    pub(crate) fn read(path: &Path) -> Result<Self> {
         let name = path
             .file_name()
             .map(|name| name.to_string_lossy().to_ascii_lowercase())
@@ -91,7 +110,20 @@ impl VolumeMeta {
         self.dims[3]
     }
 
-    pub fn frame_voxels(&self) -> usize {
+    pub(crate) fn frame_voxels(&self) -> usize {
         self.width() * self.height() * self.depth()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::strip_extension;
+
+    #[test]
+    fn strips_only_volume_extensions() {
+        assert_eq!(strip_extension("ct.nii.gz"), "ct");
+        assert_eq!(strip_extension("patient.01.NII"), "patient.01");
+        assert_eq!(strip_extension("seg.nrrd"), "seg");
+        assert_eq!(strip_extension("notes.txt"), "notes.txt");
     }
 }

@@ -1,3 +1,10 @@
+//! Opens files in the running viewer.
+//!
+//! A launch with only files hands them to the first instance and exits. The first instance
+//! listens on a local socket. A later launch sends it the absolute path of each file, each
+//! followed by a zero byte, and another one at the end. The first instance answers with one
+//! zero byte once it has the files.
+
 use futures::channel::mpsc::UnboundedSender;
 use interprocess::local_socket::{GenericNamespaced, ListenerOptions, prelude::*};
 use std::fs::File;
@@ -60,10 +67,13 @@ fn send(mut stream: LocalSocketStream, files: &[PathBuf]) -> io::Result<()> {
         message.push(0);
     }
     message.push(0);
+    // Windows only lets the foreground app bring a window to the front, so allow the first instance to show
+    // its window when it receives the new files.
     #[cfg(windows)]
-    unsafe {
+    {
         use windows_sys::Win32::UI::WindowsAndMessaging::{ASFW_ANY, AllowSetForegroundWindow};
-        AllowSetForegroundWindow(ASFW_ANY);
+        // SAFETY: AllowSetForegroundWindow takes no pointers. Failing should be harmless.
+        unsafe { AllowSetForegroundWindow(ASFW_ANY) };
     }
     stream.write_all(&message)?;
     stream.read_exact(&mut [0])
