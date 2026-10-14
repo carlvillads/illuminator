@@ -1,4 +1,7 @@
-//! Drawing the views
+//! panels.rs
+//!
+//! Drawing the views.
+//!
 
 use super::*;
 

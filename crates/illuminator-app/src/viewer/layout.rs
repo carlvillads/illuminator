@@ -1,4 +1,7 @@
-//! Viewer layout
+//! layout.rs
+//!
+//! Viewer layout.
+//!
 
 use super::*;
 

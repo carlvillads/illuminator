@@ -1,4 +1,7 @@
+//! voxel.rs
+//!
 //! Voxel datatypes, intensity scaling, raw reading.
+//!
 
 use rayon::prelude::*;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -6,7 +9,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use crate::error::{Error, Result};
 use crate::progress::Progress;
 
-// Scalar voxeltype support
+// Scalar voxel types that are supported
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DataType {
     U8,

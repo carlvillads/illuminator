@@ -1,4 +1,7 @@
+//! theme.rs
+//!
 //! Illuminator application theming
+//!
 
 use gpui_kit::component::{Theme, ThemeRegistry};
 use gpui_kit::*;

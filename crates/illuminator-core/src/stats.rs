@@ -1,3 +1,9 @@
+//! stats.rs
+//!
+//! Label statistics.
+//! The size of each label, and a summary of another volume's values inside it.
+//!
+
 use rayon::prelude::*;
 use std::collections::HashMap;
 use std::fmt::Write;

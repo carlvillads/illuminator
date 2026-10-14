@@ -1,4 +1,7 @@
+//! geometry.rs
+//!
 //! Points, affines, planes, and world space
+//!
 
 use std::ops::{Add, Index, IndexMut, Mul, Neg, Sub};
 

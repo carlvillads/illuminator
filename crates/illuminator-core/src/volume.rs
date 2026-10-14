@@ -1,3 +1,9 @@
+//! volume.rs
+//!
+//! A loaded volume.
+//! The volumes header and its voxels mapped to memory.
+//!
+
 use memmap2::Mmap;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
@@ -27,7 +33,8 @@ fn next_id() -> u64 {
     NEXT_ID.fetch_add(1, Ordering::Relaxed)
 }
 
-/// Loaded nifti volume
+/// Loaded volume.
+/// Can be NIfTI, Analyze, or NRRD.
 pub struct Volume {
     meta: VolumeMeta,
     path: PathBuf,

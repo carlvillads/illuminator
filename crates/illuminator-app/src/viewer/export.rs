@@ -1,4 +1,7 @@
-//! Copying and saving screenshots
+//! export.rs
+//!
+//! Copying and saving screenshots.
+//!
 
 use super::*;
 

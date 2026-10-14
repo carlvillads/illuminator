@@ -1,3 +1,8 @@
+//! meta.rs
+//!
+//! A volume header in a single form for every file format and picking the correct reader for each file.
+//!
+
 use std::path::{Path, PathBuf};
 
 use crate::error::Result;

@@ -1,5 +1,8 @@
-//! Illuminator viwer application
+//! main.rs
+//!
+//! The Illuminator viewer application.
 //! Usage: illuminate [OPTIONS] [FILE]... (see illuminate --help)
+//!
 
 // no console on windows in release builds
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]

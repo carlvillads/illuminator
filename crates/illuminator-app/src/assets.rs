@@ -1,4 +1,7 @@
-//! Icons from IBM's Carbon Design System, licensed under Apache 2.0: https://carbondesignsystem.com
+//! assets.rs
+//!
+//! Icons from IBM's Carbon Design System, licensed under Apache 2.0: <https://carbondesignsystem.com>
+//!
 
 use gpui_kit::assets::{Assets, IconNamed};
 use gpui_kit::{AssetSource, Result, SharedString};

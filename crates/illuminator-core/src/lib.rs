@@ -1,4 +1,7 @@
+//! lib.rs
+//!
 //! Illuminator viewer core
+//!
 
 pub mod cache;
 pub mod display;

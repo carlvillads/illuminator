@@ -1,4 +1,7 @@
+//! shortcuts.rs
+//!
 //! Keyboard shortcuts
+//!
 
 use gpui_kit::*;
 

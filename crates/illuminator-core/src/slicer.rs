@@ -1,4 +1,7 @@
-//! CPU slicer. Slice to RGBA img
+//! slicer.rs
+//!
+//! Samples a volume along a plane and colors the samples into an RGBA image.
+//!
 
 use ::rayon::prelude::*;
 use std::marker::PhantomData;
@@ -61,7 +64,7 @@ pub enum Coloring {
         level: f64,
         width: f64,
         colormap: Colormap,
-        // below min are transparent
+        /// Values below the window are transparent
         clip_low: bool,
     },
     Labels {
@@ -75,9 +78,8 @@ impl Coloring {
         matches!(self, Self::Labels { .. })
     }
 
-    /// Where `value` falls on the colormap.
-    /// `0` at the bottom of the window, `1` at the top, and `None` if it is drawn as transparent, or if its
-    /// color labels.
+    /// Where `value` falls on the colormap: `0` at the bottom of the window, `1` at the top.
+    /// `None` if the value is drawn transparent or if this coloring is for labels.
     pub fn window_position(self, value: f64) -> Option<f64> {
         let Self::Intensity {
             level,

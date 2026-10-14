@@ -1,5 +1,8 @@
+//! nrrd.rs
+//!
 //! Reads NRRD files. See <https://teem.sourceforge.net/nrrd/format.html>
-//! Should support `.nrrd` and `.nhdr` files.
+//! Support for `.nrrd` and `.nhdr` files.
+//!
 
 use std::collections::HashMap;
 use std::fs::File;

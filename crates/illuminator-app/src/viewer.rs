@@ -1,4 +1,7 @@
+//! viewer.rs
+//!
 //! Main view
+//!
 
 mod actions;
 mod background;

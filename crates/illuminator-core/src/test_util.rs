@@ -1,3 +1,9 @@
+//! test_util.rs
+//!
+//! Test helpers
+//! Writing small nifti files and loading them.
+//!
+
 use std::fs::File;
 use std::io::Write;
 use std::path::Path;

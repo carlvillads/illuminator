@@ -1,4 +1,7 @@
+//! picture.rs
+//!
 //! Screenshotting
+//!
 
 use gpui_kit::RenderImage;
 use image::{ImageFormat, Rgba, RgbaImage};

@@ -1,3 +1,9 @@
+//! label_statistics.rs
+//!
+//! Label statistics window
+//! The size and values of each label, and to copy or save.
+//!
+
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::menu::DropdownMenu;
 use gpui_kit::component::{ActiveTheme, Disableable, Sizable, h_flex, v_flex};

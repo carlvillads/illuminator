@@ -1,4 +1,7 @@
-//! Maximum intensity projection
+//! projection.rs
+//!
+//! Maximum intensity projection.
+//!
 
 use rayon::prelude::*;
 

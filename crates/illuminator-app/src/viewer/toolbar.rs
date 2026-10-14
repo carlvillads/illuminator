@@ -1,4 +1,7 @@
+//! toolbar.rs
+//!
 //! The toolbar above the views
+//!
 
 use super::*;
 

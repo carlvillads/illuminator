@@ -1,3 +1,9 @@
+//! cache.rs
+//!
+//! A cache of decompressed `.gz` volumes, so they can be memory-mapped like other files.
+//! When it sees that It'd grow past its budget, it removes the oldest files that no volume uses first.
+//!
+
 use flate2::read::MultiGzDecoder;
 use std::collections::{HashMap, HashSet};
 use std::env::VarError;

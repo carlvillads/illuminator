@@ -1,3 +1,8 @@
+//! ui.rs
+//!
+//! Small UI helpers and colors that the viewer and dialogs share.
+//!
+
 use gpui_kit::component::menu::{PopupMenu, PopupMenuItem};
 use gpui_kit::component::{ActiveTheme, h_flex, v_flex};
 use gpui_kit::*;

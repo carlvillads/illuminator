@@ -1,3 +1,8 @@
+//! loader.rs
+//!
+//! Loads volumes on background threads and tracks the progress of each load.
+//!
+
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -210,7 +215,8 @@ fn run(inner: &Arc<Inner>) {
 
         {
             let mut shared = inner.lock();
-            // if a cancel arrives after the work is done, it still wins. See illuminator_cpp
+            // a cancel that arrives after the work is done will still win. the user has asked to cancel this
+            // volume opening, so it must not show up anyway after they've cancelled.
             let cancelled = cancel.load(Ordering::Relaxed);
             let (state, stage) = match result {
                 Ok(_) if cancelled => (LoadState::Cancelled, "Cancelled"),
