@@ -1,9 +1,18 @@
-#!/bin/sh
+#!/usr/bin/env bash
 # Remember to rerun after changes to the icon
-set -e
-cd "$(dirname "$0")"
-ictool="$(xcode-select -p)/../Applications/Icon Composer.app/Contents/Executables/ictool"
-mkdir -p icons
-for size in 32 48 64 128 256 512; do
-    "$ictool" ../illuminator.icon --export-image --output-file "icons/${size}x${size}.png" --platform macOS --rendition Default --width $size --height $size --scale 1 > /dev/null
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ICON_DIR="${SCRIPT_DIR}/icons"
+MACOS_ICNS="${SCRIPT_DIR}/../macos/illuminator.icns"
+
+mkdir -p "${ICON_DIR}"
+
+SIZES=(32 48 64 128 256 512)
+SRGB_PROFILE="/System/Library/ColorSync/Profiles/sRGB Profile.icc"
+for size in "${SIZES[@]}"; do
+    out="${ICON_DIR}/${size}x${size}.png"
+    sips -s format png --matchTo "${SRGB_PROFILE}" -z "${size}" "${size}" "${MACOS_ICNS}" --out "${out}" >/dev/null
 done
+
+echo "Done."
