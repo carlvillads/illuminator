@@ -10,31 +10,62 @@ impl Viewer {
             return Vec::new();
         }
         let area = view_area(window);
-        let mut rows: Vec<(ViewPlane, bool)> = ViewPlane::ALL.map(|axis| (axis, false)).to_vec();
+        let mut ortho: Vec<Cell> = ViewPlane::ALL
+            .map(|axis| Cell {
+                base: 0,
+                axis,
+                mip: false,
+                slice: None,
+            })
+            .to_vec();
         if self.show_mip {
-            rows.push((ViewPlane::Coronal, true));
+            ortho.push(Cell {
+                base: 0,
+                axis: ViewPlane::Coronal,
+                mip: true,
+                slice: None,
+            });
         }
         let mip = self.show_mip;
-        let cells: Vec<(usize, ViewPlane, bool, Option<usize>)> = match self.layout {
-            Layout::Ortho => rows
+        let cells: Vec<Cell> = match self.layout {
+            Layout::Ortho => ortho,
+            Layout::Compare => ortho
                 .iter()
-                .map(|&(axis, mip)| (0, axis, mip, None))
+                .flat_map(|&cell| {
+                    (0..count).map(move |index| Cell {
+                        base: index,
+                        ..cell
+                    })
+                })
                 .collect(),
-            Layout::Compare => rows
-                .iter()
-                .flat_map(|&(axis, mip)| (0..count).map(move |index| (index, axis, mip, None)))
+            Layout::Grid(axis) => (0..count)
+                .map(|index| Cell {
+                    base: index,
+                    axis,
+                    mip,
+                    slice: None,
+                })
                 .collect(),
-            Layout::Grid(axis) => (0..count).map(|index| (index, axis, mip, None)).collect(),
             Layout::Single { axis, layer } => {
                 let base = layer.filter(|&index| index < count).unwrap_or(0);
-                vec![(base, axis, mip, None)]
+                vec![Cell {
+                    base,
+                    axis,
+                    mip,
+                    slice: None,
+                }]
             }
             Layout::Lightbox(axis) => {
                 let (current, slices) = self.layers[0].display.slice_position(axis);
                 let (columns, rows) = self.lightbox_grid;
                 lightbox_slices(current, slices, self.lightbox_step, columns * rows)
                     .into_iter()
-                    .map(|slice| (0, axis, false, Some(slice)))
+                    .map(|slice| Cell {
+                        base: 0,
+                        axis,
+                        mip: false,
+                        slice: Some(slice),
+                    })
                     .collect()
             }
         };
@@ -47,21 +78,27 @@ impl Viewer {
                 (columns, cells.len().div_ceil(columns))
             }
         };
-        let cell = size(area.width / columns as f32, area.height / rows as f32);
+        let cell_size = size(area.width / columns as f32, area.height / rows as f32);
         let scale = window.scale_factor();
         let overlaid = self.layout.overlaid();
         cells
             .into_iter()
             .enumerate()
-            .map(|(n, (base, axis, mip, slice))| {
+            .map(|(n, cell)| {
+                let Cell {
+                    base,
+                    axis,
+                    mip,
+                    slice,
+                } = cell;
                 let display = &self.layers[base].display;
                 let plane = match slice {
                     Some(slice) => display.slice_plane(axis, slice, self.radiological),
                     None => display.plane(axis, self.radiological),
                 };
                 let (width, height) = (
-                    (cell.width * scale) as usize,
-                    (cell.height * scale) as usize,
+                    (cell_size.width * scale) as usize,
+                    (cell_size.height * scale) as usize,
                 );
                 let whole = fit_size(&plane, width, height);
                 let fit = (
@@ -74,10 +111,10 @@ impl Viewer {
                 let image_pixels = fit_size(&visible.apply(plane), width, height);
                 View {
                     origin: point(
-                        (n % columns) as f32 * cell.width,
-                        (n / columns) as f32 * cell.height,
+                        (n % columns) as f32 * cell_size.width,
+                        (n / columns) as f32 * cell_size.height,
                     ),
-                    size: cell,
+                    size: cell_size,
                     axis,
                     base,
                     layers: if overlaid { 0..count } else { base..base + 1 },
@@ -158,6 +195,17 @@ impl Viewer {
             _ => 10.0,
         }
     }
+}
+
+/// What one view on screen shows before it gets a place and a size.
+#[derive(Clone, Copy)]
+struct Cell {
+    /// The layer whose plane the view shows
+    base: usize,
+    axis: ViewPlane,
+    mip: bool,
+    /// The slice in lightbox views
+    slice: Option<usize>,
 }
 
 fn lightbox_slices(current: usize, count: usize, step: usize, cells: usize) -> Vec<usize> {

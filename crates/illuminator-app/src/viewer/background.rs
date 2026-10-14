@@ -27,7 +27,7 @@ impl Viewer {
             return None;
         }
         let plane = view.visible.apply(view.plane);
-        let job = layer.display.job_on(plane, width, height, view.mip);
+        let job = layer.display.job(plane, width, height, view.mip);
         let key = ImageKey {
             sample: job.key.clone(),
             coloring: layer.display.coloring(),
@@ -40,8 +40,8 @@ impl Viewer {
         }
         let reuse = panel
             .and_then(|panel| panel.samples.as_ref())
-            .filter(|(sample, _)| *sample == key.sample)
-            .map(|(_, samples)| Arc::clone(samples));
+            .filter(|cached| cached.key == key.sample)
+            .map(|cached| Arc::clone(&cached.samples));
         Some(RenderRequest {
             load_id: layer.load_id,
             slot: view.slot,
@@ -178,7 +178,10 @@ fn spawn_render(render: RenderRequest, window: &Window, cx: &mut Context<Viewer>
             };
             let panel = layer.panel_mut(slot);
             panel.rendering = false;
-            panel.samples = Some((key.sample.clone(), samples));
+            panel.samples = Some(PanelSamples {
+                key: key.sample.clone(),
+                samples,
+            });
             if let Some(old) = panel.image.replace(PanelImage { key, image }) {
                 cx.drop_image(old.image, Some(window));
             }

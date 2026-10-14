@@ -435,18 +435,8 @@ impl VolumeDisplay {
         self.geometry.plane(axis, through, radiological)
     }
 
-    /// What to render for one panel of w x h pixels
-    pub fn job(
-        &self,
-        axis: ViewPlane,
-        radiological: bool,
-        width: usize,
-        height: usize,
-    ) -> SliceJob {
-        self.job_on(self.plane(axis, radiological), width, height, false)
-    }
-
-    pub fn job_on(&self, plane: SlicePlane, width: usize, height: usize, mip: bool) -> SliceJob {
+    /// What to render for one panel: `plane` at `width` x `height` pixels, as a MIP if `mip`
+    pub fn job(&self, plane: SlicePlane, width: usize, height: usize, mip: bool) -> SliceJob {
         SliceJob {
             volume: Arc::clone(&self.volume),
             key: SampleKey {

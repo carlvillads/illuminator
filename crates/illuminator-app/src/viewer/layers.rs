@@ -181,7 +181,7 @@ impl Viewer {
         let layer = &mut self.layers[index];
         let scale = match (on, layer.suv) {
             (false, _) => 1.0,
-            (true, Some((inputs, _))) => match inputs.factor() {
+            (true, Some(suv)) => match suv.inputs.factor() {
                 Ok(factor) => factor,
                 Err(error) => {
                     eprintln!("Illuminator: {error}");
@@ -208,14 +208,17 @@ impl Viewer {
             .iter()
             .position(|layer| layer.load_id == load_id)
         {
-            self.layers[index].suv = Some((inputs, "manual entry"));
+            self.layers[index].suv = Some(Suv {
+                inputs,
+                source: "manual entry",
+            });
             self.set_suv(index, true, cx);
         }
     }
 
     pub(super) fn edit_suv(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
         let layer = &self.layers[index];
-        let (load_id, known) = (layer.load_id, layer.suv.map(|(inputs, _)| inputs));
+        let (load_id, known) = (layer.load_id, layer.suv.map(|suv| suv.inputs));
         let viewer = cx.entity().downgrade();
         let form = cx.new(|cx| SuvForm::new(load_id, known, viewer, window, cx));
         window.open_dialog(cx, move |dialog, _, _| {

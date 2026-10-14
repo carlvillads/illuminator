@@ -50,7 +50,7 @@ use std::time::Duration;
 use crate::assets::Carbon;
 use crate::cli::{Cli, LayoutName};
 use crate::label_statistics::{Snapshot, StatisticsView};
-use crate::picture::{Picture, Rect};
+use crate::picture::{Picture, PictureImage, Rect};
 use crate::shortcuts::{self, *};
 use crate::suv_form::SuvForm;
 use crate::ui::{
@@ -77,10 +77,17 @@ const TIMEPOINT_FRAME_RATES: [u32; 5] = [1, 2, 5, 10, 20];
 const LIGHTBOX_GRIDS: [(usize, usize); 6] = [(3, 2), (3, 3), (4, 3), (4, 4), (5, 4), (6, 5)];
 const LIGHTBOX_STEPS: [usize; 6] = [1, 2, 3, 4, 5, 10];
 const LIGHTBOX_SLOTS: usize = 6;
-const PRESETS: &[(&str, &[(&str, Preset)])] = &[
-    (
-        "CT (HU)",
-        &[
+
+/// Window presets under one heading in the presets menu
+struct PresetGroup {
+    title: &'static str,
+    presets: &'static [(&'static str, Preset)],
+}
+
+const PRESETS: &[PresetGroup] = &[
+    PresetGroup {
+        title: "CT (HU)",
+        presets: &[
             ("Brain  W 80 L 40", Preset::Limits(0.0, 80.0)),
             ("Subdural  W 200 L 75", Preset::Limits(-25.0, 175.0)),
             ("Stroke  W 40 L 40", Preset::Limits(20.0, 60.0)),
@@ -88,22 +95,22 @@ const PRESETS: &[(&str, &[(&str, Preset)])] = &[
             ("Lung  W 1500 L -600", Preset::Limits(-1350.0, 150.0)),
             ("Bone  W 1800 L 400", Preset::Limits(-500.0, 1300.0)),
         ],
-    ),
-    (
-        "PET (SUV)",
-        &[
+    },
+    PresetGroup {
+        title: "PET (SUV)",
+        presets: &[
             ("0 to 5", Preset::Limits(0.0, 5.0)),
             ("0 to 10", Preset::Limits(0.0, 10.0)),
         ],
-    ),
-    (
-        "Histogram",
-        &[
+    },
+    PresetGroup {
+        title: "Histogram",
+        presets: &[
             ("Full range", Preset::Percentiles(0.0, 1.0)),
             ("1 to 99 %", Preset::Percentiles(0.01, 0.99)),
             ("5 to 95 %", Preset::Percentiles(0.05, 0.95)),
         ],
-    ),
+    },
 ];
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -123,10 +130,16 @@ struct PanelImage {
     image: Arc<RenderImage>,
 }
 
+/// The samples behind a panel's image. A new coloring can reuse them.
+struct PanelSamples {
+    key: SampleKey,
+    samples: Arc<SampledSlice>,
+}
+
 #[derive(Default)]
 struct Panel {
     image: Option<PanelImage>,
-    samples: Option<(SampleKey, Arc<SampledSlice>)>,
+    samples: Option<PanelSamples>,
     rendering: bool,
 }
 
@@ -172,6 +185,13 @@ impl Render for DragLayer {
     }
 }
 
+/// The numbers for showing a layer in SUV and where they came from
+#[derive(Clone, Copy)]
+struct Suv {
+    inputs: SuvInputs,
+    source: &'static str,
+}
+
 struct Layer {
     display: VolumeDisplay,
     panels: Vec<Panel>,
@@ -180,7 +200,7 @@ struct Layer {
     histogram_pending: bool,
     curve: Option<TimeCurve>,
     curve_pending: bool,
-    suv: Option<(SuvInputs, &'static str)>,
+    suv: Option<Suv>,
     load_id: u64,
     visible: bool,
     opacity: f32,
@@ -191,7 +211,10 @@ struct Layer {
 impl Layer {
     fn new(load_id: u64, display: VolumeDisplay, cx: &mut Context<Viewer>) -> Self {
         let suv = match SuvInputs::from_sidecar(display.volume().path()) {
-            Some(Ok(inputs)) => Some((inputs, "from sidecar")),
+            Some(Ok(inputs)) => Some(Suv {
+                inputs,
+                source: "from sidecar",
+            }),
             Some(Err(error)) => {
                 eprintln!("Illuminator: {error}");
                 None
@@ -783,8 +806,8 @@ mod tests {
 
     #[test]
     fn presets_go_from_low_to_high() {
-        for (_, presets) in PRESETS {
-            for (name, preset) in *presets {
+        for group in PRESETS {
+            for (name, preset) in group.presets {
                 match *preset {
                     Preset::Limits(low, high) => assert!(low < high, "{name}"),
                     Preset::Percentiles(low, high) => {

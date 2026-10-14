@@ -184,7 +184,7 @@ impl Viewer {
                             .flex_1()
                             .text_xs()
                             .text_color(muted)
-                            .child(layer.suv.map_or("no sidecar", |(_, source)| source)),
+                            .child(layer.suv.map_or("no sidecar", |suv| suv.source)),
                     )
                     .child(
                         Button::new(id("suv-edit"))
@@ -475,13 +475,13 @@ impl Viewer {
             .icon(Carbon::WindowPreset)
             .tooltip("Window presets")
             .dropdown_menu(move |mut menu, _, _| {
-                for (n, (group, presets)) in PRESETS.iter().enumerate() {
+                for (n, group) in PRESETS.iter().enumerate() {
                     if n > 0 {
                         menu = menu.separator();
                     }
-                    let choices = presets.iter().copied();
+                    let choices = group.presets.iter().copied();
                     menu = ui::choice_items(
-                        menu.label(*group),
+                        menu.label(group.title),
                         &viewer,
                         choices,
                         move |viewer, preset, _, cx| {

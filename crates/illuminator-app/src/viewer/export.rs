@@ -87,11 +87,13 @@ impl Viewer {
                 width: device(image.width),
                 height: device(image.height),
             };
-            picture.images.extend(
-                shown
-                    .into_iter()
-                    .map(|(image, opacity)| (image, rect, opacity)),
-            );
+            picture
+                .images
+                .extend(shown.into_iter().map(|(image, opacity)| PictureImage {
+                    image,
+                    rect,
+                    opacity,
+                }));
             if let Some((x, y)) = self.crosshair_at(view, scale) {
                 picture.lines.push(Rect {
                     left: device(view.origin.x + x),

@@ -172,6 +172,7 @@ impl Viewer {
 }
 
 /// Waits until every visible layer shows the current frame.
+/// Returns false if the viewer was closed in the meantime.
 async fn wait_until_drawn(viewer: &WeakEntity<Viewer>, cx: &mut AsyncWindowContext) -> bool {
     loop {
         cx.background_executor()

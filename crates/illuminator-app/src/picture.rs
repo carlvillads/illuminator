@@ -15,18 +15,25 @@ pub struct Rect {
     pub height: u32,
 }
 
+/// One image in the picture drawn into `rect` at `opacity`
+pub struct PictureImage {
+    pub image: Arc<RenderImage>,
+    pub rect: Rect,
+    pub opacity: f32,
+}
+
 pub struct Picture {
     pub width: u32,
     pub height: u32,
-    pub images: Vec<(Arc<RenderImage>, Rect, f32)>,
+    pub images: Vec<PictureImage>,
     pub lines: Vec<Rect>,
 }
 
 impl Picture {
     pub fn compose(&self) -> RgbaImage {
         let mut picture = RgbaImage::from_pixel(self.width, self.height, Rgba([0, 0, 0, 255]));
-        for (image, rect, opacity) in &self.images {
-            draw_image(&mut picture, image, *rect, *opacity);
+        for placed in &self.images {
+            draw_image(&mut picture, &placed.image, placed.rect, placed.opacity);
         }
         let [r, g, b, a] = ui::CROSSHAIR_COLOR.to_be_bytes();
         for line in &self.lines {
@@ -83,7 +90,7 @@ fn over(pixel: &mut Rgba<u8>, color: [u8; 3], alpha: f32) {
 
 #[cfg(test)]
 mod tests {
-    use super::{Picture, Rect};
+    use super::{Picture, PictureImage, Rect};
     use gpui_kit::RenderImage;
     use image::{Frame, Rgba, RgbaImage};
     use std::sync::Arc;
@@ -105,9 +112,21 @@ mod tests {
             width: 4,
             height: 2,
             images: vec![
-                (solid(1, 1, [0, 0, 255, 255]), rect(1, 0, 2, 1), 1.0),
-                (solid(1, 1, [255, 0, 0, 255]), rect(2, 0, 5, 1), 0.5),
-                (solid(1, 1, [255, 255, 255, 0]), rect(0, 0, 4, 2), 1.0),
+                PictureImage {
+                    image: solid(1, 1, [0, 0, 255, 255]),
+                    rect: rect(1, 0, 2, 1),
+                    opacity: 1.0,
+                },
+                PictureImage {
+                    image: solid(1, 1, [255, 0, 0, 255]),
+                    rect: rect(2, 0, 5, 1),
+                    opacity: 0.5,
+                },
+                PictureImage {
+                    image: solid(1, 1, [255, 255, 255, 0]),
+                    rect: rect(0, 0, 4, 2),
+                    opacity: 1.0,
+                },
             ],
             lines: vec![rect(0, 1, 4, 1)],
         };
