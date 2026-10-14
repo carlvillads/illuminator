@@ -1,7 +1,4 @@
-//! slicer.rs
-//!
 //! Samples a volume along a plane and colors the samples into an RGBA image.
-//!
 
 use ::rayon::prelude::*;
 use std::marker::PhantomData;

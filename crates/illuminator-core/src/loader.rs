@@ -1,7 +1,4 @@
-//! loader.rs
-//!
 //! Loads volumes on background threads and tracks the progress of each load.
-//!
 
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};

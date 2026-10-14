@@ -1,8 +1,6 @@
-//! label_statistics.rs
+//! The label statistics window.
 //!
-//! Label statistics window
-//! The size and values of each label, and to copy or save.
-//!
+//! Shows the size and values of each label, which can be copied or saved as CSV.
 
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::menu::DropdownMenu;

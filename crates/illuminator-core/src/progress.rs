@@ -1,7 +1,4 @@
-//! progress.rs
-//!
 //! Progress reports and cancelling for long work such as loading or measuring.
-//!
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};

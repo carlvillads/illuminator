@@ -1,8 +1,6 @@
-//! suv.rs
-//!
 //! SUV calculations for PET.
-//! Inputs can come from a sidecar.
 //!
+//! The inputs can come from a JSON sidecar.
 
 use serde_json::Value;
 use std::path::{Path, PathBuf};

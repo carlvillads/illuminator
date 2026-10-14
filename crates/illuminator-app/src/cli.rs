@@ -1,7 +1,4 @@
-//! cli.rs
-//!
 //! Command line options.
-//!
 
 use clap::error::ErrorKind;
 use clap::{CommandFactory, FromArgMatches, Parser, ValueEnum};

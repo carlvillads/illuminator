@@ -1,7 +1,4 @@
-//! layers.rs
-//!
-//! Adding, closing, moving, and reloading layers. One layers contrast and SUV.
-//!
+//! Adding, closing, moving, and reloading layers. One layer's contrast and SUV.
 
 use super::*;
 

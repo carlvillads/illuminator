@@ -1,7 +1,4 @@
-//! zoom.rs
-//!
 //! Zoom and pan inside a view.
-//!
 
 use illuminator_core::geometry::SlicePlane;
 

@@ -1,7 +1,4 @@
-//! mouse.rs
-//!
-//! Clicking, dragging and scrolling in the views
-//!
+//! Clicking, dragging and scrolling in the views.
 
 use super::*;
 

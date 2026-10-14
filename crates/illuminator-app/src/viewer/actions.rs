@@ -1,7 +1,4 @@
-//! actions.rs
-//!
 //! Keyboard shortcut handlers.
-//!
 
 use super::*;
 

@@ -1,7 +1,4 @@
-//! layer_settings.rs
-//!
 //! Settings of the selected layer.
-//!
 
 use super::*;
 

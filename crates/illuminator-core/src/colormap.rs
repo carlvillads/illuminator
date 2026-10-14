@@ -1,7 +1,4 @@
-//! colormap.rs
-//!
 //! Colormaps: grayscale, viridis, plasma, magma, and inferno.
-//!
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Colormap {

@@ -1,5 +1,4 @@
-//! build.rs
-//!
+//! Builds the Windows icon into the executable.
 
 fn main() {
     println!("cargo:rerun-if-changed=packaging/windows");

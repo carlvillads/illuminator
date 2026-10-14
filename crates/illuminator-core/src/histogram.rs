@@ -1,8 +1,4 @@
-//! histogram.rs
-//!
-//! Histograms of one frames values.
-//! For the sidebar and percentile presets.
-//!
+//! Histograms of one frames values, for the sidebar and the percentile presets.
 
 use crate::error::Result;
 use crate::progress::Progress;

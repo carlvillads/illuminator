@@ -1,7 +1,4 @@
-//! display.rs
-//!
 //! How one volume is shown (cursor, frame, contrast window, colormap, labels).
-//!
 
 use std::sync::Arc;
 

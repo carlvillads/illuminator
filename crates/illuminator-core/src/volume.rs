@@ -1,8 +1,4 @@
-//! volume.rs
-//!
-//! A loaded volume.
-//! The volumes header and its voxels mapped to memory.
-//!
+//! A loaded volume. Its header, and its voxels mapped into memory.
 
 use memmap2::Mmap;
 use std::fs::File;

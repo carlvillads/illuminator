@@ -1,7 +1,4 @@
-//! status_bar.rs
-//!
-//! The status bar
-//!
+//! The status bar.
 
 use super::*;
 

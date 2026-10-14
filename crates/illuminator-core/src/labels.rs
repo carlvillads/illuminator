@@ -1,8 +1,4 @@
-//! labels.rs
-//!
-//! Label maps.
-//! Counting labels and giving each label a distinct color.
-//!
+//! Label maps. Counting their labels and giving each label a distinct color.
 
 use std::collections::HashSet;
 

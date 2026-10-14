@@ -1,7 +1,7 @@
-//! meta.rs
+//! A volume's header in the same form for every file format.
 //!
-//! A volume header in a single form for every file format and picking the correct reader for each file.
-//!
+//! `VolumeMeta::read` picks the reader from the file name and [`strip_extension`] removes
+//! the extensions of volume files.
 
 use std::path::{Path, PathBuf};
 

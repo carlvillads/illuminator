@@ -1,8 +1,6 @@
-//! test_util.rs
+//! Test helpers.
 //!
-//! Test helpers
-//! Writing small nifti files and loading them.
-//!
+//! Writing small NIfTI files and loading them.
 
 use std::fs::File;
 use std::io::Write;

@@ -1,8 +1,6 @@
-//! nifti1.rs
+//! Reads NIfTI-1 and Analyze 7.5 headers.
 //!
-//! Reads NIfTI-1 and Analyze 7.5 headers
-//! Support for `.nii`, `.nii.gz` files and `.hdr` + `.img` pairs.
-//!
+//! Supports `.nii` and `.nii.gz` files, and `.hdr` + `.img` pairs.
 
 use flate2::read::MultiGzDecoder;
 use nifti::{Endianness, NiftiHeader};

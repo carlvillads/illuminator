@@ -1,11 +1,9 @@
-//! single_instance.rs
+//! Opens files in the running viewer.
 //!
-//! Opens files in the running viewer. Launch with only files, hands them over, and exits.
-//!
-//! The first instance listens on a local socket. A later launch sends it the absolute path of each file,
-//! each followed by a zero byte, and another one at the end.
-//! The first instance answers with one zero byte once it has the files.
-//!
+//! A launch with only files hands them to the first instance and exits. The first instance
+//! listens on a local socket. A later launch sends it the absolute path of each file, each
+//! followed by a zero byte, and another one at the end. The first instance answers with one
+//! zero byte once it has the files.
 
 use futures::channel::mpsc::UnboundedSender;
 use interprocess::local_socket::{GenericNamespaced, ListenerOptions, prelude::*};

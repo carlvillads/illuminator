@@ -1,7 +1,4 @@
-//! sidebar.rs
-//!
-//! Loading list, layer list, view settings
-//!
+//! Loading list, layer list, view settings.
 
 use super::*;
 

@@ -1,7 +1,4 @@
-//! error.rs
-//!
 //! The errors of illuminator-core, and a `Result` that uses them.
-//!
 
 use std::io;
 

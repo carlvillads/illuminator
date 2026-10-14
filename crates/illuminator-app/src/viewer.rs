@@ -1,7 +1,4 @@
-//! viewer.rs
-//!
-//! Main view
-//!
+//! The main window and its state.
 
 mod actions;
 mod background;

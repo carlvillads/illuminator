@@ -1,7 +1,4 @@
-//! export.rs
-//!
 //! Copying and saving screenshots.
-//!
 
 use super::*;
 use illuminator_core::meta::strip_extension;

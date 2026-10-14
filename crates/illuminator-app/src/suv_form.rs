@@ -1,7 +1,4 @@
-//! suv_form.rs
-//!
 //! The dialog for entering or editing a layer's SUV inputs.
-//!
 
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::{Input, InputState};

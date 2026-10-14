@@ -1,7 +1,4 @@
-//! voxel.rs
-//!
 //! Voxel datatypes, intensity scaling, raw reading.
-//!
 
 use rayon::prelude::*;
 use std::sync::atomic::{AtomicUsize, Ordering};

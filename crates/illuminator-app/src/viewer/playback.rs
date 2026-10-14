@@ -1,7 +1,4 @@
-//! playback.rs
-//!
-//! 4D time series, frame slider, playback
-//!
+//! 4D time series, frame slider, playback.
 
 use super::*;
 

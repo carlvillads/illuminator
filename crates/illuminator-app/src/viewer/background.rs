@@ -1,7 +1,4 @@
-//! background.rs
-//!
-//! Viewer background tasks
-//!
+//! Viewer background tasks.
 
 use super::*;
 
