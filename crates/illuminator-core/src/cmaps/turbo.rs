@@ -3,6 +3,7 @@
 //! Polynomial approximation by Ruofei Du of Anton Mikhailov's Turbo.
 //! Copyright 2019 Google LLC, Apache-2.0:
 //! <https://gist.github.com/mikhailov-work/0d177465a8151eb6ede1768d51d476c7>
+//! <https://research.google/blog/turbo-an-improved-rainbow-colormap-for-visualization/>
 
 use super::{Cmap, Ramp};
 
