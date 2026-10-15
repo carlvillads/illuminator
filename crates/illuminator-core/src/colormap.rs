@@ -8,6 +8,8 @@ pub enum Colormap {
     #[default]
     Grayscale,
     InvGrayscale,
+    Red,
+    Blue,
     Viridis,
     Plasma,
     Magma,
@@ -19,12 +21,16 @@ pub enum Colormap {
     GrayC,
     Lipari,
     Navia,
+    Berlin,
+    Vik,
 }
 
 impl Colormap {
-    pub const ALL: [Self; 13] = [
+    pub const ALL: [Self; 17] = [
         Self::Grayscale,
         Self::InvGrayscale,
+        Self::Red,
+        Self::Blue,
         Self::Viridis,
         Self::Plasma,
         Self::Magma,
@@ -36,12 +42,16 @@ impl Colormap {
         Self::GrayC,
         Self::Lipari,
         Self::Navia,
+        Self::Berlin,
+        Self::Vik,
     ];
 
     fn cmap(self) -> &'static Cmap {
         match self {
             Self::Grayscale => &cmaps::GRAYSCALE,
             Self::InvGrayscale => &cmaps::INVERSE_GRAYSCALE,
+            Self::Red => &cmaps::RED,
+            Self::Blue => &cmaps::BLUE,
             Self::Viridis => &cmaps::VIRIDIS,
             Self::Plasma => &cmaps::PLASMA,
             Self::Magma => &cmaps::MAGMA,
@@ -53,6 +63,8 @@ impl Colormap {
             Self::GrayC => &cmaps::GRAYC,
             Self::Lipari => &cmaps::LIPARI,
             Self::Navia => &cmaps::NAVIA,
+            Self::Berlin => &cmaps::BERLIN,
+            Self::Vik => &cmaps::VIK,
         }
     }
 
@@ -138,6 +150,8 @@ mod tests {
         assert_eq!(Colormap::Viridis.color(0.0), [71, 1, 85]);
         assert_eq!(Colormap::Viridis.color(1.0), [252, 231, 33]);
         assert_eq!(Colormap::Hot.color(f64::NAN), [0, 0, 0]);
+        assert_eq!(Colormap::Red.color(1.0), [255, 0, 0]);
+        assert_eq!(Colormap::Blue.color(0.5), [0, 0, 128]);
         assert_eq!(Colormap::InvGrayscale.color(0.0), [255, 255, 255]);
         assert_eq!(Colormap::InvGrayscale.color(1.0), [0, 0, 0]);
     }
@@ -165,6 +179,6 @@ mod tests {
     #[test]
     fn next_wraps_around() {
         assert_eq!(Colormap::Grayscale.next(), Colormap::InvGrayscale);
-        assert_eq!(Colormap::Navia.next(), Colormap::Grayscale);
+        assert_eq!(Colormap::Vik.next(), Colormap::Grayscale);
     }
 }

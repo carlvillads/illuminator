@@ -1,5 +1,7 @@
 //! The colors of each colormap.
 
+mod berlin;
+mod blue;
 mod bone;
 mod cool;
 mod grayc;
@@ -10,9 +12,13 @@ mod lipari;
 mod magma;
 mod navia;
 mod plasma;
+mod red;
 mod turbo;
+mod vik;
 mod viridis;
 
+pub(crate) use berlin::BERLIN;
+pub(crate) use blue::BLUE;
 pub(crate) use bone::BONE;
 pub(crate) use cool::COOL;
 pub(crate) use grayc::GRAYC;
@@ -23,7 +29,9 @@ pub(crate) use lipari::LIPARI;
 pub(crate) use magma::MAGMA;
 pub(crate) use navia::NAVIA;
 pub(crate) use plasma::PLASMA;
+pub(crate) use red::RED;
 pub(crate) use turbo::TURBO;
+pub(crate) use vik::VIK;
 pub(crate) use viridis::VIRIDIS;
 
 pub(crate) struct Cmap {
