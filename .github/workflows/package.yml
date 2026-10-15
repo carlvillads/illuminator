@@ -64,6 +64,8 @@ jobs:
           if ldd /usr/bin/illuminate | grep "not found"; then exit 1; fi
           grep "nii.gz" /usr/share/mime/globs2
           cat /usr/share/applications/illuminator.desktop
+          # software centers read the app's description from here
+          test -f /usr/share/metainfo/io.github.carlvillads.illuminator.metainfo.xml
 
   release:
     name: Draft release
@@ -74,13 +76,8 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
-      - name: Tag must match version in Cargo.toml
-        run: |
-          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)
-          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
-            echo "The tag $GITHUB_REF_NAME doesn't match version $version in Cargo.toml"
-            exit 1
-          fi
+      - name: Release notes from CHANGELOG.md
+        run: bash .github/scripts/release-notes.sh "${GITHUB_REF_NAME#v}" > notes.md
       - uses: actions/download-artifact@v4
         with:
           path: packages
@@ -90,4 +87,4 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: >
           gh release create "$GITHUB_REF_NAME" packages/*
-          --draft --generate-notes --title "Illuminator ${GITHUB_REF_NAME#v}"
+          --draft --notes-file notes.md --title "Illuminator ${GITHUB_REF_NAME#v}"

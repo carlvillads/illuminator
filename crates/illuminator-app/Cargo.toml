@@ -88,7 +88,10 @@ depends = [
     "libxkbcommon-x11-0",
 ]
 desktop-template = "packaging/linux/illuminator.desktop"
-files = { "packaging/linux/nifti.xml" = "usr/share/mime/packages/illuminator.xml" }
+
+[package.metadata.packager.deb.files]
+"packaging/linux/nifti.xml" = "usr/share/mime/packages/illuminator.xml"
+"packaging/linux/io.github.carlvillads.illuminator.metainfo.xml" = "usr/share/metainfo/io.github.carlvillads.illuminator.metainfo.xml"
 
 [lints]
 workspace = true

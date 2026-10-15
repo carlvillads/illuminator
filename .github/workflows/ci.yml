@@ -23,6 +23,20 @@ jobs:
           components: rustfmt
       - run: cargo fmt --all --check
 
+  release-files:
+    name: Changelog and AppStream
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Cargo.toml, CHANGELOG.md, and the metainfo agree on version
+        run: bash .github/scripts/release-notes.sh
+      - name: Validate the AppStream metainfo
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y appstream
+          appstreamcli validate --no-net --explain \
+            crates/illuminator-app/packaging/linux/io.github.carlvillads.illuminator.metainfo.xml
+
   check:
     name: Clippy and tests (${{ matrix.os }})
     strategy:

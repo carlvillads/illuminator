@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.carlvillads.illuminator</id>
+  <name>Illuminator</name>
+  <summary>Fast medical and scientific volume viewer</summary>
+
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>Apache-2.0</project_license>
+
+  <developer id="io.github.carlvillads">
+    <name>Carl Villads</name>
+  </developer>
+
+  <description>
+    <p>
+      Illuminator is a cross-platform desktop viewer for volumetric medical and scientific imaging datasets.
+    </p>
+    <p>
+      Disclaimer: Illuminator is intended for research and educational use only and is not certified for clinical diagnosis.
+    </p>
+  </description>
+
+  <launchable type="desktop-id">illuminator.desktop</launchable>
+
+  <url type="homepage">https://github.com/carlvillads/illuminator</url>
+  <url type="bugtracker">https://github.com/carlvillads/illuminator/issues</url>
+  <url type="vcs-browser">https://github.com/carlvillads/illuminator</url>
+
+  <provides>
+    <binary>illuminate</binary>
+    <mediatype>image/x-nifti</mediatype>
+  </provides>
+
+  <content_rating type="oars-1.1" />
+
+  <releases>
+    <release version="0.1.0" date="2026-10-14">
+      <description>
+        <p>Initial release of Illuminator.</p>
+      </description>
+      <url type="details">https://github.com/carlvillads/illuminator/releases/tag/v0.1.0</url>
+    </release>
+  </releases>
+</component>
