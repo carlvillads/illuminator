@@ -1,11 +1,11 @@
-//! GrayC colormap.
+//! grayC colormap.
 //! From Scientific colour maps 8 by Fabio Crameri <https://www.fabiocrameri.ch/colourmaps>.
 //! Copyright (c) 2023 Fabio Crameri, MIT License. doi:10.5281/zenodo.1243862
 
 use super::{Cmap, Ramp};
 
 pub(crate) const GRAYC: Cmap = Cmap {
-    name: "GrayC",
+    name: "grayC",
     id: "grayc",
     ramp: Ramp::Table(&[
         [0.000000, 0.000000, 0.000000],
