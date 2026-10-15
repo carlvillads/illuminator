@@ -7,6 +7,7 @@ use crate::cmaps::{self, Cmap};
 pub enum Colormap {
     #[default]
     Grayscale,
+    InvGrayscale,
     Viridis,
     Plasma,
     Magma,
@@ -15,11 +16,15 @@ pub enum Colormap {
     Bone,
     Cool,
     Turbo,
+    GrayC,
+    Lipari,
+    Navia,
 }
 
 impl Colormap {
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 13] = [
         Self::Grayscale,
+        Self::InvGrayscale,
         Self::Viridis,
         Self::Plasma,
         Self::Magma,
@@ -28,11 +33,15 @@ impl Colormap {
         Self::Bone,
         Self::Cool,
         Self::Turbo,
+        Self::GrayC,
+        Self::Lipari,
+        Self::Navia,
     ];
 
     fn cmap(self) -> &'static Cmap {
         match self {
             Self::Grayscale => &cmaps::GRAYSCALE,
+            Self::InvGrayscale => &cmaps::INVERSE_GRAYSCALE,
             Self::Viridis => &cmaps::VIRIDIS,
             Self::Plasma => &cmaps::PLASMA,
             Self::Magma => &cmaps::MAGMA,
@@ -41,6 +50,9 @@ impl Colormap {
             Self::Bone => &cmaps::BONE,
             Self::Cool => &cmaps::COOL,
             Self::Turbo => &cmaps::TURBO,
+            Self::GrayC => &cmaps::GRAYC,
+            Self::Lipari => &cmaps::LIPARI,
+            Self::Navia => &cmaps::NAVIA,
         }
     }
 
@@ -126,6 +138,8 @@ mod tests {
         assert_eq!(Colormap::Viridis.color(0.0), [71, 1, 85]);
         assert_eq!(Colormap::Viridis.color(1.0), [252, 231, 33]);
         assert_eq!(Colormap::Hot.color(f64::NAN), [0, 0, 0]);
+        assert_eq!(Colormap::InvGrayscale.color(0.0), [255, 255, 255]);
+        assert_eq!(Colormap::InvGrayscale.color(1.0), [0, 0, 0]);
     }
 
     #[test]
@@ -150,7 +164,7 @@ mod tests {
 
     #[test]
     fn next_wraps_around() {
-        assert_eq!(Colormap::Grayscale.next(), Colormap::Viridis);
-        assert_eq!(Colormap::Turbo.next(), Colormap::Grayscale);
+        assert_eq!(Colormap::Grayscale.next(), Colormap::InvGrayscale);
+        assert_eq!(Colormap::Navia.next(), Colormap::Grayscale);
     }
 }
