@@ -96,7 +96,7 @@ impl Cli {
             let label = labels.iter().rfind(|&&label| label < position);
             match (file, label) {
                 (Some(file), label) if label.is_none_or(|&label| label < files[file]) => {
-                    Some(colormap);
+                    cli.colormaps[file] = Some(colormap);
                 }
                 (_, Some(_)) => return Err(conflict("label maps do not accept the -c argument")),
                 _ => return Err(conflict("the -c arg comes after the FILE it is for")),
