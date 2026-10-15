@@ -207,33 +207,47 @@ impl Viewer {
             })
     }
 
-    /// One color strip per colormap. Clicking a color strip "icon" picks that colormap
+    /// The current colormap. The menu lists all colormaps.
     fn render_colormaps(&self, index: usize, cx: &mut Context<Self>) -> Div {
-        let theme = cx.theme();
-        let (muted, info) = (theme.muted_foreground, theme.info);
+        let muted = cx.theme().muted_foreground;
         let current = self.layers[index].display.colormap;
-        ui::setting_row("Colormap", muted).child(h_flex().flex_1().gap_1().children(
-            Colormap::ALL.into_iter().map(|colormap| {
-                let name = colormap.name();
-                div()
-                    .id(SharedString::from(format!("colormap-{name}")))
-                    .flex_1()
-                    .p_0p5()
-                    .rounded_sm()
-                    .border_1()
-                    .border_color(if colormap == current {
-                        info
-                    } else {
-                        transparent_black()
-                    })
-                    .child(colormap_strip(colormap, false, 8))
-                    .tooltip(move |window, cx| Tooltip::new(name).build(window, cx))
-                    .on_click(cx.listener(move |viewer, _, _, cx| {
-                        viewer.layers[index].display.colormap = colormap;
-                        cx.notify();
-                    }))
-            }),
-        ))
+        let viewer = cx.entity().downgrade();
+        ui::setting_row("Colormap", muted).child(
+            DropdownButton::new(("colormap", index))
+                .flex_1()
+                .xsmall()
+                .outline()
+                .button(
+                    Button::new(("colormap-next", index))
+                        .flex_1()
+                        .child(colormap_preview(current).flex_1())
+                        .tooltip_with_action(
+                            "Next colormap",
+                            &NextColormap,
+                            Some(shortcuts::CONTEXT),
+                        )
+                        .on_click(cx.listener(move |viewer, _, _, cx| {
+                            let display = &mut viewer.layers[index].display;
+                            display.colormap = display.colormap.next();
+                            cx.notify();
+                        })),
+                )
+                .dropdown_menu(move |mut menu, _, _| {
+                    for colormap in Colormap::ALL {
+                        let viewer = viewer.clone();
+                        let item = PopupMenuItem::element(move |_, _| colormap_preview(colormap))
+                            .checked(colormap == current)
+                            .on_click(move |_, _, cx| {
+                                let _ = viewer.update(cx, |viewer, cx| {
+                                    viewer.layers[index].display.colormap = colormap;
+                                    cx.notify();
+                                });
+                            });
+                        menu = menu.item(item);
+                    }
+                    menu
+                }),
+        )
     }
 
     fn render_histogram(&self, index: usize, cx: &mut Context<Self>) -> impl IntoElement {
@@ -532,4 +546,13 @@ fn transfer_strip(histogram: &Histogram, coloring: Coloring) -> Div {
                 None => block,
             }
         }))
+}
+
+/// A color strip and the name of `colormap`.
+fn colormap_preview(colormap: Colormap) -> Div {
+    h_flex()
+        .gap_2()
+        .text_xs()
+        .child(div().w(px(48.0)).child(colormap_strip(colormap, false, 12)))
+        .child(colormap.name())
 }

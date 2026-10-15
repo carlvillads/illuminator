@@ -102,9 +102,7 @@ impl Viewer {
     ) {
         if let Some(index) = self.selected() {
             let display = &mut self.layers[index].display;
-            let current = Colormap::ALL.iter().position(|&c| c == display.colormap);
-            let next = current.map_or(0, |position| (position + 1) % Colormap::ALL.len());
-            display.colormap = Colormap::ALL[next];
+            display.colormap = display.colormap.next();
             cx.notify();
         }
     }

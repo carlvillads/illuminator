@@ -1,5 +1,6 @@
 //! Command line options.
 
+use clap::builder::{PossibleValuesParser, TypedValueParser};
 use clap::error::ErrorKind;
 use clap::{CommandFactory, FromArgMatches, Parser, ValueEnum};
 use illuminator_core::colormap::Colormap;
@@ -20,8 +21,8 @@ pub struct Cli {
     pub labels: Vec<PathBuf>,
 
     /// Colormap of the FILE just before this argument.
-    #[arg(short, long, value_enum)]
-    pub colormap: Vec<ColormapName>,
+    #[arg(short, long, value_parser = colormap_id())]
+    pub colormap: Vec<Colormap>,
 
     /// Which layout to open [default: ortho]
     #[arg(long, value_enum)]
@@ -70,27 +71,6 @@ impl From<PlaneName> for ViewPlane {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, ValueEnum)]
-pub enum ColormapName {
-    Grayscale,
-    Viridis,
-    Plasma,
-    Magma,
-    Inferno,
-}
-
-impl From<ColormapName> for Colormap {
-    fn from(colormap: ColormapName) -> Self {
-        match colormap {
-            ColormapName::Grayscale => Self::Grayscale,
-            ColormapName::Inferno => Self::Inferno,
-            ColormapName::Magma => Self::Magma,
-            ColormapName::Plasma => Self::Plasma,
-            ColormapName::Viridis => Self::Viridis,
-        }
-    }
-}
-
 impl Cli {
     /// Reads commandline, prints help and version or error
     pub fn read() -> Self {
@@ -116,7 +96,7 @@ impl Cli {
             let label = labels.iter().rfind(|&&label| label < position);
             match (file, label) {
                 (Some(file), label) if label.is_none_or(|&label| label < files[file]) => {
-                    cli.colormaps[file] = Some(colormap.into());
+                    Some(colormap);
                 }
                 (_, Some(_)) => return Err(conflict("label maps do not accept the -c argument")),
                 _ => return Err(conflict("the -c arg comes after the FILE it is for")),
@@ -133,6 +113,14 @@ impl Cli {
             && !self.mip
             && self.size.is_none()
     }
+}
+
+/// Colormap by its id.
+fn colormap_id() -> impl TypedValueParser<Value = Colormap> {
+    PossibleValuesParser::new(Colormap::ALL.map(Colormap::id)).map(|id| {
+        let colormap = Colormap::ALL.into_iter().find(|c| c.id() == id);
+        colormap.expect("only ids pass the parser")
+    })
 }
 
 fn window_size(text: &str) -> Result<(f32, f32), String> {
@@ -219,7 +207,7 @@ mod tests {
             ["--size", "1200"],
             ["--size", "0x800"],
             ["--layout", "mosaic"],
-            ["--colormap", "jet"],
+            ["--colormap", "rainbow"],
         ] {
             assert!(read(&bad).is_err(), "{bad:?}");
         }

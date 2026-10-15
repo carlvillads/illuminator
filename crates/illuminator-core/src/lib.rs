@@ -8,6 +8,7 @@
 //! - [`labels`], [`stats`], [`histogram`] and [`suv`] measure what is in a volume.
 
 pub mod cache;
+mod cmaps;
 pub mod colormap;
 pub mod display;
 pub mod error;
