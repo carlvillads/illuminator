@@ -575,7 +575,6 @@ impl Viewer {
     }
 }
 
-/// Checkbox that changes a display setting of the layer at `index`.
 impl LimitInputs {
     pub(super) fn new(window: &mut Window, cx: &mut Context<Viewer>) -> Self {
         let low = cx.new(|cx| InputState::new(window, cx));
@@ -591,6 +590,7 @@ impl LimitInputs {
     }
 }
 
+/// Checkbox that changes a display setting of the layer at `index`.
 fn display_checkbox(
     index: usize,
     id: &'static str,
