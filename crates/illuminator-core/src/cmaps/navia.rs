@@ -7,6 +7,7 @@ use super::{Cmap, Ramp};
 pub(crate) const NAVIA: Cmap = Cmap {
     name: "Navia",
     id: "navia",
+    desc: "Perceptually uniform. Dark navy through teal and green to pale yellow",
     ramp: Ramp::Table(&[
         [0.013420, 0.075817, 0.152989],
         [0.015121, 0.080634, 0.159960],

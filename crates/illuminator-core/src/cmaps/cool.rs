@@ -6,5 +6,6 @@ use super::{Cmap, Ramp};
 pub(crate) const COOL: Cmap = Cmap {
     name: "Cool",
     id: "cool",
+    desc: "Cyan to magenta",
     ramp: Ramp::Stops(&[(0.0, [0.0, 1.0, 1.0]), (1.0, [1.0, 0.0, 1.0])]),
 };

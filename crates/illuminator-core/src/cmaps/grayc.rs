@@ -7,6 +7,7 @@ use super::{Cmap, Ramp};
 pub(crate) const GRAYC: Cmap = Cmap {
     name: "grayC",
     id: "grayc",
+    desc: "Grayscale but linear in perceived lightness",
     ramp: Ramp::Table(&[
         [0.000000, 0.000000, 0.000000],
         [0.006724, 0.006725, 0.006725],

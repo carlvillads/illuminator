@@ -76,6 +76,10 @@ impl Colormap {
         self.cmap().id
     }
 
+    pub fn description(self) -> &'static str {
+        self.cmap().desc
+    }
+
     /// The colormap after the current one in [`Self::ALL`].
     pub fn next(self) -> Self {
         let current = Self::ALL.iter().position(|&c| c == self);
@@ -180,5 +184,13 @@ mod tests {
     fn next_wraps_around() {
         assert_eq!(Colormap::Grayscale.next(), Colormap::InvGrayscale);
         assert_eq!(Colormap::Vik.next(), Colormap::Grayscale);
+    }
+
+    #[test]
+    fn descriptions_are_one_short_sentence() {
+        for colormap in Colormap::ALL {
+            let description = colormap.description();
+            assert!(description.len() <= 80, "{description}");
+        }
     }
 }

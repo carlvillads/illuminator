@@ -7,6 +7,7 @@ use super::{Cmap, Ramp};
 pub(crate) const VIK: Cmap = Cmap {
     name: "Vik",
     id: "vik",
+    desc: "Diverging. Dark blue to dark red through white",
     ramp: Ramp::Table(&[
         [0.001328, 0.069836, 0.379529],
         [0.002366, 0.076475, 0.383518],

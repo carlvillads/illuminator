@@ -37,6 +37,7 @@ pub(crate) use viridis::VIRIDIS;
 pub(crate) struct Cmap {
     pub(crate) name: &'static str,
     pub(crate) id: &'static str,
+    pub(crate) desc: &'static str,
     pub(crate) ramp: Ramp,
 }
 

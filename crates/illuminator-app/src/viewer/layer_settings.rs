@@ -302,14 +302,21 @@ impl Viewer {
                 .dropdown_menu(move |mut menu, _, _| {
                     for colormap in Colormap::ALL {
                         let viewer = viewer.clone();
-                        let item = PopupMenuItem::element(move |_, _| colormap_preview(colormap))
-                            .checked(colormap == current)
-                            .on_click(move |_, _, cx| {
-                                let _ = viewer.update(cx, |viewer, cx| {
-                                    viewer.layers[index].display.colormap = colormap;
-                                    cx.notify();
-                                });
+                        let item = PopupMenuItem::element(move |_, _| {
+                            colormap_preview(colormap)
+                                .id(colormap.id())
+                                .flex_1()
+                                .tooltip(move |window, cx| {
+                                    Tooltip::new(colormap.description()).build(window, cx)
+                                })
+                        })
+                        .checked(colormap == current)
+                        .on_click(move |_, _, cx| {
+                            let _ = viewer.update(cx, |viewer, cx| {
+                                viewer.layers[index].display.colormap = colormap;
+                                cx.notify();
                             });
+                        });
                         menu = menu.item(item);
                     }
                     menu

@@ -7,6 +7,7 @@ use super::{Cmap, Ramp};
 pub(crate) const PLASMA: Cmap = Cmap {
     name: "Plasma",
     id: "plasma",
+    desc: "Perceptually uniform. Dark blue through magenta to yellow",
     ramp: Ramp::Polynomial(&[
         [0.05873234392399702, 0.02333670892565664, 0.5433401826748754],
         [2.176514634195958, 0.2383834171260182, 0.7539604599784036],

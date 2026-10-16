@@ -6,6 +6,7 @@ use super::{Cmap, Ramp};
 pub(crate) const BONE: Cmap = Cmap {
     name: "Bone",
     id: "bone",
+    desc: "Grayscale with blue tint",
     ramp: Ramp::Stops(&[
         (0.0, [0.0, 0.0, 0.0]),
         (0.365079, [0.319444, 0.319444, 0.444444]),

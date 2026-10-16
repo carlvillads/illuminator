@@ -7,6 +7,7 @@ use super::{Cmap, Ramp};
 pub(crate) const LIPARI: Cmap = Cmap {
     name: "Lipari",
     id: "lipari",
+    desc: "Perceptually uniform. Dark navy through purple and red to beige",
     ramp: Ramp::Table(&[
         [0.011370, 0.073240, 0.148284],
         [0.013965, 0.079062, 0.155370],

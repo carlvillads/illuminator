@@ -10,6 +10,7 @@ use super::{Cmap, Ramp};
 pub(crate) const TURBO: Cmap = Cmap {
     name: "Turbo",
     id: "turbo",
+    desc: "Not perceptually uniform. Smooth rainbow with high contrast",
     ramp: Ramp::Polynomial(&[
         [0.13572138, 0.09140261, 0.10667330],
         [4.61539260, 2.19418839, 12.64194608],
