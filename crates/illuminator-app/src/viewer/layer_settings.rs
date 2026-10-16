@@ -129,17 +129,13 @@ impl Viewer {
         let muted = cx.theme().muted_foreground;
         let layer = &self.layers[index];
         let display = &layer.display;
-        let window = display.window;
         let id = |name: &'static str| (name, index as u64);
+        let limit = |input: &Entity<InputState>| div().flex_1().child(Input::new(input).xsmall());
         v_flex()
             .gap_2()
             .child(
                 ui::setting_row("Window", muted)
-                    .child(div().flex_1().text_xs().child(format!(
-                        "W {}  L {}",
-                        format_value(window.width),
-                        format_value(window.level)
-                    )))
+                    .child(div().flex_1())
                     .child(self.presets_button(index, cx))
                     .child(
                         Button::new(id("auto"))
@@ -155,6 +151,13 @@ impl Viewer {
                                 viewer.auto_window(index, cx);
                             })),
                     ),
+            )
+            .child(
+                h_flex()
+                    .gap_1()
+                    .child(limit(&self.limit_inputs.low))
+                    .child(div().text_xs().text_color(muted).child("\u{2013}"))
+                    .child(limit(&self.limit_inputs.high)),
             )
             .child(self.render_histogram(index, cx))
             .child(self.render_colormaps(index, cx))
@@ -205,6 +208,70 @@ impl Viewer {
                         .child("No finite values in this frame"),
                 )
             })
+    }
+
+    /// Shows the selected layers window limits in text fields.
+    pub(super) fn show_limits(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(index) = self.selected() else {
+            return;
+        };
+        let layer = &self.layers[index];
+        let (low, high) = layer.display.window_limits();
+        self.limit_inputs.load_id = Some(layer.load_id);
+        for (input, limit) in [
+            (&self.limit_inputs.low, low),
+            (&self.limit_inputs.high, high),
+        ] {
+            let text = format_editable(limit);
+            let state = input.read(cx);
+            if !state.focus_handle(cx).is_focused(window) && state.value().as_ref() != text {
+                input.update(cx, |state, cx| state.set_value(text, window, cx));
+            }
+        }
+    }
+
+    /// Applies the typed limits and gives the keyboard back to the views.
+    /// Works by leaving the field or hitting enter.
+    fn limit_input_event(
+        &mut self,
+        _: &Entity<InputState>,
+        event: &InputEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            InputEvent::PressEnter { .. } => {
+                self.apply_typed_limits(cx);
+                self.focus_handle.focus(window, cx);
+            }
+            InputEvent::Blur => self.apply_typed_limits(cx),
+            _ => {}
+        }
+    }
+
+    /// Sets the window to the limits in the text fields.
+    fn apply_typed_limits(&mut self, cx: &mut Context<Self>) {
+        let Some(load_id) = self.limit_inputs.load_id else {
+            return;
+        };
+        let low_text = self.limit_inputs.low.read(cx).value();
+        let high_text = self.limit_inputs.high.read(cx).value();
+        let Some(layer) = self.layer_by_id(load_id) else {
+            return;
+        };
+        let (low, high) = layer.display.window_limits();
+        // a field that still shows its limit keeps the exact value, not the rounded text
+        let typed = |text: &str, limit: f64| {
+            if text == format_editable(limit) {
+                Some(limit)
+            } else {
+                parse_value(text)
+            }
+        };
+        if let (Some(low), Some(high)) = (typed(&low_text, low), typed(&high_text, high)) {
+            layer.display.set_window_limits(low, high);
+        }
+        cx.notify();
     }
 
     /// The current colormap. The menu lists all colormaps.
@@ -509,6 +576,21 @@ impl Viewer {
 }
 
 /// Checkbox that changes a display setting of the layer at `index`.
+impl LimitInputs {
+    pub(super) fn new(window: &mut Window, cx: &mut Context<Viewer>) -> Self {
+        let low = cx.new(|cx| InputState::new(window, cx));
+        let high = cx.new(|cx| InputState::new(window, cx));
+        let events =
+            [&low, &high].map(|input| cx.subscribe_in(input, window, Viewer::limit_input_event));
+        Self {
+            low,
+            high,
+            load_id: None,
+            _events: events,
+        }
+    }
+}
+
 fn display_checkbox(
     index: usize,
     id: &'static str,

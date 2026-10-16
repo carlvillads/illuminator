@@ -19,6 +19,7 @@ use gpui_kit::component::button::{Button, ButtonVariants, DropdownButton};
 use gpui_kit::component::chart::LineChart;
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::hover_card::HoverCard;
+use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
 use gpui_kit::component::progress::Progress;
 use gpui_kit::component::slider::{Slider, SliderEvent, SliderState};
@@ -54,7 +55,8 @@ use crate::picture::{Picture, PictureImage, Rect};
 use crate::shortcuts::{self, *};
 use crate::suv_form::SuvForm;
 use crate::ui::{
-    self, AppStyle, colormap_strip, format_value, rgb_to_rgba, section_title, tabular_nums,
+    self, AppStyle, colormap_strip, format_editable, format_value, parse_value, rgb_to_rgba,
+    section_title, tabular_nums,
 };
 use crate::zoom::{Visible, Zoom};
 
@@ -183,6 +185,15 @@ impl Render for DragLayer {
             .text_xs()
             .child(self.name.clone())
     }
+}
+
+/// Text fields for the low and high limit of the window of the selected layer.
+struct LimitInputs {
+    low: Entity<InputState>,
+    high: Entity<InputState>,
+    /// The layer whose limits the fields show
+    load_id: Option<u64>,
+    _events: [Subscription; 2],
 }
 
 /// The numbers for showing a layer in SUV and where they came from
@@ -397,6 +408,7 @@ pub struct Viewer {
     lightbox_grid: (usize, usize),
     lightbox_step: usize,
     contrast_drag: Option<(usize, Point<Pixels>)>,
+    limit_inputs: LimitInputs,
     zoom: [Zoom; 3],
     pan_drag: Option<PanDrag>,
     scroll_remainder: f32,
@@ -477,6 +489,7 @@ impl Viewer {
         });
         let focus_handle = cx.focus_handle();
         focus_handle.focus(window, cx);
+        let limit_inputs = LimitInputs::new(window, cx);
         Self {
             cache,
             loader,
@@ -494,6 +507,7 @@ impl Viewer {
             lightbox_grid: (4, 3),
             lightbox_step: 1,
             contrast_drag: None,
+            limit_inputs,
             zoom: Default::default(),
             pan_drag: None,
             scroll_remainder: 0.0,
@@ -684,6 +698,7 @@ impl Render for Viewer {
         self.schedule_renders(window, cx);
         self.schedule_histogram(cx);
         self.schedule_curve(cx);
+        self.show_limits(window, cx);
 
         let theme = cx.theme();
         let (background, foreground) = (theme.background, theme.foreground);

@@ -25,6 +25,27 @@ pub trait AppStyle: Styled + Sized {
 
 impl<E: Styled> AppStyle for E {}
 
+/// A editable `value` (number) with up to six significant digits.
+pub fn format_editable(value: f64) -> String {
+    if value == 0.0 {
+        return "0".to_string();
+    }
+    let decimals = (5 - value.abs().log10().floor() as i32).clamp(0, 15) as usize;
+    let text = format!("{value:.decimals$}");
+    if text.contains('.') {
+        text.trim_end_matches('0').trim_end_matches('.').to_string()
+    } else {
+        text
+    }
+}
+
+/// The number typed into a text field.
+pub fn parse_value(text: &str) -> Option<f64> {
+    // convert comma to dot instead of failing
+    let value: f64 = text.trim().replace(',', ".").parse().ok()?;
+    value.is_finite().then_some(value)
+}
+
 pub fn setting_row(caption: &'static str, color: Hsla) -> Div {
     h_flex().gap_2().child(
         div()
@@ -105,11 +126,35 @@ pub fn choice_items<E: 'static, L: Into<SharedString>, T: Copy + 'static>(
 
 #[cfg(test)]
 mod tests {
-    use super::format_value;
+    use super::{format_editable, format_value, parse_value};
 
     #[test]
     fn values_are_short() {
         assert_eq!(format_value(-1024.0), "-1024");
         assert_eq!(format_value(3.81234), "3.812");
+    }
+
+    #[test]
+    fn editable_values_keep_six_digits() {
+        assert_eq!(format_editable(1300.0000000000002), "1300");
+        assert_eq!(format_editable(-1350.0), "-1350");
+        assert_eq!(format_editable(2.5), "2.5");
+        assert_eq!(format_editable(0.000123456789), "0.000123457");
+        assert_eq!(format_editable(-0.0), "0");
+        assert_eq!(format_editable(123456789.0), "123456789");
+    }
+
+    #[test]
+    fn typed_values() {
+        assert_eq!(parse_value(" -150 "), Some(-150.0));
+        assert_eq!(parse_value("2,5"), Some(2.5));
+        assert_eq!(parse_value("1e3"), Some(1000.0));
+        assert_eq!(
+            parse_value(&format_editable(0.000123456789)),
+            Some(0.000123457)
+        );
+        for wrong in ["", "abc", "inf", "NaN", "1.2.3"] {
+            assert_eq!(parse_value(wrong), None, "{wrong}");
+        }
     }
 }

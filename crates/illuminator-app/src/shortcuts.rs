@@ -86,6 +86,7 @@ actions!(
 );
 
 pub const CONTEXT: &str = "Viewer";
+const NOT_TYPING: &str = "Viewer && !Input";
 pub const SECONDARY: &str = if cfg!(target_os = "macos") {
     "\u{2318}"
 } else {
@@ -99,46 +100,47 @@ const ALT: &str = if cfg!(target_os = "macos") {
 
 pub fn bind(cx: &mut App) {
     let viewer = Some(CONTEXT);
+    let keys = Some(NOT_TYPING);
     cx.bind_keys([
         KeyBinding::new("secondary-q", Quit, None),
         KeyBinding::new("secondary-w", CloseWindow, viewer),
         KeyBinding::new("secondary-o", OpenFiles, viewer),
         KeyBinding::new("secondary-c", CopyImage, viewer),
         KeyBinding::new("secondary-e", SaveImage, viewer),
-        KeyBinding::new("up", NextSlice, viewer),
-        KeyBinding::new("down", PreviousSlice, viewer),
-        KeyBinding::new("shift-up", NextSlices, viewer),
-        KeyBinding::new("shift-down", PreviousSlices, viewer),
-        KeyBinding::new("right", NextFrame, viewer),
-        KeyBinding::new("left", PreviousFrame, viewer),
-        KeyBinding::new("space", TogglePlay, viewer),
-        KeyBinding::new("h", CenterCursor, viewer),
-        KeyBinding::new("a", AutoContrast, viewer),
-        KeyBinding::new("m", NextColormap, viewer),
-        KeyBinding::new("l", ToggleSegmentation, viewer),
-        KeyBinding::new("s", ToggleSync, viewer),
-        KeyBinding::new("r", ToggleRadiological, viewer),
-        KeyBinding::new("c", ToggleCrosshair, viewer),
-        KeyBinding::new("i", ToggleInfo, viewer),
-        KeyBinding::new("p", ToggleMip, viewer),
-        KeyBinding::new("?", ShowHelp, viewer),
-        KeyBinding::new("o", ToggleOverlay, viewer),
-        KeyBinding::new("shift-l", ToggleOutline, viewer),
-        KeyBinding::new("v", ToggleLayer, viewer),
-        KeyBinding::new("j", NextLayer, viewer),
-        KeyBinding::new("k", PreviousLayer, viewer),
-        KeyBinding::new("1", LayoutOrtho, viewer),
-        KeyBinding::new("2", LayoutCompare, viewer),
-        KeyBinding::new("3", LayoutGrid, viewer),
-        KeyBinding::new("4", LayoutSingle, viewer),
-        KeyBinding::new("5", LayoutLightbox, viewer),
+        KeyBinding::new("up", NextSlice, keys),
+        KeyBinding::new("down", PreviousSlice, keys),
+        KeyBinding::new("shift-up", NextSlices, keys),
+        KeyBinding::new("shift-down", PreviousSlices, keys),
+        KeyBinding::new("right", NextFrame, keys),
+        KeyBinding::new("left", PreviousFrame, keys),
+        KeyBinding::new("space", TogglePlay, keys),
+        KeyBinding::new("h", CenterCursor, keys),
+        KeyBinding::new("a", AutoContrast, keys),
+        KeyBinding::new("m", NextColormap, keys),
+        KeyBinding::new("l", ToggleSegmentation, keys),
+        KeyBinding::new("s", ToggleSync, keys),
+        KeyBinding::new("r", ToggleRadiological, keys),
+        KeyBinding::new("c", ToggleCrosshair, keys),
+        KeyBinding::new("i", ToggleInfo, keys),
+        KeyBinding::new("p", ToggleMip, keys),
+        KeyBinding::new("?", ShowHelp, keys),
+        KeyBinding::new("o", ToggleOverlay, keys),
+        KeyBinding::new("shift-l", ToggleOutline, keys),
+        KeyBinding::new("v", ToggleLayer, keys),
+        KeyBinding::new("j", NextLayer, keys),
+        KeyBinding::new("k", PreviousLayer, keys),
+        KeyBinding::new("1", LayoutOrtho, keys),
+        KeyBinding::new("2", LayoutCompare, keys),
+        KeyBinding::new("3", LayoutGrid, keys),
+        KeyBinding::new("4", LayoutSingle, keys),
+        KeyBinding::new("5", LayoutLightbox, keys),
         KeyBinding::new("secondary-backspace", CloseLayer, viewer),
         KeyBinding::new("secondary-r", ReloadLayer, viewer),
         KeyBinding::new("alt-k", MoveLayerUp, viewer),
         KeyBinding::new("alt-j", MoveLayerDown, viewer),
-        KeyBinding::new("=", ZoomIn, viewer),
-        KeyBinding::new("-", ZoomOut, viewer),
-        KeyBinding::new("0", ZoomReset, viewer),
+        KeyBinding::new("=", ZoomIn, keys),
+        KeyBinding::new("-", ZoomOut, keys),
+        KeyBinding::new("0", ZoomReset, keys),
     ]);
     cx.on_action(|_: &Quit, cx| cx.quit());
 }
