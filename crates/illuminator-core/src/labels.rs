@@ -7,14 +7,14 @@ use crate::progress::Progress;
 use crate::volume::Volume;
 use crate::voxel;
 
-/// Counts the number of distinct labels in frame `t` without background.
+/// The distinct labels in frame `t` from low to high without background.
 /// Fails if a voxel isn't an integer or if there are more than `limit` labels.
-pub(crate) fn count_labels(
+pub(crate) fn find_labels(
     volume: &Volume,
     t: usize,
     limit: usize,
     progress: &Progress,
-) -> Result<usize> {
+) -> Result<Vec<i64>> {
     let meta = volume.meta();
     let voxel_count = meta.frame_voxels();
     let mut labels = HashSet::new();
@@ -36,7 +36,9 @@ pub(crate) fn count_labels(
         Ok(())
     })?;
     progress.report(1.0, "Prepared labels")?;
-    Ok(labels.len())
+    let mut labels: Vec<i64> = labels.into_iter().collect();
+    labels.sort_unstable();
+    Ok(labels)
 }
 
 /// The label ID of a voxel value. Fails unless the value is a whole number that fits an `i64`.
@@ -105,9 +107,12 @@ mod tests {
         let volume = load(&dir, &fixture, "labels.nii");
         let none = Progress::default();
 
-        assert_eq!(count_labels(&volume, 0, 256, &none).unwrap(), 3);
-        assert_eq!(count_labels(&volume, 1, 256, &none).unwrap(), 1);
-        assert!(count_labels(&volume, 0, 2, &none).is_err());
+        assert_eq!(
+            find_labels(&volume, 0, 256, &none).unwrap(),
+            [300, 1000, 16_777_217]
+        );
+        assert_eq!(find_labels(&volume, 1, 256, &none).unwrap(), [300]);
+        assert!(find_labels(&volume, 0, 2, &none).is_err());
     }
 
     #[test]
@@ -119,7 +124,7 @@ mod tests {
             ..Fixture::default()
         };
         let volume = load(&dir, &fixture, "labels.nii");
-        assert!(count_labels(&volume, 0, 256, &Progress::default()).is_err());
+        assert!(find_labels(&volume, 0, 256, &Progress::default()).is_err());
     }
 
     #[test]

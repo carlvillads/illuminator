@@ -82,10 +82,13 @@ actions!(
         ZoomOut,
         /// Shows every plane whole again
         ZoomReset,
+        /// Opens histogram window
+        ShowHistogram,
     ]
 );
 
 pub const CONTEXT: &str = "Viewer";
+pub const HISTOGRAM_CONTEXT: &str = "Histogram";
 const NOT_TYPING: &str = "Viewer && !Input";
 pub const SECONDARY: &str = if cfg!(target_os = "macos") {
     "\u{2318}"
@@ -104,6 +107,7 @@ pub fn bind(cx: &mut App) {
     cx.bind_keys([
         KeyBinding::new("secondary-q", Quit, None),
         KeyBinding::new("secondary-w", CloseWindow, viewer),
+        KeyBinding::new("secondary-w", CloseWindow, Some(HISTOGRAM_CONTEXT)),
         KeyBinding::new("secondary-o", OpenFiles, viewer),
         KeyBinding::new("secondary-c", CopyImage, viewer),
         KeyBinding::new("secondary-e", SaveImage, viewer),
@@ -124,6 +128,7 @@ pub fn bind(cx: &mut App) {
         KeyBinding::new("i", ToggleInfo, keys),
         KeyBinding::new("p", ToggleMip, keys),
         KeyBinding::new("?", ShowHelp, keys),
+        KeyBinding::new("g", ShowHistogram, keys),
         KeyBinding::new("o", ToggleOverlay, keys),
         KeyBinding::new("shift-l", ToggleOutline, keys),
         KeyBinding::new("v", ToggleLayer, keys),
@@ -170,6 +175,7 @@ pub fn help() -> Vec<(String, &'static str)> {
         ("Shift+L".into(), "Label outlines"),
         ("S/R/C/I".into(), "Sync/radiological/crosshair/corner text"),
         ("P".into(), "Maximum intensity projection (MIP)"),
+        ("G".into(), "Histogram window"),
         ("?".into(), "This list"),
         (format!("{ALT}J/K"), "Move layer down/up"),
         (format!("{SECONDARY}R"), "Reload layer from disk"),

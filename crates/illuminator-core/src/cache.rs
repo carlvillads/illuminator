@@ -47,7 +47,9 @@ pub struct VolumeCache {
 }
 
 impl VolumeCache {
-    pub(crate) fn new(directory: impl Into<PathBuf>, budget_bytes: u64) -> Result<Self> {
+    /// A cache in `directory` holding at most `budget_bytes`.
+    /// [`Self::from_env`] picks both from the environment.
+    pub fn new(directory: impl Into<PathBuf>, budget_bytes: u64) -> Result<Self> {
         if budget_bytes == 0 {
             return Err(Error::invalid("Cache budget must be more than zero"));
         }

@@ -3,6 +3,7 @@
 mod actions;
 mod background;
 mod export;
+mod histogram_window;
 mod layer_settings;
 mod layers;
 mod layout;
@@ -204,12 +205,55 @@ struct Suv {
     source: &'static str,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct HistogramKey {
+    volume: u64,
+    frame: usize,
+}
+
+#[derive(Default)]
+struct FrameHistogram {
+    key: Option<HistogramKey>,
+    pending: Option<HistogramKey>,
+    histogram: Option<Histogram>,
+    error: Option<String>,
+}
+
+impl FrameHistogram {
+    fn current(&self, key: HistogramKey) -> Option<&Histogram> {
+        self.histogram.as_ref().filter(|_| self.key == Some(key))
+    }
+
+    fn needs_count(&self, key: HistogramKey) -> bool {
+        self.pending.is_none() && self.key != Some(key)
+    }
+
+    /// Only the owning request may release pending work even after a reload.
+    fn complete(
+        &mut self,
+        request: HistogramKey,
+        current: HistogramKey,
+        histogram: Result<Option<Histogram>, String>,
+    ) -> bool {
+        if self.pending != Some(request) {
+            return false;
+        }
+        self.pending = None;
+        if request == current {
+            self.key = Some(request);
+            (self.histogram, self.error) = match histogram {
+                Ok(histogram) => (histogram, None),
+                Err(error) => (None, Some(error)),
+            };
+        }
+        true
+    }
+}
+
 struct Layer {
     display: VolumeDisplay,
     panels: Vec<Panel>,
-    histogram: Option<Histogram>,
-    histogram_frame: Option<usize>,
-    histogram_pending: bool,
+    histogram: FrameHistogram,
     curve: Option<TimeCurve>,
     curve_pending: bool,
     suv: Option<Suv>,
@@ -237,9 +281,7 @@ impl Layer {
         Self {
             display,
             panels: Vec::new(),
-            histogram: None,
-            histogram_frame: None,
-            histogram_pending: false,
+            histogram: FrameHistogram::default(),
             curve: None,
             curve_pending: false,
             suv,
@@ -249,6 +291,17 @@ impl Layer {
             opacity_slider,
             _opacity_changes: opacity_changes,
         }
+    }
+
+    fn histogram_key(&self) -> HistogramKey {
+        HistogramKey {
+            volume: self.display.volume().id(),
+            frame: self.display.frame(),
+        }
+    }
+
+    fn current_histogram(&self) -> Option<&Histogram> {
+        self.histogram.current(self.histogram_key())
     }
 
     fn panel(&self, slot: usize) -> Option<&Panel> {
@@ -424,6 +477,7 @@ pub struct Viewer {
     label_loads: HashSet<u64>,
     load_colormaps: HashMap<u64, Colormap>,
     retired: Vec<Arc<RenderImage>>,
+    histogram_window: Option<AnyWindowHandle>,
     _loader_events: Task<()>,
     _open_requests: Task<()>,
 }
@@ -523,6 +577,7 @@ impl Viewer {
             label_loads,
             load_colormaps,
             retired: Vec::new(),
+            histogram_window: None,
             _loader_events: loader_events,
             _open_requests: open_requests,
         }
@@ -745,6 +800,7 @@ impl Render for Viewer {
             .on_action(cx.listener(Self::toggle_info))
             .on_action(cx.listener(Self::toggle_mip))
             .on_action(cx.listener(Self::show_help))
+            .on_action(cx.listener(Self::show_histogram))
             .on_action(cx.listener(Self::zoom_in))
             .on_action(cx.listener(Self::zoom_out))
             .on_action(cx.listener(Self::reset_zoom))
@@ -794,7 +850,115 @@ fn opacity_slider(load_id: u64, cx: &mut Context<Viewer>) -> (Entity<SliderState
 
 #[cfg(test)]
 mod tests {
-    use super::{Layout, PRESETS, Preset, ViewPlane};
+    use super::{FrameHistogram, Histogram, HistogramKey, Layout, PRESETS, Preset, ViewPlane};
+
+    fn histogram(min: f64) -> Histogram {
+        Histogram {
+            min,
+            max: min + 2.0,
+            counts: vec![1, 1],
+        }
+    }
+
+    #[test]
+    fn histogram_cache_requires_current_volume_and_frame() {
+        let key = HistogramKey {
+            volume: 1,
+            frame: 0,
+        };
+        let mut cache = FrameHistogram {
+            pending: Some(key),
+            ..Default::default()
+        };
+        assert!(cache.complete(key, key, Ok(Some(histogram(0.0)))));
+        assert!(cache.current(key).is_some());
+        assert!(!cache.needs_count(key));
+        for current in [
+            HistogramKey { volume: 2, ..key },
+            HistogramKey { frame: 1, ..key },
+        ] {
+            assert!(cache.current(current).is_none());
+            assert!(cache.needs_count(current));
+        }
+    }
+
+    #[test]
+    fn obsolete_histogram_completion_wakes_replacement_work() {
+        let old = HistogramKey {
+            volume: 1,
+            frame: 0,
+        };
+        for current in [
+            HistogramKey { volume: 2, ..old },
+            HistogramKey { frame: 1, ..old },
+        ] {
+            let mut cache = FrameHistogram {
+                pending: Some(old),
+                ..Default::default()
+            };
+            assert!(!cache.needs_count(current));
+            assert!(cache.complete(old, current, Ok(Some(histogram(0.0)))));
+            assert!(cache.pending.is_none());
+            assert!(cache.current(current).is_none());
+            assert!(cache.needs_count(current));
+        }
+    }
+
+    #[test]
+    fn pre_reload_completion_cannot_release_or_replace_newer_work() {
+        let old = HistogramKey {
+            volume: 1,
+            frame: 0,
+        };
+        let current = HistogramKey {
+            volume: 2,
+            frame: 0,
+        };
+        let mut cache = FrameHistogram {
+            pending: Some(current),
+            ..Default::default()
+        };
+        assert!(!cache.complete(old, current, Ok(Some(histogram(0.0)))));
+        assert_eq!(cache.pending, Some(current));
+        assert!(!cache.needs_count(current));
+        assert!(cache.complete(current, current, Ok(Some(histogram(100.0)))));
+        assert!(!cache.complete(old, current, Ok(Some(histogram(0.0)))));
+        assert_eq!(cache.current(current).unwrap().min, 100.0);
+    }
+
+    #[test]
+    fn empty_histogram_result_is_not_recounted_on_every_redraw() {
+        let key = HistogramKey {
+            volume: 1,
+            frame: 0,
+        };
+        let mut cache = FrameHistogram {
+            pending: Some(key),
+            ..Default::default()
+        };
+        assert!(cache.complete(key, key, Ok(None)));
+        assert!(cache.current(key).is_none());
+        assert!(!cache.needs_count(key));
+    }
+
+    #[test]
+    fn failed_count_keeps_its_error_for_the_frame() {
+        let key = HistogramKey {
+            volume: 1,
+            frame: 0,
+        };
+        let mut cache = FrameHistogram {
+            pending: Some(key),
+            ..Default::default()
+        };
+        assert!(cache.complete(key, key, Err("too narrow".into())));
+        assert!(cache.current(key).is_none());
+        assert_eq!(cache.error.as_deref(), Some("too narrow"));
+        assert!(!cache.needs_count(key));
+        cache.pending = Some(key);
+        assert!(cache.complete(key, key, Ok(Some(histogram(0.0)))));
+        assert!(cache.error.is_none());
+    }
 
     #[test]
     fn layouts_know_their_plane() {

@@ -57,43 +57,37 @@ impl Viewer {
             return;
         };
         let layer = &mut self.layers[index];
-        let frame = layer.display.frame();
+        let key = layer.histogram_key();
         // counting all voxels of every frame would slow a movie down; it counts when it stops
         if self.time_playing.is_some()
             || layer.display.label_mode()
-            || layer.histogram_pending
-            || layer.histogram_frame == Some(frame)
+            || !layer.histogram.needs_count(key)
         {
             return;
         }
-        layer.histogram_pending = true;
+        layer.histogram.pending = Some(key);
         let volume = layer.display.shared_volume();
-        let volume_id = volume.id();
         let load_id = layer.load_id;
         cx.spawn(async move |viewer, cx| {
             let histogram = cx
                 .background_spawn(async move {
                     let progress = illuminator_core::progress::Progress::default();
-                    Histogram::of(&volume, frame, HISTOGRAM_BINS, &progress)
+                    Histogram::of(&volume, key.frame, HISTOGRAM_BINS, &progress)
                 })
                 .await;
             let _ = viewer.update(cx, |viewer, cx| {
                 let Some(layer) = viewer.layer_by_id(load_id) else {
                     return;
                 };
-                layer.histogram_pending = false;
-                if layer.display.volume().id() != volume_id {
-                    return; // the layer was reloaded in the meantime
+                let current = layer.histogram_key();
+                let histogram = histogram.map_err(|error| {
+                    eprintln!("Illuminator: Histogram: {error}");
+                    error.to_string()
+                });
+                if layer.histogram.complete(key, current, histogram) {
+                    // a discarded frame/scale result must still wake scheduler
+                    cx.notify();
                 }
-                layer.histogram_frame = Some(frame);
-                match histogram {
-                    Ok(histogram) => layer.histogram = histogram,
-                    Err(error) => {
-                        layer.histogram = None;
-                        eprintln!("Illuminator: Histogram: {error}");
-                    }
-                }
-                cx.notify();
             });
         })
         .detach();

@@ -100,9 +100,7 @@ impl Viewer {
         let kept = display.keep_settings_of(&layer.display);
         let name = display.name();
         layer.display = display;
-        layer.histogram = None;
-        layer.histogram_frame = None;
-        layer.histogram_pending = false;
+        layer.histogram = FrameHistogram::default();
         let panels = std::mem::take(&mut layer.panels);
         self.retire(panels);
         if let Err(error) = kept {
@@ -121,10 +119,9 @@ impl Viewer {
 
     pub(super) fn auto_window(&mut self, index: usize, cx: &mut Context<Self>) {
         let layer = &mut self.layers[index];
-        let frame = layer.display.frame();
-        let counted = layer.histogram.as_ref().filter(|histogram| {
-            layer.histogram_frame == Some(frame) && histogram.max > histogram.min
-        });
+        let counted = layer
+            .current_histogram()
+            .filter(|histogram| histogram.max > histogram.min);
         match counted {
             Some(histogram) => {
                 let (low, high) = (histogram.min, histogram.max);
@@ -146,12 +143,23 @@ impl Viewer {
         let Some(layer) = self.layer_by_id(drag.load_id) else {
             return;
         };
-        let Some(histogram) = &layer.histogram else {
+        let Some(histogram) = layer.current_histogram() else {
             return;
         };
+        if bounds.size.width <= px(0.0) {
+            return;
+        }
         let fraction =
             f64::from(f32::from(position.x - bounds.left()) / f32::from(bounds.size.width));
         let value = histogram.min + fraction * (histogram.max - histogram.min);
+        self.move_window_edge(drag, value, cx);
+    }
+
+    /// Moves the window of a layer to `value`.
+    pub(super) fn move_window_edge(&mut self, drag: DragEdge, value: f64, cx: &mut Context<Self>) {
+        let Some(layer) = self.layer_by_id(drag.load_id) else {
+            return;
+        };
         let (low, high) = layer.display.window_limits();
         match drag.edge {
             WindowEdge::Low => layer.display.set_window_limits(value, high),
@@ -160,15 +168,14 @@ impl Viewer {
         cx.notify();
     }
 
-    pub(super) fn apply_preset(&mut self, index: usize, preset: Preset, cx: &mut Context<Self>) {
-        let Some(layer) = self.layers.get_mut(index) else {
+    pub(super) fn apply_preset(&mut self, load_id: u64, preset: Preset, cx: &mut Context<Self>) {
+        let Some(layer) = self.layer_by_id(load_id) else {
             return;
         };
         let limits = match preset {
             Preset::Limits(low, high) => Some((low, high)),
             Preset::Percentiles(low, high) => layer
-                .histogram
-                .as_ref()
+                .current_histogram()
                 .map(|histogram| (histogram.percentile(low), histogram.percentile(high))),
         };
         if let Some((low, high)) = limits {
@@ -193,7 +200,6 @@ impl Viewer {
         if let Err(error) = layer.display.set_scale(scale) {
             eprintln!("Illuminator: {}: {error}", layer.display.name());
         }
-        layer.histogram_frame = None;
         cx.notify();
     }
 

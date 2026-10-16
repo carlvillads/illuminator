@@ -111,7 +111,7 @@ pub struct VolumeDisplay {
     cursor: Point3D,
     frame: usize,
     range: Option<Range>,
-    label_count: usize,
+    labels: Vec<i64>,
     label_mode: bool,
     pub window: IntensityWindow,
     pub colormap: Colormap,
@@ -135,7 +135,7 @@ impl VolumeDisplay {
             cursor: Point3D::default(),
             frame: 0,
             range: loaded.range,
-            label_count: 0,
+            labels: Vec::new(),
             label_mode: false,
             window,
             colormap: Colormap::default(),
@@ -176,7 +176,12 @@ impl VolumeDisplay {
     }
 
     pub fn label_count(&self) -> usize {
-        self.label_count
+        self.labels.len()
+    }
+
+    /// Labels in the current frame of a label-map.
+    pub fn labels(&self) -> &[i64] {
+        &self.labels
     }
 
     pub fn name(&self) -> String {
@@ -331,8 +336,8 @@ impl VolumeDisplay {
             return Ok(());
         }
         if self.label_mode {
-            self.label_count =
-                labels::count_labels(&self.volume, frame, LABEL_LIMIT, &Progress::default())?;
+            self.labels =
+                labels::find_labels(&self.volume, frame, LABEL_LIMIT, &Progress::default())?;
         }
         self.frame = frame;
         Ok(())
@@ -340,8 +345,8 @@ impl VolumeDisplay {
 
     pub fn set_label_mode(&mut self, enabled: bool) -> Result<()> {
         if enabled && !self.label_mode {
-            self.label_count =
-                labels::count_labels(&self.volume, self.frame, LABEL_LIMIT, &Progress::default())?;
+            self.labels =
+                labels::find_labels(&self.volume, self.frame, LABEL_LIMIT, &Progress::default())?;
         }
         self.label_mode = enabled;
         Ok(())

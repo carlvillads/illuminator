@@ -150,6 +150,20 @@ impl Viewer {
                             .on_click(cx.listener(move |viewer, _, _, cx| {
                                 viewer.auto_window(index, cx);
                             })),
+                    )
+                    .child(
+                        Button::new(id("histogram-window"))
+                            .ghost()
+                            .xsmall()
+                            .icon(Carbon::Expand)
+                            .tooltip_with_action(
+                                "Histogram window",
+                                &ShowHistogram,
+                                Some(shortcuts::CONTEXT),
+                            )
+                            .on_click(cx.listener(|viewer, _, window, cx| {
+                                viewer.show_histogram(&ShowHistogram, window, cx);
+                            })),
                     ),
             )
             .child(
@@ -350,15 +364,27 @@ impl Viewer {
                     }
                 }),
             );
-        let Some(histogram) = &layer.histogram else {
+        let Some(histogram) = layer.current_histogram() else {
+            let message: SharedString = if layer.histogram.key == Some(layer.histogram_key()) {
+                match &layer.histogram.error {
+                    Some(error) => format!("Cannot count values: {error}").into(),
+                    None => "No values to count".into(),
+                }
+            } else if self.time_playing.is_some() {
+                "Counting paused during playback".into()
+            } else {
+                "Counting values\u{2026}".into()
+            };
             return v_flex().child(
                 chart
                     .flex()
                     .items_center()
                     .justify_center()
+                    .px_2()
+                    .text_center()
                     .text_xs()
                     .text_color(muted)
-                    .child("Counting values\u{2026}"),
+                    .child(message),
             );
         };
 
@@ -554,9 +580,10 @@ impl Viewer {
         )
     }
 
-    /// Menu of window presets for layer index
+    /// Menu of window presets for the layer currently at index.
     fn presets_button(&self, index: usize, cx: &mut Context<Self>) -> impl IntoElement {
         let viewer = cx.entity().downgrade();
+        let load_id = self.layers[index].load_id;
         Button::new(("presets", index))
             .ghost()
             .xsmall()
@@ -573,7 +600,7 @@ impl Viewer {
                         &viewer,
                         choices,
                         move |viewer, preset, _, cx| {
-                            viewer.apply_preset(index, preset, cx);
+                            viewer.apply_preset(load_id, preset, cx);
                         },
                     );
                 }

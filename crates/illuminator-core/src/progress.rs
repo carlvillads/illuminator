@@ -39,6 +39,14 @@ impl Progress {
         }
     }
 
+    /// Reports nothing, and stops the work with [`Error::Cancelled`] once `cancelled` is set
+    pub fn cancellable(cancelled: Arc<AtomicBool>) -> Self {
+        Self {
+            cancelled: Some(cancelled),
+            ..Self::default()
+        }
+    }
+
     pub(crate) fn part(&self, start: f64, extent: f64) -> Self {
         Self {
             start: self.start + self.extent * start,

@@ -59,6 +59,7 @@ carbon_icons! {
     Reload => "renew--alt.svg",
     Mip => "shape--exclude.svg",
     Camera => "camera.svg",
+    Expand => "maximize.svg",
 }
 
 const OVERRIDES: &[(&str, &[u8])] = &[
