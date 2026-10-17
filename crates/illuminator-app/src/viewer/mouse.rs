@@ -40,6 +40,7 @@ impl Viewer {
         }
     }
 
+    /// Focuses the clicked view.
     pub(super) fn set_active_panel(
         &mut self,
         position: Point<Pixels>,

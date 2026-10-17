@@ -49,7 +49,8 @@ impl Viewer {
             )
             .on_mouse_down(
                 MouseButton::Right,
-                cx.listener(|viewer, event: &MouseDownEvent, window, _| {
+                cx.listener(|viewer, event: &MouseDownEvent, window, cx| {
+                    viewer.set_active_panel(event.position, window, cx);
                     viewer.contrast_drag = viewer.hit(event.position, window).map(|hit| {
                         let layer = if viewer.layout.overlaid() {
                             viewer.selected
@@ -74,9 +75,6 @@ impl Viewer {
             )
             .on_mouse_move(cx.listener(|viewer, event: &MouseMoveEvent, window, cx| {
                 viewer.set_hover(event.position, window, cx);
-                if event.pressed_button.is_none() {
-                    viewer.set_active_panel(event.position, window, cx);
-                }
                 match event.pressed_button {
                     Some(MouseButton::Left | MouseButton::Middle) if viewer.pan_drag.is_some() => {
                         viewer.drag_pan(event.position, cx)
