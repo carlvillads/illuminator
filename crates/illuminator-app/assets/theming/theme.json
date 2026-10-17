@@ -4,9 +4,9 @@
     {
       "name": "Illuminated",
       "mode": "dark",
-      "font.family": "Go",
+      "font.family": "Inter",
       "font.size": 13,
-      "mono_font.family": "Go Mono",
+      "mono_font.family": "Paper Mono",
       "mono_font.size": 13,
       "radius": 0,
       "radius.lg": 0,

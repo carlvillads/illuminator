@@ -6,7 +6,6 @@ use gpui_kit::*;
 use illuminator_core::colormap::Colormap;
 use illuminator_core::labels::label_color;
 use std::rc::Rc;
-use std::sync::Arc;
 
 const CAPTION_WIDTH: f32 = 64.0;
 pub const ORIENTATION_COLOR: u32 = 0xe8c547;
@@ -97,10 +96,6 @@ pub fn colormap_strip(colormap: Colormap, labels: bool, blocks: usize) -> Div {
             };
             div().flex_1().h_full().bg(rgb_to_rgba(color))
         }))
-}
-
-pub fn tabular_nums() -> FontFeatures {
-    FontFeatures(Arc::new(vec![("tnum".into(), 1)]))
 }
 
 pub fn rgb_to_rgba([r, g, b]: [u8; 3]) -> Rgba {

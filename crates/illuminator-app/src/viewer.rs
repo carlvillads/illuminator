@@ -58,7 +58,7 @@ use crate::shortcuts::{self, *};
 use crate::suv_form::SuvForm;
 use crate::ui::{
     self, AppStyle, colormap_strip, format_editable, format_value, parse_value, rgb_to_rgba,
-    section_title, tabular_nums,
+    section_title,
 };
 use crate::zoom::{Visible, Zoom};
 
@@ -762,7 +762,6 @@ impl Render for Viewer {
             .size_full()
             .bg(background)
             .text_color(foreground)
-            .font_features(tabular_nums())
             .track_focus(&self.focus_handle)
             .key_context(shortcuts::CONTEXT)
             .on_action(cx.listener(Self::close_window))

@@ -15,7 +15,7 @@ use illuminator_core::volume::Volume;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use crate::ui::{choice_items, format_value, rgb_to_rgba, tabular_nums};
+use crate::ui::{choice_items, format_value, rgb_to_rgba};
 
 const COLUMN: f32 = 76.0;
 const NO_VALUES: &str = "None (volumes only)";
@@ -255,12 +255,7 @@ impl Render for StatisticsView {
                     .child(self.values_button(cx))
                     .child(div().text_color(muted).child(values_frame)),
             )
-            .child(
-                v_flex()
-                    .font_features(tabular_nums())
-                    .child(header)
-                    .child(body),
-            )
+            .child(v_flex().child(header).child(body))
             .child(
                 h_flex()
                     .gap_2()

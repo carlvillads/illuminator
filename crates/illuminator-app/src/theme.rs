@@ -1,17 +1,22 @@
 //! Illuminator application theming.
 
+use gpui_kit::base::{Root, RootPlugin};
 use gpui_kit::component::{Theme, ThemeRegistry};
 use gpui_kit::*;
 use std::borrow::Cow;
+use std::sync::Arc;
 
 const THEME: &str = include_str!("../assets/theming/theme.json");
 const THEME_NAME: &str = "Illuminated";
 
-/// Fonts by Bigelow & Holmes. See illuminator-rs/crates/illuminator-app/assets/fonts/LICENSE
+/// See illuminator/crates/illuminator-app/assets/fonts/ for licenses.
 const FONTS: &[&[u8]] = &[
-    include_bytes!("../assets/fonts/Go-Regular.ttf"),
-    include_bytes!("../assets/fonts/Go-Bold.ttf"),
-    include_bytes!("../assets/fonts/Go-Mono.ttf"),
+    include_bytes!("../assets/fonts/inter/Inter-Regular.ttf"),
+    include_bytes!("../assets/fonts/inter/Inter-Bold.ttf"),
+    include_bytes!("../assets/fonts/paper/PaperMono-Regular.ttf"),
+];
+const UI_FONT_FEATURES: &[&str] = &[
+    "calt", "tnum", "ss07", "ss08", "cv02", "cv10", "cv08", "cv05",
 ];
 
 /// init theming
@@ -25,8 +30,26 @@ pub fn init(cx: &mut App) {
         .expect("bundled theme is valid JSON");
     let config = ThemeRegistry::global(cx).themes()[THEME_NAME].clone();
     Theme::update(cx, |theme| theme.apply_config(&config));
+    Root::register_plugin(cx, |_, _| {
+        let features = UI_FONT_FEATURES.iter().map(|tag| (tag.to_string(), 1));
+        InterfaceFont(FontFeatures(Arc::new(features.collect())))
+    });
     cx.set_reduce_motion(true);
     watch(cx);
+}
+
+struct InterfaceFont(FontFeatures);
+
+impl RootPlugin for InterfaceFont {
+    fn style(&self, surface: &mut Stateful<Div>, _: &mut Window, _: &mut App) {
+        surface.text_style().font_features = Some(self.0.clone());
+    }
+}
+
+impl Render for InterfaceFont {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        Empty
+    }
 }
 
 /// Reload theme whenever a file is changed during debugging

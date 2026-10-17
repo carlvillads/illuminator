@@ -1032,7 +1032,6 @@ impl Render for HistogramWindow {
             .bg(background)
             .text_color(foreground)
             .text_sm()
-            .font_features(tabular_nums())
             .track_focus(&self.focus_handle)
             .key_context(shortcuts::HISTOGRAM_CONTEXT)
             .on_action(cx.listener(|_, _: &CloseWindow, window, _| window.remove_window()))
