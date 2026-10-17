@@ -50,16 +50,6 @@ impl Viewer {
             .bg(background)
             .border_b_1()
             .border_color(edge)
-            .child(
-                Button::new("open")
-                    .ghost()
-                    .small()
-                    .icon(Carbon::FolderOpen)
-                    .when(labels, |button| button.label("Open\u{2026}"))
-                    .tooltip_with_action("Open volumes", &OpenFiles, context)
-                    .on_click(cx.listener(|viewer, _, _, cx| viewer.open_files(cx))),
-            )
-            .child(separator())
             .child(layout_button(
                 "layout-ortho",
                 Carbon::Ortho,
