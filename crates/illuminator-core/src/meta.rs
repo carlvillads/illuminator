@@ -6,8 +6,8 @@
 use std::path::{Path, PathBuf};
 
 use crate::error::Result;
+use crate::formats::{nifti1, nrrd};
 use crate::voxel::{DataType, Endian, Scaling};
-use crate::{nifti1, nrrd};
 
 pub(crate) type Mat3x4 = [[f64; 4]; 3];
 
