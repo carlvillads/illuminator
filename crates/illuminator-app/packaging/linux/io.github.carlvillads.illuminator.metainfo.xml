@@ -5,7 +5,7 @@
   <summary>Fast medical and scientific volume viewer</summary>
 
   <metadata_license>CC0-1.0</metadata_license>
-  <project_license>Apache-2.0</project_license>
+  <project_license>Apache-2.0 OR MIT</project_license>
 
   <developer id="io.github.carlvillads">
     <name>Carl Villads</name>
