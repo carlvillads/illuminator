@@ -60,6 +60,7 @@ carbon_icons! {
     Mip => "shape--exclude.svg",
     Camera => "camera.svg",
     Expand => "maximize.svg",
+    Theme => "brightness-contrast.svg",
 }
 
 const OVERRIDES: &[(&str, &[u8])] = &[

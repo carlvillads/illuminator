@@ -96,15 +96,22 @@ impl Viewer {
                     opacity,
                 }));
             if let Some((x, y)) = self.crosshair_at(view, scale) {
-                picture.lines.push(Rect {
-                    left: device(view.origin.x + x),
-                    width: device(1.0),
-                    ..rect
+                let [vertical, horizontal] = theme::crosshair_colors(view.axis);
+                picture.lines.push(PictureLine {
+                    rect: Rect {
+                        left: device(view.origin.x + x),
+                        width: device(1.0),
+                        ..rect
+                    },
+                    color: vertical,
                 });
-                picture.lines.push(Rect {
-                    top: device(view.origin.y + y),
-                    height: device(1.0),
-                    ..rect
+                picture.lines.push(PictureLine {
+                    rect: Rect {
+                        top: device(view.origin.y + y),
+                        height: device(1.0),
+                        ..rect
+                    },
+                    color: horizontal,
                 });
             }
         }

@@ -8,9 +8,6 @@ use illuminator_core::labels::label_color;
 use std::rc::Rc;
 
 const CAPTION_WIDTH: f32 = 64.0;
-pub const ORIENTATION_COLOR: u32 = 0xe8c547;
-pub const ACTIVE_VIEW_COLOR: u32 = 0xc86b98;
-pub const CROSSHAIR_COLOR: u32 = 0x00ccffb3; // cyan, 70% opacity
 
 pub trait AppStyle: Styled + Sized {
     fn truncate_start(self) -> Self {
@@ -70,6 +67,22 @@ pub fn format_value(value: f64) -> String {
     }
 }
 
+pub fn panel(title: impl Into<SharedString>, cx: &App) -> Div {
+    let theme = cx.theme();
+    v_flex()
+        .gap_1p5()
+        .p_1p5()
+        .rounded(theme.radius_lg)
+        .bg(theme.muted)
+        .child(
+            div()
+                .text_xs()
+                .font_weight(FontWeight::SEMIBOLD)
+                .child(title.into()),
+        )
+}
+
+/// Title inside a panel
 pub fn section_title(text: impl Into<SharedString>, cx: &App) -> Div {
     let theme = cx.theme();
     h_flex()
@@ -78,7 +91,7 @@ pub fn section_title(text: impl Into<SharedString>, cx: &App) -> Div {
         .font_weight(FontWeight::SEMIBOLD)
         .text_color(theme.muted_foreground)
         .child(text.into())
-        .child(div().flex_1().h(px(1.0)).bg(theme.border))
+        .child(div().flex_1().h(px(1.0)).bg(theme.background))
 }
 
 pub fn colormap_strip(colormap: Colormap, labels: bool, blocks: usize) -> Div {

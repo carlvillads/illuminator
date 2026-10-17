@@ -6,7 +6,11 @@ impl Viewer {
     /// Values of all layers at the mouse
     pub(super) fn render_status(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
-        let (muted, border, background) = (theme.muted_foreground, theme.border, theme.sidebar);
+        let (muted, border, background) = (
+            theme.muted_foreground,
+            theme.status_bar_border,
+            theme.status_bar,
+        );
         let status = StatusBar::new()
             .h(px(STATUS_HEIGHT))
             .flex_none()

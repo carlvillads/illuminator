@@ -9,7 +9,7 @@ impl Viewer {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let theme = cx.theme();
-        let (border, background) = (theme.border, theme.sidebar);
+        let (border, background, edge) = (theme.border, theme.title_bar, theme.title_bar_border);
         let labels = f32::from(window.viewport_size().width) >= TOOLBAR_LABELS_WIDTH;
         let context = Some(shortcuts::CONTEXT);
         let axis = self.layout.axis().unwrap_or(self.active_panel.1);
@@ -49,7 +49,7 @@ impl Viewer {
             .gap_1()
             .bg(background)
             .border_b_1()
-            .border_color(border)
+            .border_color(edge)
             .child(
                 Button::new("open")
                     .ghost()
@@ -202,6 +202,16 @@ impl Viewer {
                             ),
                         )
                     }),
+            )
+            .child(
+                Button::new("theme")
+                    .ghost()
+                    .small()
+                    .icon(Carbon::Theme)
+                    .when(labels, |button| button.label("Theme"))
+                    .selected(!cx.theme().is_dark())
+                    .tooltip_with_action("Switch theme", &ToggleTheme, context)
+                    .on_click(|_, _, cx| theme::toggle(cx)),
             )
             .child(
                 Button::new("help")

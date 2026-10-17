@@ -9,8 +9,9 @@ impl Viewer {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let theme = cx.theme();
-        let (muted, border) = (theme.muted_foreground, theme.border);
-        let orientation_color: Hsla = rgb(ui::ORIENTATION_COLOR).into();
+        let (border, ring) = (theme.border, theme.ring);
+        let muted: Hsla = rgb(theme::VIEW_TEXT_COLOR).into();
+        let orientation_color: Hsla = rgb(theme::ORIENTATION_COLOR).into();
         let scale = window.scale_factor();
         let overlaid = self.layout.overlaid();
         let mut area = div()
@@ -18,7 +19,7 @@ impl Viewer {
             .relative()
             .flex_1()
             .h_full()
-            .bg(gpui::black())
+            .bg(rgb(theme::VIEW_BACKGROUND))
             .on_hover(cx.listener(|viewer, hovered: &bool, _, cx| {
                 if !hovered {
                     viewer.hover = None;
@@ -141,7 +142,7 @@ impl Viewer {
             panel = panel
                 .child(div().absolute().inset_0().map(|frame| {
                     if self.active_panel == (view.base, view.axis) && view.slice.is_none() {
-                        frame.border_2().border_color(rgb(ui::ACTIVE_VIEW_COLOR))
+                        frame.border_2().border_color(ring)
                     } else {
                         frame.border_1().border_color(border)
                     }
@@ -154,7 +155,11 @@ impl Viewer {
                             .left_2()
                             .text_size(px(CORNER_TEXT))
                             .text_color(muted)
-                            .child(orientation.title)
+                            .child(
+                                div()
+                                    .text_color(rgb(theme::plane_color(view.axis)))
+                                    .child(orientation.title),
+                            )
                             .when(!overlaid, |title| title.child(display.name())),
                     )
                 })
@@ -213,14 +218,15 @@ impl Viewer {
         let (x, y) = self.crosshair_at(view, scale)?;
         let image = view.image_size;
         let offset = view.image_offset();
-        let line = || div().absolute().bg(rgba(ui::CROSSHAIR_COLOR));
+        let [vertical, horizontal] = theme::crosshair_colors(view.axis);
+        let line = |color: u32| div().absolute().bg(rgba(color));
         Some([
-            line()
+            line(vertical)
                 .left(px(x))
                 .top(px(offset.y))
                 .w(px(1.0))
                 .h(px(image.height)),
-            line()
+            line(horizontal)
                 .left(px(offset.x))
                 .top(px(y))
                 .w(px(image.width))

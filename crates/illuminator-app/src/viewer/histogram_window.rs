@@ -20,9 +20,6 @@ const HISTOGRAM_X_TICKS: usize = 8;
 const HISTOGRAM_Y_TICKS: usize = 5;
 const HISTOGRAM_MAX_TICKS: usize = 64;
 const HISTOGRAM_MAX_TICK_DECIMALS: usize = 324;
-const HISTOGRAM_CURVE_COLORS: [u32; 8] = [
-    0x5aa9ff, 0xf5a65b, 0x6fcf97, 0xf2757a, 0xc39bff, 0xf2d15b, 0x56d4e0, 0xf78fc4,
-];
 const HISTOGRAM_BIN_CHOICES: [Option<usize>; 7] = [
     None,
     Some(32),
@@ -318,7 +315,7 @@ impl HistogramWindow {
                     load_id: layer.load_id,
                     number: index + 1,
                     name: display.name().into(),
-                    color: rgb(HISTOGRAM_CURVE_COLORS[index % HISTOGRAM_CURVE_COLORS.len()]).into(),
+                    color: theme::curve_color(index, cx),
                     volume: display.shared_volume(),
                     key: CurveKey {
                         volume: display.volume().id(),
@@ -1254,9 +1251,8 @@ fn ticks(low: f64, high: f64, count: usize) -> (Vec<f64>, usize) {
 #[cfg(test)]
 mod tests {
     use super::{
-        Axes, AxisY, Curve, CurveKey, HISTOGRAM_CURVE_COLORS, HISTOGRAM_MAX_TICK_DECIMALS,
-        HISTOGRAM_MAX_TICKS, Line, RegionKey, current_curve, export_ready, height_at, rgb, steps,
-        ticks, value_at,
+        Axes, AxisY, Curve, CurveKey, HISTOGRAM_MAX_TICK_DECIMALS, HISTOGRAM_MAX_TICKS, Line,
+        RegionKey, current_curve, export_ready, height_at, rgb, steps, ticks, value_at,
     };
     use illuminator_core::cache::VolumeCache;
     use illuminator_core::display::VolumeDisplay;
@@ -1320,7 +1316,7 @@ mod tests {
             load_id,
             number: 1,
             name: "values".into(),
-            color: rgb(HISTOGRAM_CURVE_COLORS[0]).into(),
+            color: rgb(crate::theme::HISTOGRAM_CURVE_COLORS_DARK[0]).into(),
             volume: display.shared_volume(),
             key,
             limits: display.window_limits(),

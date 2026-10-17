@@ -17,9 +17,7 @@ impl Viewer {
         let bottom_visible = self.layers.iter().position(|layer| layer.visible);
         let link_world = !overlaid && self.sync && self.sync_mode == SyncMode::World && anatomical;
 
-        v_flex()
-            .gap_2()
-            .child(section_title(format!("Layer {}", index + 1), cx))
+        ui::panel(format!("Layer {}", index + 1), cx)
             .when(overlaid && bottom_visible != Some(index), |settings| {
                 settings.child(
                     ui::setting_row("Opacity", muted)
@@ -96,7 +94,7 @@ impl Viewer {
         let display = &self.layers[index].display;
         let id = |name: &'static str| (name, index as u64);
         v_flex()
-            .gap_2()
+            .gap_1p5()
             .child(
                 ui::setting_row("Labels", muted)
                     .child(
@@ -132,7 +130,7 @@ impl Viewer {
         let id = |name: &'static str| (name, index as u64);
         let limit = |input: &Entity<InputState>| div().flex_1().child(Input::new(input).xsmall());
         v_flex()
-            .gap_2()
+            .gap_1p5()
             .child(
                 ui::setting_row("Window", muted)
                     .child(div().flex_1())

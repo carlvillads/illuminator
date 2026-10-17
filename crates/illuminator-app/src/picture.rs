@@ -5,7 +5,7 @@ use image::{ImageFormat, Rgba, RgbaImage};
 use std::io::Cursor;
 use std::sync::Arc;
 
-use crate::ui;
+use crate::theme;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Rect {
@@ -22,22 +22,28 @@ pub struct PictureImage {
     pub opacity: f32,
 }
 
+pub struct PictureLine {
+    pub rect: Rect,
+    pub color: u32,
+}
+
 pub struct Picture {
     pub width: u32,
     pub height: u32,
     pub images: Vec<PictureImage>,
-    pub lines: Vec<Rect>,
+    pub lines: Vec<PictureLine>,
 }
 
 impl Picture {
     pub fn compose(&self) -> RgbaImage {
-        let mut picture = RgbaImage::from_pixel(self.width, self.height, Rgba([0, 0, 0, 255]));
+        let [_, r, g, b] = theme::VIEW_BACKGROUND.to_be_bytes();
+        let mut picture = RgbaImage::from_pixel(self.width, self.height, Rgba([r, g, b, 255]));
         for placed in &self.images {
             draw_image(&mut picture, &placed.image, placed.rect, placed.opacity);
         }
-        let [r, g, b, a] = ui::CROSSHAIR_COLOR.to_be_bytes();
         for line in &self.lines {
-            for (x, y) in pixels(&picture, *line) {
+            let [r, g, b, a] = line.color.to_be_bytes();
+            for (x, y) in pixels(&picture, line.rect) {
                 over(picture.get_pixel_mut(x, y), [r, g, b], f32::from(a) / 255.0);
             }
         }
@@ -90,7 +96,7 @@ fn over(pixel: &mut Rgba<u8>, color: [u8; 3], alpha: f32) {
 
 #[cfg(test)]
 mod tests {
-    use super::{Picture, PictureImage, Rect};
+    use super::{Picture, PictureImage, PictureLine, Rect};
     use gpui_kit::RenderImage;
     use image::{Frame, Rgba, RgbaImage};
     use std::sync::Arc;
@@ -128,7 +134,10 @@ mod tests {
                     opacity: 1.0,
                 },
             ],
-            lines: vec![rect(0, 1, 4, 1)],
+            lines: vec![PictureLine {
+                rect: rect(0, 1, 4, 1),
+                color: 0x00ccffb3,
+            }],
         };
         let picture = views.compose();
         assert_eq!(picture.get_pixel(0, 0), &Rgba([0, 0, 0, 255]));

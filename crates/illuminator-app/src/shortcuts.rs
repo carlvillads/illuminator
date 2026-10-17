@@ -84,6 +84,8 @@ actions!(
         ZoomReset,
         /// Opens histogram window
         ShowHistogram,
+        /// Switches between the dark and the Platinum theme
+        ToggleTheme,
     ]
 );
 
@@ -129,6 +131,7 @@ pub fn bind(cx: &mut App) {
         KeyBinding::new("p", ToggleMip, keys),
         KeyBinding::new("?", ShowHelp, keys),
         KeyBinding::new("g", ShowHistogram, keys),
+        KeyBinding::new("t", ToggleTheme, keys),
         KeyBinding::new("o", ToggleOverlay, keys),
         KeyBinding::new("shift-l", ToggleOutline, keys),
         KeyBinding::new("v", ToggleLayer, keys),
@@ -148,6 +151,7 @@ pub fn bind(cx: &mut App) {
         KeyBinding::new("0", ZoomReset, keys),
     ]);
     cx.on_action(|_: &Quit, cx| cx.quit());
+    cx.on_action(|_: &ToggleTheme, cx| crate::theme::toggle(cx));
 }
 
 pub fn help() -> Vec<(String, &'static str)> {
@@ -176,6 +180,7 @@ pub fn help() -> Vec<(String, &'static str)> {
         ("S/R/C/I".into(), "Sync/radiological/crosshair/corner text"),
         ("P".into(), "Maximum intensity projection (MIP)"),
         ("G".into(), "Histogram window"),
+        ("T".into(), "Switch theme"),
         ("?".into(), "This list"),
         (format!("{ALT}J/K"), "Move layer down/up"),
         (format!("{SECONDARY}R"), "Reload layer from disk"),

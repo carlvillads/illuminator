@@ -5,14 +5,14 @@ use super::*;
 impl Viewer {
     pub(super) fn render_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
-        let (border, sidebar) = (theme.border, theme.sidebar);
+        let (border, sidebar) = (theme.sidebar_border, theme.sidebar);
         v_flex()
             .id("sidebar")
             .w(px(SIDEBAR_WIDTH))
             .h_full()
             .flex_none()
-            .p_2()
-            .gap_3()
+            .p_1p5()
+            .gap_2()
             .overflow_y_scroll()
             .bg(sidebar)
             .border_l_1()
@@ -62,8 +62,12 @@ impl Viewer {
 
     /// One row per layer
     fn render_layer_list(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let muted = cx.theme().muted_foreground;
+        let theme = cx.theme();
+        let (muted, list, radius) = (theme.muted_foreground, theme.colors.list, theme.radius);
         let rows = v_flex()
+            .p_0p5()
+            .rounded(radius)
+            .bg(list)
             .when(self.layers.is_empty(), |list| {
                 list.child(
                     div()
@@ -107,22 +111,25 @@ impl Viewer {
                         }
                     })),
             );
-        v_flex()
-            .gap_1()
-            .child(section_title("Layers", cx))
-            .child(rows)
-            .child(commands)
+        ui::panel("Layers", cx).child(rows).child(commands)
     }
 
     /// A layers row in the layer list.
     fn render_layer_row(&self, index: usize, cx: &mut Context<Self>) -> HoverCard {
         let theme = cx.theme();
-        let (muted, active, hover, info) = (
-            theme.muted_foreground,
-            theme.list_active,
+        let selected = index == self.selected;
+        let (active, active_text, hover, info, radius) = (
+            theme.accent,
+            theme.accent_foreground,
             theme.list_hover,
             theme.info,
+            theme.radius,
         );
+        let muted = if selected {
+            active_text.opacity(0.7)
+        } else {
+            theme.muted_foreground
+        };
         let context = Some(shortcuts::CONTEXT);
         let layer = &self.layers[index];
         let display = &layer.display;
@@ -134,11 +141,12 @@ impl Viewer {
             .id(("layer-row", index))
             .group("layer-row")
             .gap_1()
-            .h(px(26.0))
+            .h(px(24.0))
             .px_1()
+            .rounded(radius)
             .map(|row| {
-                if index == self.selected {
-                    row.bg(active)
+                if selected {
+                    row.bg(active).text_color(active_text)
                 } else {
                     row.hover(|row| row.bg(hover))
                 }
@@ -263,6 +271,9 @@ impl Viewer {
         let muted = cx.theme().muted_foreground;
         let sync_modes = !self.layout.overlaid() && self.sync;
         let lightbox = matches!(self.layout, Layout::Lightbox(_));
+        if !sync_modes && self.frame_slider.is_none() && !lightbox {
+            return div();
+        }
         let lightbox_settings = lightbox.then(|| self.render_lightbox_settings(cx));
         let mode_button = |id: &'static str, label: &'static str, mode: SyncMode| {
             Button::new(id)
@@ -275,12 +286,7 @@ impl Viewer {
                     cx.notify();
                 }))
         };
-        v_flex()
-            .gap_2()
-            .when(
-                sync_modes || self.frame_slider.is_some() || lightbox,
-                |settings| settings.child(section_title("View", cx)),
-            )
+        ui::panel("View", cx)
             .children(lightbox_settings)
             .when_some(self.frame_slider.as_ref(), |settings, slider| {
                 settings.child(
@@ -289,14 +295,16 @@ impl Viewer {
                             v_flex()
                                 .flex_1()
                                 .gap_0p5()
+                                .child(frame_tag(self.frame, slider.last_frame, cx))
                                 .child(Slider::new(&slider.state))
                                 .child(frame_ticks(slider.last_frame, muted)),
                         )
-                        .child(div().w(px(48.0)).text_xs().child(format!(
-                            "{} / {}",
-                            self.frame + 1,
-                            slider.last_frame + 1
-                        ))),
+                        .child(
+                            div()
+                                .w(px(48.0))
+                                .text_xs()
+                                .child(format!("of {}", slider.last_frame + 1)),
+                        ),
                 )
             })
             .when(self.frame_slider.is_some(), |settings| {
@@ -352,6 +360,28 @@ impl Viewer {
                 )
             })
     }
+}
+
+/// The shown frames number above the slider's thumb
+fn frame_tag(frame: usize, last_frame: usize, cx: &App) -> impl IntoElement {
+    let theme = cx.theme();
+    div().relative().w_full().h(px(16.0)).child(
+        h_flex()
+            .absolute()
+            .top_0()
+            .w_0()
+            .left(relative(frame as f32 / last_frame as f32))
+            .justify_center()
+            .child(
+                div()
+                    .px_1()
+                    .rounded(theme.radius)
+                    .bg(theme.accent)
+                    .text_color(theme.accent_foreground)
+                    .text_xs()
+                    .child((frame + 1).to_string()),
+            ),
+    )
 }
 
 fn frame_ticks(last_frame: usize, color: Hsla) -> impl IntoElement {

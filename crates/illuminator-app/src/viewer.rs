@@ -53,9 +53,10 @@ use std::time::Duration;
 use crate::assets::Carbon;
 use crate::cli::{Cli, LayoutName};
 use crate::label_statistics::{Snapshot, StatisticsView};
-use crate::picture::{Picture, PictureImage, Rect};
+use crate::picture::{Picture, PictureImage, PictureLine, Rect};
 use crate::shortcuts::{self, *};
 use crate::suv_form::SuvForm;
+use crate::theme;
 use crate::ui::{
     self, AppStyle, colormap_strip, format_editable, format_value, parse_value, rgb_to_rgba,
     section_title,
