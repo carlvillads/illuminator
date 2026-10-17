@@ -140,7 +140,7 @@ impl Viewer {
                 |text: &'static str| div().absolute().text_color(orientation_color).child(text);
             panel = panel
                 .child(div().absolute().inset_0().map(|frame| {
-                    if self.active_panel == (view.base, view.axis) && view.current {
+                    if self.active_panel == (view.base, view.axis) && view.slice.is_none() {
                         frame.border_2().border_color(rgb(ui::ACTIVE_VIEW_COLOR))
                     } else {
                         frame.border_1().border_color(border)
