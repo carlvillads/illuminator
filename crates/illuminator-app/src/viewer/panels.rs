@@ -1,6 +1,20 @@
 //! Drawing the views.
 
-use super::*;
+use gpui_kit::component::{ActiveTheme, v_flex};
+use gpui_kit::prelude::FluentBuilder;
+use gpui_kit::{
+    Context, Div, Hsla, InteractiveElement, IntoElement, MouseButton, MouseDownEvent,
+    MouseMoveEvent, MouseUpEvent, ParentElement, RenderImage, ScrollWheelEvent,
+    StatefulInteractiveElement, Styled, Window, div, img, px, rgb, rgba,
+};
+use illuminator_core::colormap::Colormap;
+use illuminator_core::slicer::Coloring;
+use std::sync::Arc;
+
+use crate::theme;
+use crate::ui::{format_value, rgb_to_rgba};
+
+use super::{CORNER_TEXT, InfoLevel, View, Viewer};
 
 impl Viewer {
     pub(super) fn render_panels(

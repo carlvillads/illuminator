@@ -1,6 +1,18 @@
 //! Keyboard shortcut handlers.
 
-use super::*;
+use gpui_kit::component::{ActiveTheme, WindowExt, h_flex, v_flex};
+use gpui_kit::{Context, ParentElement, Styled, Window, div, px};
+
+use crate::shortcuts::{
+    self, AutoContrast, CenterCursor, CloseLayer, CloseWindow, LayoutCompare, LayoutGrid,
+    LayoutLightbox, LayoutOrtho, LayoutSingle, MoveLayerDown, MoveLayerUp, NextColormap, NextFrame,
+    NextLayer, NextSlice, NextSlices, OpenFiles, PreviousFrame, PreviousLayer, PreviousSlice,
+    PreviousSlices, ReloadLayer, ShowHelp, ToggleCrosshair, ToggleInfo, ToggleLayer, ToggleMip,
+    ToggleOutline, ToggleOverlay, ToggleRadiological, ToggleSegmentation, ToggleSync, ZoomIn,
+    ZoomOut, ZoomReset,
+};
+
+use super::{Layout, Viewer};
 
 impl Viewer {
     pub(super) fn close_window(

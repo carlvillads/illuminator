@@ -1,6 +1,12 @@
 //! Viewer layout.
 
-use super::*;
+use gpui_kit::{Context, Pixels, Point, Size, Window, point, size};
+use illuminator_core::geometry::ViewPlane;
+use illuminator_core::slicer::fit_size;
+
+use super::{Hit, Layout, Panel, TOOLBAR_HEIGHT, View, Viewer, view_area};
+
+const LIGHTBOX_SLOTS: usize = 6;
 
 impl Viewer {
     /// Every view on screen in reading order

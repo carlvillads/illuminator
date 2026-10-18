@@ -1,6 +1,63 @@
 //! Settings of the selected layer.
 
-use super::*;
+use gpui_kit::component::button::{Button, ButtonVariants, DropdownButton};
+use gpui_kit::component::chart::LineChart;
+use gpui_kit::component::checkbox::Checkbox;
+use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
+use gpui_kit::component::slider::Slider;
+use gpui_kit::component::tooltip::Tooltip;
+use gpui_kit::component::{ActiveTheme, Disableable, Sizable, h_flex, v_flex};
+use gpui_kit::prelude::FluentBuilder;
+use gpui_kit::{
+    AnyElement, AppContext, Context, Div, DragMoveEvent, Entity, Focusable, InteractiveElement,
+    IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent, ParentElement, SharedString,
+    StatefulInteractiveElement, Styled, Subscription, Window, canvas, div, px, relative,
+};
+use illuminator_core::colormap::Colormap;
+use illuminator_core::display::VolumeDisplay;
+use illuminator_core::histogram::Histogram;
+use illuminator_core::slicer::Coloring;
+use std::rc::Rc;
+
+use crate::assets::Carbon;
+use crate::shortcuts::{self, AutoContrast, NextColormap, ShowHistogram};
+use crate::ui::{
+    self, colormap_strip, format_editable, format_value, parse_value, rgb_to_rgba, section_title,
+};
+
+use super::{CORNER_TEXT, DragEdge, Preset, SyncMode, Viewer, WindowEdge};
+
+const HISTOGRAM_HEIGHT: f32 = 56.0;
+const CHART_CURVE_HEIGHT: f32 = 64.0;
+const PRESETS: &[PresetGroup] = &[
+    PresetGroup {
+        title: "CT (HU)",
+        presets: &[
+            ("Brain  W 80 L 40", Preset::Limits(0.0, 80.0)),
+            ("Subdural  W 200 L 75", Preset::Limits(-25.0, 175.0)),
+            ("Stroke  W 40 L 40", Preset::Limits(20.0, 60.0)),
+            ("Soft tissue  W 400 L 50", Preset::Limits(-150.0, 250.0)),
+            ("Lung  W 1500 L -600", Preset::Limits(-1350.0, 150.0)),
+            ("Bone  W 1800 L 400", Preset::Limits(-500.0, 1300.0)),
+        ],
+    },
+    PresetGroup {
+        title: "PET (SUV)",
+        presets: &[
+            ("0 to 5", Preset::Limits(0.0, 5.0)),
+            ("0 to 10", Preset::Limits(0.0, 10.0)),
+        ],
+    },
+    PresetGroup {
+        title: "Histogram",
+        presets: &[
+            ("Full range", Preset::Percentiles(0.0, 1.0)),
+            ("1 to 99 %", Preset::Percentiles(0.01, 0.99)),
+            ("5 to 95 %", Preset::Percentiles(0.05, 0.95)),
+        ],
+    },
+];
 
 impl Viewer {
     /// Settings of the selected layer
@@ -607,6 +664,15 @@ impl Viewer {
     }
 }
 
+/// Text fields for the low and high limit of the window of the selected layer.
+pub(super) struct LimitInputs {
+    low: Entity<InputState>,
+    high: Entity<InputState>,
+    /// The layer whose limits the fields show
+    load_id: Option<u64>,
+    _events: [Subscription; 2],
+}
+
 impl LimitInputs {
     pub(super) fn new(window: &mut Window, cx: &mut Context<Viewer>) -> Self {
         let low = cx.new(|cx| InputState::new(window, cx));
@@ -669,4 +735,29 @@ fn colormap_preview(colormap: Colormap) -> Div {
         .text_xs()
         .child(div().w(px(48.0)).child(colormap_strip(colormap, false, 12)))
         .child(colormap.name())
+}
+
+/// Window presets under one heading in the presets menu
+struct PresetGroup {
+    title: &'static str,
+    presets: &'static [(&'static str, Preset)],
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{PRESETS, Preset};
+
+    #[test]
+    fn presets_go_from_low_to_high() {
+        for group in PRESETS {
+            for (name, preset) in group.presets {
+                match *preset {
+                    Preset::Limits(low, high) => assert!(low < high, "{name}"),
+                    Preset::Percentiles(low, high) => {
+                        assert!((0.0..high).contains(&low) && high <= 1.0, "{name}");
+                    }
+                }
+            }
+        }
+    }
 }

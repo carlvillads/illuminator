@@ -1,6 +1,18 @@
 //! The status bar.
 
-use super::*;
+use gpui_kit::component::status_bar::StatusBar;
+use gpui_kit::component::{ActiveTheme, h_flex};
+use gpui_kit::prelude::FluentBuilder;
+use gpui_kit::{Context, FontWeight, IntoElement, ParentElement, Styled, div, px};
+
+use crate::ui::{self, format_value};
+
+use super::{STATUS_HEIGHT, Viewer};
+
+const POSITION_TEMPLATE: &str = "-000.0";
+const VALUE_TEMPLATE: &str = "-0000.000";
+const LABEL_TEMPLATE: &str = "00000";
+const VOXEL_TEMPLATE: &str = "0000";
 
 impl Viewer {
     /// Values of all layers at the mouse

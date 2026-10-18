@@ -1,6 +1,28 @@
 //! Loading list, layer list, view settings.
 
-use super::*;
+use gpui_kit::component::button::{Button, ButtonVariants};
+use gpui_kit::component::hover_card::HoverCard;
+use gpui_kit::component::menu::DropdownMenu;
+use gpui_kit::component::progress::Progress;
+use gpui_kit::component::slider::Slider;
+use gpui_kit::component::{ActiveTheme, Disableable, Selectable, Sizable, h_flex, v_flex};
+use gpui_kit::prelude::FluentBuilder;
+use gpui_kit::{
+    Anchor, App, AppContext, Context, Div, Hsla, InteractiveElement, IntoElement, ParentElement,
+    Render, SharedString, StatefulInteractiveElement, Styled, Window, div, px, relative,
+};
+use illuminator_core::display::VolumeDisplay;
+use std::path::Path;
+
+use crate::assets::Carbon;
+use crate::shortcuts::{self, CloseLayer, ReloadLayer, TogglePlay};
+use crate::ui::{self, AppStyle, colormap_strip, format_value};
+
+use super::{Layout, SIDEBAR_WIDTH, SyncMode, Viewer};
+
+const TIMEPOINT_FRAME_RATES: [u32; 5] = [1, 2, 5, 10, 20];
+const LIGHTBOX_GRIDS: [(usize, usize); 6] = [(3, 2), (3, 3), (4, 3), (4, 4), (5, 4), (6, 5)];
+const LIGHTBOX_STEPS: [usize; 6] = [1, 2, 3, 4, 5, 10];
 
 impl Viewer {
     pub(super) fn render_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -425,6 +447,24 @@ fn layer_details(display: &VolumeDisplay) -> Vec<(&'static str, String)> {
         ("Transform", geometry.transform_name.to_string()),
         ("Path", display.volume().path().display().to_string()),
     ]
+}
+
+#[derive(Clone)]
+struct DragLayer {
+    index: usize,
+    name: SharedString,
+}
+
+impl Render for DragLayer {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .px_2()
+            .py_1()
+            .rounded_sm()
+            .bg(cx.theme().secondary)
+            .text_xs()
+            .child(self.name.clone())
+    }
 }
 
 /// The hover card with a layer's details

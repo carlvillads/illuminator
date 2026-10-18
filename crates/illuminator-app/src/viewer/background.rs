@@ -1,6 +1,15 @@
 //! Viewer background tasks.
 
-use super::*;
+use gpui_kit::{AppContext, Context, RenderImage, Window};
+use illuminator_core::display::SliceJob;
+use illuminator_core::histogram::Histogram;
+use illuminator_core::slicer::{SampledSlice, SliceImage};
+use image::{Frame, RgbaImage};
+use std::sync::Arc;
+
+use super::{ImageKey, PanelImage, PanelSamples, TimeCurve, View, Viewer};
+
+const HISTOGRAM_BINS: usize = 128;
 
 impl Viewer {
     /// Starts a background render for each panel whose image is out of date since last draw

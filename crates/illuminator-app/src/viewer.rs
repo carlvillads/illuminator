@@ -16,107 +16,38 @@ mod toolbar;
 
 use futures::StreamExt;
 use futures::channel::mpsc;
-use gpui_kit::component::button::{Button, ButtonVariants, DropdownButton};
-use gpui_kit::component::chart::LineChart;
-use gpui_kit::component::checkbox::Checkbox;
-use gpui_kit::component::hover_card::HoverCard;
-use gpui_kit::component::input::{Input, InputEvent, InputState};
-use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
-use gpui_kit::component::progress::Progress;
-use gpui_kit::component::slider::{Slider, SliderEvent, SliderState};
-use gpui_kit::component::status_bar::StatusBar;
-use gpui_kit::component::tooltip::Tooltip;
-use gpui_kit::component::{
-    ActiveTheme, Disableable, Selectable, Sizable, WindowExt, h_flex, v_flex,
-};
+use gpui_kit::component::slider::{SliderEvent, SliderState};
+use gpui_kit::component::{ActiveTheme, h_flex, v_flex};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use illuminator_core::cache::VolumeCache;
 use illuminator_core::colormap::Colormap;
-use illuminator_core::display::{SampleKey, SliceJob, VolumeDisplay};
+use illuminator_core::display::{SampleKey, VolumeDisplay};
 use illuminator_core::geometry::{Point3D, SlicePlane, ViewPlane};
 use illuminator_core::histogram::Histogram;
 use illuminator_core::loader::{LoadState, VolumeLoader};
-use illuminator_core::slicer::{Coloring, SampledSlice, SliceImage, fit_size};
+use illuminator_core::slicer::{Coloring, SampledSlice};
 use illuminator_core::suv::SuvInputs;
-use illuminator_core::volume::Volume;
-use image::{Frame, RgbaImage};
 use std::cell::Cell;
-use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
-use std::time::Duration;
 
-use crate::assets::Carbon;
 use crate::cli::{Cli, LayoutName};
-use crate::label_statistics::{Snapshot, StatisticsView};
-use crate::picture::{Picture, PictureImage, PictureLine, Rect};
 use crate::shortcuts::{self, *};
-use crate::suv_form::SuvForm;
-use crate::theme;
-use crate::ui::{
-    self, AppStyle, colormap_strip, format_editable, format_value, parse_value, rgb_to_rgba,
-    section_title,
-};
 use crate::zoom::{Visible, Zoom};
 
+use self::layer_settings::LimitInputs;
+use self::mouse::PanDrag;
+use self::playback::FrameSlider;
+
 const SIDEBAR_WIDTH: f32 = 240.0;
-const SCROLL_STEP: f32 = 20.0;
 const OVERLAY_OPACITY: f32 = 0.5;
 const TOOLBAR_HEIGHT: f32 = 36.0;
-const TOOLBAR_LABELS_WIDTH: f32 = 1000.0;
 const STATUS_HEIGHT: f32 = 24.0;
-const POSITION_TEMPLATE: &str = "-000.0";
-const VALUE_TEMPLATE: &str = "-0000.000";
-const LABEL_TEMPLATE: &str = "00000";
-const VOXEL_TEMPLATE: &str = "0000";
 const CORNER_TEXT: f32 = 10.0;
-const HISTOGRAM_BINS: usize = 128;
-const HISTOGRAM_HEIGHT: f32 = 56.0;
-const ZOOM_SPEED: f64 = 200.0;
-const CHART_CURVE_HEIGHT: f32 = 64.0;
-const TIMEPOINT_FRAME_RATES: [u32; 5] = [1, 2, 5, 10, 20];
-const LIGHTBOX_GRIDS: [(usize, usize); 6] = [(3, 2), (3, 3), (4, 3), (4, 4), (5, 4), (6, 5)];
-const LIGHTBOX_STEPS: [usize; 6] = [1, 2, 3, 4, 5, 10];
-const LIGHTBOX_SLOTS: usize = 6;
-
-/// Window presets under one heading in the presets menu
-struct PresetGroup {
-    title: &'static str,
-    presets: &'static [(&'static str, Preset)],
-}
-
-const PRESETS: &[PresetGroup] = &[
-    PresetGroup {
-        title: "CT (HU)",
-        presets: &[
-            ("Brain  W 80 L 40", Preset::Limits(0.0, 80.0)),
-            ("Subdural  W 200 L 75", Preset::Limits(-25.0, 175.0)),
-            ("Stroke  W 40 L 40", Preset::Limits(20.0, 60.0)),
-            ("Soft tissue  W 400 L 50", Preset::Limits(-150.0, 250.0)),
-            ("Lung  W 1500 L -600", Preset::Limits(-1350.0, 150.0)),
-            ("Bone  W 1800 L 400", Preset::Limits(-500.0, 1300.0)),
-        ],
-    },
-    PresetGroup {
-        title: "PET (SUV)",
-        presets: &[
-            ("0 to 5", Preset::Limits(0.0, 5.0)),
-            ("0 to 10", Preset::Limits(0.0, 10.0)),
-        ],
-    },
-    PresetGroup {
-        title: "Histogram",
-        presets: &[
-            ("Full range", Preset::Percentiles(0.0, 1.0)),
-            ("1 to 99 %", Preset::Percentiles(0.01, 0.99)),
-            ("5 to 95 %", Preset::Percentiles(0.05, 0.95)),
-        ],
-    },
-];
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum SyncMode {
@@ -170,33 +101,6 @@ impl Render for DragEdge {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         Empty
     }
-}
-
-#[derive(Clone)]
-struct DragLayer {
-    index: usize,
-    name: SharedString,
-}
-
-impl Render for DragLayer {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        div()
-            .px_2()
-            .py_1()
-            .rounded_sm()
-            .bg(cx.theme().secondary)
-            .text_xs()
-            .child(self.name.clone())
-    }
-}
-
-/// Text fields for the low and high limit of the window of the selected layer.
-struct LimitInputs {
-    low: Entity<InputState>,
-    high: Entity<InputState>,
-    /// The layer whose limits the fields show
-    load_id: Option<u64>,
-    _events: [Subscription; 2],
 }
 
 /// The numbers for showing a layer in SUV and where they came from
@@ -346,18 +250,10 @@ impl View {
     }
 }
 
-struct TimeCurve {
+pub(super) struct TimeCurve {
     volume: u64,
     voxel: [usize; 3],
-    values: Vec<f64>,
-}
-
-#[derive(Clone, Copy)]
-struct PanDrag {
-    axis: ViewPlane,
-    last: Point<Pixels>,
-    image_size: Size<f32>,
-    fit: (f64, f64),
+    pub values: Vec<f64>,
 }
 
 struct Hit {
@@ -370,12 +266,6 @@ struct Hit {
     image_size: Size<f32>,
     fit: (f64, f64),
     plane: SlicePlane,
-}
-
-struct FrameSlider {
-    state: Entity<SliderState>,
-    last_frame: usize,
-    _changes: Subscription,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -850,7 +740,7 @@ fn opacity_slider(load_id: u64, cx: &mut Context<Viewer>) -> (Entity<SliderState
 
 #[cfg(test)]
 mod tests {
-    use super::{FrameHistogram, Histogram, HistogramKey, Layout, PRESETS, Preset, ViewPlane};
+    use super::{FrameHistogram, Histogram, HistogramKey, Layout, ViewPlane};
 
     fn histogram(min: f64) -> Histogram {
         Histogram {
@@ -982,19 +872,5 @@ mod tests {
             lightbox.with_axis(ViewPlane::Sagittal),
             Layout::Lightbox(ViewPlane::Sagittal)
         );
-    }
-
-    #[test]
-    fn presets_go_from_low_to_high() {
-        for group in PRESETS {
-            for (name, preset) in group.presets {
-                match *preset {
-                    Preset::Limits(low, high) => assert!(low < high, "{name}"),
-                    Preset::Percentiles(low, high) => {
-                        assert!((0.0..high).contains(&low) && high <= 1.0, "{name}");
-                    }
-                }
-            }
-        }
     }
 }

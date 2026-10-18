@@ -1,6 +1,15 @@
 //! Adding, closing, moving, and reloading layers. One layer's contrast and SUV.
 
-use super::*;
+use gpui_kit::component::WindowExt;
+use gpui_kit::{AppContext, Bounds, Context, ParentElement, Pixels, Point, Window, px};
+use illuminator_core::display::VolumeDisplay;
+use illuminator_core::suv::SuvInputs;
+use std::cmp::Ordering;
+
+use crate::label_statistics::{Snapshot, StatisticsView};
+use crate::suv_form::SuvForm;
+
+use super::{DragEdge, FrameHistogram, Layer, Layout, Panel, Preset, Suv, Viewer, WindowEdge};
 
 impl Viewer {
     pub(super) fn reindex(&mut self, new_index: impl Fn(usize) -> Option<usize>) {

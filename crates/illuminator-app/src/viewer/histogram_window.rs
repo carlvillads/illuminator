@@ -1,16 +1,39 @@
 //! Histogram window.
 //! In a window of its own beside the viewer.
 
-use super::*;
+use gpui_kit::component::button::{Button, ButtonVariants};
+use gpui_kit::component::checkbox::Checkbox;
+use gpui_kit::component::menu::DropdownMenu;
+use gpui_kit::component::tooltip::Tooltip;
+use gpui_kit::component::{ActiveTheme, Disableable, Sizable, h_flex, v_flex};
+use gpui_kit::prelude::FluentBuilder;
+use gpui_kit::{
+    AnyElement, App, AppContext, Bounds, ClipboardItem, Context, Div, DragMoveEvent, Entity,
+    FocusHandle, FontWeight, Hsla, InteractiveElement, IntoElement, MouseMoveEvent, ParentElement,
+    PathBuilder, Pixels, Render, SharedString, StatefulInteractiveElement, Styled, Subscription,
+    Task, TitlebarOptions, WeakEntity, Window, WindowBounds, WindowOptions, canvas, div, fill,
+    point, px, relative, size,
+};
 use illuminator_core::Error;
 use illuminator_core::geometry::{GeometryOptions, VolumeGeometry};
-use illuminator_core::histogram::{Counting, LabelMask, to_csv};
+use illuminator_core::histogram::{Counting, Histogram, LabelMask, to_csv};
 use illuminator_core::meta::strip_extension;
 use illuminator_core::progress::Progress;
 use illuminator_core::stats::Source;
+use illuminator_core::volume::Volume;
+use std::cell::Cell;
+use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
+use std::rc::Rc;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
-use crate::ui::choice_items;
+use crate::shortcuts::{self, CloseWindow, ShowHistogram};
+use crate::theme;
+use crate::ui::{choice_items, format_value};
+
+use super::{DragEdge, Viewer, WindowEdge};
 
 const HISTOGRAM_WINDOW_SIZE: (f32, f32) = (760.0, 480.0);
 const HISTOGRAM_NOTICE_TIME: Duration = Duration::from_secs(4);
@@ -1252,8 +1275,9 @@ fn ticks(low: f64, high: f64, count: usize) -> (Vec<f64>, usize) {
 mod tests {
     use super::{
         Axes, AxisY, Curve, CurveKey, HISTOGRAM_MAX_TICK_DECIMALS, HISTOGRAM_MAX_TICKS, Line,
-        RegionKey, current_curve, export_ready, height_at, rgb, steps, ticks, value_at,
+        RegionKey, current_curve, export_ready, height_at, steps, ticks, value_at,
     };
+    use gpui_kit::rgb;
     use illuminator_core::cache::VolumeCache;
     use illuminator_core::display::VolumeDisplay;
     use illuminator_core::histogram::{Counting, Histogram};

@@ -1,6 +1,20 @@
 //! Clicking, dragging and scrolling in the views.
 
-use super::*;
+use gpui_kit::{Context, Pixels, Point, ScrollWheelEvent, Size, Window, px};
+use illuminator_core::geometry::ViewPlane;
+
+use super::{Layout, Viewer};
+
+const SCROLL_STEP: f32 = 20.0;
+const ZOOM_SPEED: f64 = 200.0;
+
+#[derive(Clone, Copy)]
+pub(super) struct PanDrag {
+    axis: ViewPlane,
+    last: Point<Pixels>,
+    image_size: Size<f32>,
+    fit: (f64, f64),
+}
 
 impl Viewer {
     pub(super) fn toggle_maximize(

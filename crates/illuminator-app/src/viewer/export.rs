@@ -1,7 +1,14 @@
 //! Copying and saving screenshots.
 
-use super::*;
+use gpui_kit::{AppContext, ClipboardItem, Context, Image, ImageFormat, Window};
 use illuminator_core::meta::strip_extension;
+use std::path::PathBuf;
+
+use crate::picture::{Picture, PictureImage, PictureLine, Rect};
+use crate::shortcuts::{CopyImage, SaveImage};
+use crate::theme;
+
+use super::{Viewer, view_area};
 
 impl Viewer {
     pub(super) fn copy_image(

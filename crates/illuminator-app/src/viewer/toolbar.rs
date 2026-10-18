@@ -1,6 +1,23 @@
 //! The toolbar above the views.
 
-use super::*;
+use gpui_kit::component::button::{Button, ButtonVariants};
+use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
+use gpui_kit::component::{ActiveTheme, Selectable, Sizable, h_flex};
+use gpui_kit::prelude::FluentBuilder;
+use gpui_kit::{Action, Context, IntoElement, ParentElement, Styled, Window, div, px};
+use illuminator_core::geometry::ViewPlane;
+
+use crate::assets::Carbon;
+use crate::shortcuts::{
+    self, CopyImage, LayoutCompare, LayoutGrid, LayoutLightbox, LayoutOrtho, LayoutSingle,
+    SECONDARY, SaveImage, ShowHelp, ToggleCrosshair, ToggleInfo, ToggleMip, ToggleRadiological,
+    ToggleSync, ToggleTheme,
+};
+use crate::theme;
+
+use super::{InfoLevel, Layout, TOOLBAR_HEIGHT, Viewer};
+
+const TOOLBAR_LABELS_WIDTH: f32 = 1000.0;
 
 impl Viewer {
     pub(super) fn render_toolbar(

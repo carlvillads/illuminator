@@ -1,6 +1,21 @@
 //! 4D time series, frame slider, playback.
 
-use super::*;
+use gpui_kit::component::slider::{SliderEvent, SliderState};
+use gpui_kit::{
+    AppContext, AsyncWindowContext, Context, Entity, Pixels, Subscription, WeakEntity, Window, px,
+};
+use illuminator_core::geometry::ViewPlane;
+use illuminator_core::volume::Volume;
+use std::sync::Arc;
+use std::time::Duration;
+
+use super::Viewer;
+
+pub(super) struct FrameSlider {
+    pub(super) state: Entity<SliderState>,
+    pub(super) last_frame: usize,
+    _changes: Subscription,
+}
 
 impl Viewer {
     pub(super) fn step_frame(&mut self, delta: isize, window: &mut Window, cx: &mut Context<Self>) {
