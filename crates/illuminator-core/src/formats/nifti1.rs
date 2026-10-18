@@ -10,7 +10,9 @@ use std::io::{BufReader, Read};
 use std::path::{Path, PathBuf};
 
 use crate::error::{Error, Result};
-use crate::meta::{DataFile, Format, Mat3x4, SpatialUnits, Transform, VolumeMeta};
+use crate::meta::{
+    DataFile, Format, Mat3x4, SpatialUnits, Transform, VolumeMeta, strip_suffix_ignore_case,
+};
 use crate::voxel::{self, DataType, Endian, Scaling};
 
 const MAGIC_OFFSET: usize = 344;
@@ -252,10 +254,7 @@ fn image_path_for(header: &Path) -> Result<PathBuf> {
 }
 
 fn split_name<'a>(path: &'a Path, suffixes: &[&str]) -> Option<&'a str> {
-    let name = path.file_name()?.to_str()?;
-    let lower = name.to_ascii_lowercase();
-    let suffix = suffixes.iter().find(|suffix| lower.ends_with(*suffix))?;
-    Some(&name[..name.len() - suffix.len()])
+    strip_suffix_ignore_case(path.file_name()?.to_str()?, suffixes)
 }
 
 fn find_sibling(path: &Path, stem: &str, extensions: &[&str]) -> Result<PathBuf> {

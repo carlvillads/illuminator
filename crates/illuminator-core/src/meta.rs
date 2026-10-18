@@ -18,11 +18,14 @@ const EXTENSIONS: [&str; 8] = [
 
 /// Removes file extension from a string.
 pub fn strip_extension(name: &str) -> &str {
+    strip_suffix_ignore_case(name, &EXTENSIONS).unwrap_or(name)
+}
+
+/// `name` without the first of the lowercase `suffixes`.
+pub(crate) fn strip_suffix_ignore_case<'a>(name: &'a str, suffixes: &[&str]) -> Option<&'a str> {
     let lower = name.to_ascii_lowercase();
-    EXTENSIONS
-        .iter()
-        .find(|extension| lower.ends_with(*extension))
-        .map_or(name, |extension| &name[..name.len() - extension.len()])
+    let suffix = suffixes.iter().find(|suffix| lower.ends_with(*suffix))?;
+    Some(&name[..name.len() - suffix.len()])
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
