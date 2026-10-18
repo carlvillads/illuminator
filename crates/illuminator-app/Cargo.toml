@@ -36,7 +36,7 @@ category = "Medical"
 authors = ["Carl Villads Priisholm"]
 publisher = "Carl Villads Priisholm"
 binaries = [{ path = "illuminate", main = true }]
-before-packaging-command = "cargo about generate about.hbs -o ../../target/THIRD_PARTY_LICENSES.html && cargo build --release -p illuminator-app"
+before-packaging-command = "cargo build --release -p illuminator-app && cargo about generate about.hbs -o ../../target/THIRD_PARTY_LICENSES.html"
 out-dir = "../../target/packages"
 icons = ["packaging/macos/illuminator.icns", "packaging/linux/icons/*.png"]
 resources = [
