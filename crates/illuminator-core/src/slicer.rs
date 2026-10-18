@@ -82,6 +82,13 @@ enum LabelSample {
     Id(i64),
 }
 
+impl LabelSample {
+    /// The sample of voxel `value` inside the volume.
+    fn of(value: f64) -> Self {
+        label_id(value).map_or(Self::Invalid, Self::Id)
+    }
+}
+
 impl Slice<'_> {
     pub(crate) fn sample(&self, width: usize, height: usize) -> SampledSlice {
         let samples = with_scalar!(self.volume.meta().datatype, |T| {
@@ -99,11 +106,8 @@ impl Slice<'_> {
         let mip = self.volume.projection(self.frame, axis);
         let samples = if self.labels {
             Samples::Labels(
-                self.sample_pixels(width, height, LabelSample::Outside, |voxel| match label_id(
-                    f64::from(mip.nearest(voxel)),
-                ) {
-                    Ok(id) => LabelSample::Id(id),
-                    Err(_) => LabelSample::Invalid,
+                self.sample_pixels(width, height, LabelSample::Outside, |voxel| {
+                    LabelSample::of(f64::from(mip.nearest(voxel)))
                 }),
             )
         } else {
@@ -123,11 +127,8 @@ impl Slice<'_> {
         let scaling = self.volume.meta().scaling;
         if self.labels {
             Samples::Labels(
-                self.sample_pixels(width, height, LabelSample::Outside, |voxel| match label_id(
-                    scaling.apply(voxels.nearest(voxel)),
-                ) {
-                    Ok(id) => LabelSample::Id(id),
-                    Err(_) => LabelSample::Invalid,
+                self.sample_pixels(width, height, LabelSample::Outside, |voxel| {
+                    LabelSample::of(scaling.apply(voxels.nearest(voxel)))
                 }),
             )
         } else {
