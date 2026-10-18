@@ -47,12 +47,12 @@ impl Volume {
     pub(crate) fn load(path: &Path, cache: &VolumeCache, progress: &Progress) -> Result<Self> {
         progress.check()?;
         let meta = VolumeMeta::read(path)?;
-        let assume_mm = GeometryOptions {
+        let options = GeometryOptions {
             // Allow unknown units, as the viewer lets the user assume mm.
             assume_mm: true,
             ..Default::default()
         };
-        VolumeGeometry::new(&meta, assume_mm)?;
+        VolumeGeometry::new(&meta, options)?;
 
         let data = &meta.data;
         let start = if data.gzip { 0 } else { data.start };
@@ -72,13 +72,9 @@ impl Volume {
         };
 
         let file = File::open(&data_path)?;
-        let info = file.metadata()?;
-        if !info.is_file() {
+        if !file.metadata()?.is_file() {
             return Err(Error::invalid("Invalid volume data file"));
         }
-        let file_bytes = usize::try_from(info.len())
-            .map_err(|_| Error::invalid("Volume data file is too large"))?;
-        voxel::validate_region(file_bytes, offset, data.bytes)?;
 
         // SAFETY: Memory map is only sound while no one else modifies the file.
         // Decompressed volumes are written once into the cache and never changed in place. However,
@@ -86,11 +82,7 @@ impl Volume {
         // while it is open, the views may change, or the app may crash. I think the risk is relatively low,
         // and its an alright trade-off to avoid copying whole uncompressed volumes to memory.
         let map = unsafe { Mmap::map(&file)? };
-        if map.len() < needed {
-            return Err(Error::invalid(
-                "The data is truncated or its offset is invalid",
-            ));
-        }
+        voxel::validate_region(map.len(), offset, data.bytes)?;
         progress.check()?;
 
         Ok(Self {
