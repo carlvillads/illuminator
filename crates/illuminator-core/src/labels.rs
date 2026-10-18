@@ -45,7 +45,7 @@ pub(crate) fn find_labels(
 pub(crate) fn label_id(value: f64) -> Result<i64> {
     // avoid that i64::MAX rounds up
     const POWER_63: f64 = 9223372036854775808_f64; // 2^63
-    if !value.is_finite() || value != value.trunc() || value < -POWER_63 || value >= POWER_63 {
+    if !value.is_finite() || value != value.trunc() || !(-POWER_63..POWER_63).contains(&value) {
         return Err(Error::invalid(
             "Segmentation labels must be finite and integral 64-bit IDs",
         ));
