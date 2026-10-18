@@ -20,7 +20,7 @@
     </p>
   </description>
 
-  <launchable type="desktop-id">illuminator.desktop</launchable>
+  <launchable type="desktop-id">illuminate.desktop</launchable>
 
   <url type="homepage">https://github.com/carlvillads/illuminator</url>
   <url type="bugtracker">https://github.com/carlvillads/illuminator/issues</url>

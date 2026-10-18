@@ -63,7 +63,7 @@ jobs:
           # every library the program links to must have come with the dependencies
           if ldd /usr/bin/illuminate | grep "not found"; then exit 1; fi
           grep "nii.gz" /usr/share/mime/globs2
-          cat /usr/share/applications/illuminator.desktop
+          cat /usr/share/applications/illuminate.desktop
           # software centers read the app's description from here
           test -f /usr/share/metainfo/io.github.carlvillads.illuminator.metainfo.xml
 
