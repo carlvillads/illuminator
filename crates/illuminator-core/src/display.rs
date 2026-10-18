@@ -503,15 +503,16 @@ impl VolumeDisplay {
     }
 
     pub fn orientation_labels(&self, axis: ViewPlane, radiological: bool) -> OrientationLabels {
-        if !self.geometry.anatomical {
-            return native_labels(axis);
-        }
-        let (title, mut left, mut right, top, bottom) = match axis {
-            ViewPlane::Axial => ("Axial", "L", "R", "A", "P"),
-            ViewPlane::Coronal => ("Coronal", "L", "R", "S", "I"),
-            ViewPlane::Sagittal => ("Sagittal", "P", "A", "S", "I"),
+        let [title, mut left, mut right, top, bottom] = match (self.geometry.anatomical, axis) {
+            (true, ViewPlane::Axial) => ["Axial", "L", "R", "A", "P"],
+            (true, ViewPlane::Coronal) => ["Coronal", "L", "R", "S", "I"],
+            (true, ViewPlane::Sagittal) => ["Sagittal", "P", "A", "S", "I"],
+            // voxel axes I, J, K
+            (false, ViewPlane::Axial) => ["Native K", "I-", "I+", "J+", "J-"],
+            (false, ViewPlane::Coronal) => ["Native J", "I-", "I+", "K+", "K-"],
+            (false, ViewPlane::Sagittal) => ["Native I", "J-", "J+", "K+", "K-"],
         };
-        if radiological && axis != ViewPlane::Sagittal {
+        if self.geometry.mirrors(axis, radiological) {
             (left, right) = (right, left);
         }
         OrientationLabels {
@@ -521,22 +522,6 @@ impl VolumeDisplay {
             top,
             bottom,
         }
-    }
-}
-
-/// Labels for images without an orientation. Uses voxel axes (I, J, K)
-fn native_labels(axis: ViewPlane) -> OrientationLabels {
-    let (title, left, right, top, bottom) = match axis {
-        ViewPlane::Axial => ("Native K", "I-", "I+", "J+", "J-"),
-        ViewPlane::Coronal => ("Native J", "I-", "I+", "K+", "K-"),
-        ViewPlane::Sagittal => ("Native I", "J-", "J+", "K+", "K-"),
-    };
-    OrientationLabels {
-        title,
-        left,
-        right,
-        top,
-        bottom,
     }
 }
 

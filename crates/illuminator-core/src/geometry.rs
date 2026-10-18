@@ -381,6 +381,11 @@ impl VolumeGeometry {
         }
         plane
     }
+
+    /// Whether views of `axis` are flipped left to right.
+    pub(crate) fn mirrors(&self, axis: ViewPlane, radiological: bool) -> bool {
+        self.anatomical && radiological && axis != ViewPlane::Sagittal
+    }
 }
 
 pub(crate) fn aspect_scale(
