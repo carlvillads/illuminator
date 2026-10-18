@@ -99,7 +99,7 @@ impl AxisY {
 
 /// Only count voxels on the labels of a label map layer
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct Region {
+struct LabelRegion {
     load_id: u64,
     label: Option<i64>,
 }
@@ -109,7 +109,7 @@ struct Settings {
     counting: Counting,
     y_axis: AxisY,
     log: bool,
-    region: Option<Region>,
+    region: Option<LabelRegion>,
 }
 
 /// What a curve is counted from.
@@ -172,7 +172,7 @@ struct Stroke {
 }
 
 /// The viewers layers as the window needs them.
-struct Snapshot {
+struct ViewerSnapshot {
     lines: Vec<Line>,
     label_maps: Vec<LabelMap>,
     playing: bool,
@@ -272,7 +272,7 @@ impl HistogramWindow {
         }
     }
 
-    fn snapshot(&self, cx: &App) -> Option<Snapshot> {
+    fn snapshot(&self, cx: &App) -> Option<ViewerSnapshot> {
         let viewer = self.viewer.upgrade()?;
         let viewer = viewer.read(cx);
         let label_maps: Vec<LabelMap> = viewer
@@ -324,7 +324,7 @@ impl HistogramWindow {
                 }
             })
             .collect();
-        Some(Snapshot {
+        Some(ViewerSnapshot {
             lines,
             label_maps,
             playing: viewer.time_playing.is_some(),
@@ -332,7 +332,7 @@ impl HistogramWindow {
     }
 
     /// Counts layers whose curves are missing or out of date in the background.
-    fn schedule(&mut self, snapshot: &Snapshot, cx: &mut Context<Self>) {
+    fn schedule(&mut self, snapshot: &ViewerSnapshot, cx: &mut Context<Self>) {
         self.curves
             .retain(|load_id, _| snapshot.lines.iter().any(|line| line.load_id == *load_id));
         // layers hidden in the legend are counted when they are shown again
@@ -364,7 +364,7 @@ impl HistogramWindow {
         }
     }
 
-    fn count(&mut self, line: &Line, snapshot: &Snapshot, cx: &mut Context<Self>) {
+    fn count(&mut self, line: &Line, snapshot: &ViewerSnapshot, cx: &mut Context<Self>) {
         let load_id = line.load_id;
         let key = line.key.clone();
         let cancelled = Arc::new(AtomicBool::new(false));
@@ -433,7 +433,7 @@ impl HistogramWindow {
     }
 
     /// The counted curves of the layers not hidden in the legend in layer order.
-    fn shown<'a>(&'a self, snapshot: &'a Snapshot) -> Vec<(&'a Line, &'a Histogram)> {
+    fn shown<'a>(&'a self, snapshot: &'a ViewerSnapshot) -> Vec<(&'a Line, &'a Histogram)> {
         snapshot
             .lines
             .iter()
@@ -442,7 +442,7 @@ impl HistogramWindow {
             .collect()
     }
 
-    fn csv(&self, snapshot: &Snapshot) -> Option<String> {
+    fn csv(&self, snapshot: &ViewerSnapshot) -> Option<String> {
         if !export_ready(&snapshot.lines, &self.curves, &self.hidden) {
             return None;
         }
@@ -521,7 +521,7 @@ impl HistogramWindow {
         .detach();
     }
 
-    fn render_controls(&self, snapshot: Option<&Snapshot>, cx: &mut Context<Self>) -> Div {
+    fn render_controls(&self, snapshot: Option<&ViewerSnapshot>, cx: &mut Context<Self>) -> Div {
         let muted = cx.theme().muted_foreground;
         let can_export = snapshot
             .is_some_and(|snapshot| export_ready(&snapshot.lines, &self.curves, &self.hidden));
@@ -634,7 +634,7 @@ impl HistogramWindow {
                                 .map(|&label| (format!("Label {label}"), Some(label)));
                             let choices = all
                                 .chain(each)
-                                .map(|(text, label)| (text, Some(Region { load_id, label })));
+                                .map(|(text, label)| (text, Some(LabelRegion { load_id, label })));
                             menu = choice_items(
                                 menu.separator().label(name.clone()),
                                 &this,
@@ -673,7 +673,7 @@ impl HistogramWindow {
             )
     }
 
-    fn render_plot(&self, snapshot: Option<&Snapshot>, cx: &mut Context<Self>) -> AnyElement {
+    fn render_plot(&self, snapshot: Option<&ViewerSnapshot>, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme();
         let (muted, border, plot_background, background) = (
             theme.muted_foreground,
@@ -957,7 +957,7 @@ impl HistogramWindow {
             .into_any_element()
     }
 
-    fn render_legend(&self, snapshot: Option<&Snapshot>, cx: &mut Context<Self>) -> Div {
+    fn render_legend(&self, snapshot: Option<&ViewerSnapshot>, cx: &mut Context<Self>) -> Div {
         let muted = cx.theme().muted_foreground;
         let lines = snapshot.map_or(&[][..], |snapshot| &snapshot.lines);
         h_flex()

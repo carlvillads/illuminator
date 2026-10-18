@@ -6,7 +6,7 @@ use illuminator_core::display::VolumeDisplay;
 use illuminator_core::suv::SuvInputs;
 use std::cmp::Ordering;
 
-use crate::label_statistics::{Snapshot, StatisticsView};
+use crate::label_statistics::{LayerSnapshot, StatisticsView};
 use crate::suv_form::SuvForm;
 
 use super::{DragEdge, FrameHistogram, Layer, Layout, Panel, Preset, Suv, Viewer, WindowEdge};
@@ -245,7 +245,7 @@ impl Viewer {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let snapshot = |layer: &Layer| Snapshot {
+        let snapshot = |layer: &Layer| LayerSnapshot {
             name: layer.display.name().into(),
             volume: layer.display.shared_volume(),
             geometry: layer.display.geometry().clone(),

@@ -21,14 +21,14 @@ const COLUMN: f32 = 76.0;
 const NO_VALUES: &str = "None (volumes only)";
 
 #[derive(Clone)]
-pub struct Snapshot {
+pub struct LayerSnapshot {
     pub name: SharedString,
     pub volume: Arc<Volume>,
     pub geometry: VolumeGeometry,
     pub frame: usize,
 }
 
-impl Snapshot {
+impl LayerSnapshot {
     fn source(&self) -> Source<'_> {
         Source {
             volume: &self.volume,
@@ -39,9 +39,9 @@ impl Snapshot {
 }
 
 pub struct StatisticsView {
-    labels: Snapshot,
+    labels: LayerSnapshot,
     /// The layers whose values can be measured
-    candidates: Vec<Snapshot>,
+    candidates: Vec<LayerSnapshot>,
     chosen: Option<usize>,
     /// None while measuring
     result: Option<Result<Vec<Region>, String>>,
@@ -50,7 +50,11 @@ pub struct StatisticsView {
 }
 
 impl StatisticsView {
-    pub fn new(labels: Snapshot, candidates: Vec<Snapshot>, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        labels: LayerSnapshot,
+        candidates: Vec<LayerSnapshot>,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let mut view = Self {
             labels,
             chosen: (!candidates.is_empty()).then_some(0),
@@ -77,7 +81,7 @@ impl StatisticsView {
         self._measuring = cx.spawn(async move |this, cx| {
             let result = cx
                 .background_spawn(async move {
-                    let values = values.as_ref().map(Snapshot::source);
+                    let values = values.as_ref().map(LayerSnapshot::source);
                     stats::label_statistics(labels.source(), values, &Progress::default())
                         .map_err(|error| error.to_string())
                 })
@@ -228,7 +232,7 @@ impl Render for StatisticsView {
                 .into_any_element(),
         };
         let has_result = matches!(self.result, Some(Ok(_)));
-        let frame = |snapshot: &Snapshot| {
+        let frame = |snapshot: &LayerSnapshot| {
             if snapshot.volume.meta().timepoints() > 1 {
                 format!(", frame {}", snapshot.frame + 1)
             } else {
