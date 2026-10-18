@@ -112,11 +112,9 @@ impl Viewer {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let Some(index) = self.selected() {
-            let display = &mut self.layers[index].display;
-            display.colormap = display.colormap.next();
-            cx.notify();
-        }
+        self.update_selected(cx, |layer| {
+            layer.display.colormap = layer.display.colormap.next();
+        });
     }
 
     pub(super) fn toggle_segmentation(
@@ -183,11 +181,7 @@ impl Viewer {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let Some(index) = self.selected() {
-            let display = &mut self.layers[index].display;
-            display.outline = !display.outline;
-            cx.notify();
-        }
+        self.update_selected(cx, |layer| layer.display.outline = !layer.display.outline);
     }
 
     pub(super) fn toggle_overlay(
@@ -218,8 +212,7 @@ impl Viewer {
     }
 
     pub(super) fn layout_grid(&mut self, _: &LayoutGrid, _: &mut Window, cx: &mut Context<Self>) {
-        let axis = self.layout.axis().unwrap_or(self.active_panel.1);
-        self.set_layout(Layout::Grid(axis), cx);
+        self.set_layout(Layout::Grid(self.current_axis()), cx);
     }
 
     pub(super) fn layout_single(
@@ -228,7 +221,7 @@ impl Viewer {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let axis = self.layout.axis().unwrap_or(self.active_panel.1);
+        let axis = self.current_axis();
         self.set_layout(Layout::Single { axis, layer: None }, cx);
     }
 
@@ -238,16 +231,11 @@ impl Viewer {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let axis = self.layout.axis().unwrap_or(self.active_panel.1);
-        self.set_layout(Layout::Lightbox(axis), cx);
+        self.set_layout(Layout::Lightbox(self.current_axis()), cx);
     }
 
     pub(super) fn toggle_layer(&mut self, _: &ToggleLayer, _: &mut Window, cx: &mut Context<Self>) {
-        if let Some(index) = self.selected() {
-            let layer = &mut self.layers[index];
-            layer.visible = !layer.visible;
-            cx.notify();
-        }
+        self.update_selected(cx, |layer| layer.visible = !layer.visible);
     }
 
     pub(super) fn next_layer(&mut self, _: &NextLayer, _: &mut Window, cx: &mut Context<Self>) {

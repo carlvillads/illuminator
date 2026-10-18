@@ -29,7 +29,7 @@ impl Viewer {
         let (border, background, edge) = (theme.border, theme.title_bar, theme.title_bar_border);
         let labels = f32::from(window.viewport_size().width) >= TOOLBAR_LABELS_WIDTH;
         let context = Some(shortcuts::CONTEXT);
-        let axis = self.layout.axis().unwrap_or(self.active_panel.1);
+        let axis = self.current_axis();
         let viewer = cx.entity().downgrade();
         let layout_button = |id: &'static str,
                              icon: Carbon,

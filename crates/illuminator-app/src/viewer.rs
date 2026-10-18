@@ -513,6 +513,19 @@ impl Viewer {
         (self.selected < self.layers.len()).then_some(self.selected)
     }
 
+    /// The plane of the layout or of the active view when the layout shows all three.
+    fn current_axis(&self) -> ViewPlane {
+        self.layout.axis().unwrap_or(self.active_panel.1)
+    }
+
+    /// Changes the selected layer and redraws.
+    fn update_selected(&mut self, cx: &mut Context<Self>, update: impl FnOnce(&mut Layer)) {
+        if let Some(index) = self.selected() {
+            update(&mut self.layers[index]);
+            cx.notify();
+        }
+    }
+
     fn layer_by_id(&mut self, load_id: u64) -> Option<&mut Layer> {
         self.layers
             .iter_mut()
@@ -541,7 +554,7 @@ impl Viewer {
             _ if layout.overlaid() => 0,
             _ => self.selected,
         };
-        self.active_panel = (base, layout.axis().unwrap_or(self.active_panel.1));
+        self.active_panel = (base, self.current_axis());
         self.sync_from_first();
         cx.notify();
     }
