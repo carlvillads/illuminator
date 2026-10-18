@@ -99,12 +99,13 @@ fn project<T: Scalar>(volume: &Volume, frame: usize, axis: usize) -> (Vec<f32>, 
     let dims = [meta.dims[0], meta.dims[1], meta.dims[2]];
     let strides = [1, dims[0], dims[0] * dims[1]];
     let [a, b] = other_axes(axis);
+    let mut max = vec![f32::NAN; dims[a] * dims[b]];
+    let mut depth_of_max = vec![0u32; dims[a] * dims[b]];
     // one line of the projection per task
-    let rows: Vec<(Vec<f32>, Vec<u32>)> = (0..dims[b])
-        .into_par_iter()
-        .map(|j| {
-            let mut max = vec![f32::NAN; dims[a]];
-            let mut at = vec![0u32; dims[a]];
+    max.par_chunks_mut(dims[a])
+        .zip(depth_of_max.par_chunks_mut(dims[a]))
+        .enumerate()
+        .for_each(|(j, (max, at))| {
             for k in 0..dims[axis] {
                 for i in 0..dims[a] {
                     let index = i * strides[a] + j * strides[b] + k * strides[axis];
@@ -116,17 +117,8 @@ fn project<T: Scalar>(volume: &Volume, frame: usize, axis: usize) -> (Vec<f32>, 
                     }
                 }
             }
-            (max, at)
-        })
-        .collect();
-    rows.into_iter().fold(
-        (Vec::with_capacity(dims[a] * dims[b]), Vec::new()),
-        |(mut max, mut at), (row_max, row_at)| {
-            max.extend(row_max);
-            at.extend(row_at);
-            (max, at)
-        },
-    )
+        });
+    (max, depth_of_max)
 }
 
 #[cfg(test)]
