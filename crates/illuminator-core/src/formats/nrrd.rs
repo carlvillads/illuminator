@@ -31,9 +31,13 @@ struct Header {
 impl Header {
     fn read(path: &Path) -> Result<Self> {
         let mut file = BufReader::new(File::open(path)?);
-        let mut fields = HashMap::new();
-        let mut length = 0;
         let mut line = Vec::new();
+        file.read_until(b'\n', &mut line)?;
+        if !line.starts_with(b"NRRD000") {
+            return Err(Error::invalid("Not a NRRD file"));
+        }
+        let mut length = line.len() as u64;
+        let mut fields = HashMap::new();
         loop {
             line.clear();
             let read = file.read_until(b'\n', &mut line)?;
@@ -43,12 +47,6 @@ impl Header {
             }
             let text = String::from_utf8_lossy(&line);
             let text = text.trim_end_matches(['\n', '\r']);
-            if length == read as u64 {
-                if !text.starts_with("NRRD000") {
-                    return Err(Error::invalid("Not a NRRD file"));
-                }
-                continue;
-            }
             if read == 0 || text.is_empty() {
                 return Ok(Self { fields, length });
             }
