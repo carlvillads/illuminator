@@ -58,12 +58,7 @@ impl Histogram {
                 }
                 counts
             },
-            |mut a, b| {
-                for (a, b) in a.iter_mut().zip(b) {
-                    *a += b;
-                }
-                a
-            },
+            add_counts,
         )?;
         progress.report(1.0, "Counted values")?;
         Ok(Some(Self {
@@ -116,12 +111,7 @@ impl Histogram {
                 counts[bin] += 1;
                 counts
             },
-            |mut a, b| {
-                for (a, b) in a.iter_mut().zip(b) {
-                    *a += b;
-                }
-                a
-            },
+            add_counts,
         )?;
         progress.report(1.0, "Counted values")?;
         Ok(Some(Self { min, max, counts }))
@@ -136,8 +126,7 @@ impl Histogram {
     }
 
     pub fn percentile(&self, fraction: f64) -> f64 {
-        let total: u64 = self.counts.iter().sum();
-        let target = fraction.clamp(0.0, 1.0) * total as f64;
+        let target = fraction.clamp(0.0, 1.0) * self.total() as f64;
         let mut before = 0.0;
         for (bin, &count) in self.counts.iter().enumerate() {
             let after = before + count as f64;
@@ -372,6 +361,14 @@ fn mask_bits(values: Source, mask: LabelMask, progress: &Progress) -> Result<Vec
             progress.report(done as f64 / depth as f64, "Finding the region")
         })?;
     Ok(bits)
+}
+
+/// The counts of two parts of a volume added bin by bin.
+fn add_counts(mut a: Vec<u64>, b: Vec<u64>) -> Vec<u64> {
+    for (a, b) in a.iter_mut().zip(b) {
+        *a += b;
+    }
+    a
 }
 
 /// Folds the values of `values` that `counting` keeps, and that are set in `inside`  when there is one.
