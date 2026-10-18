@@ -7,7 +7,7 @@ use gpui_kit::component::{ActiveTheme, Sizable, WindowExt, h_flex, v_flex};
 use gpui_kit::*;
 use illuminator_core::suv::{SuvInputs, TRACERS};
 
-use crate::ui::choice_items;
+use crate::ui::{choice_items, parse_value};
 use crate::viewer::Viewer;
 
 pub struct SuvForm {
@@ -49,15 +49,7 @@ impl SuvForm {
     }
 
     fn apply(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let number = |state: &Entity<InputState>| {
-            state
-                .read(cx)
-                .value()
-                .trim()
-                .replace(',', ".")
-                .parse::<f64>()
-                .ok()
-        };
+        let number = |state: &Entity<InputState>| parse_value(&state.read(cx).value());
         let inputs = match (
             number(&self.weight),
             number(&self.dose),
