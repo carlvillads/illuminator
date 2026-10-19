@@ -3,7 +3,21 @@ name: CI
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - "README.md"
+      - "CITATION.cff"
+      - "LICENSE-*"
+      - ".gitignore"
+      - ".gitattributes"
+      - ".github/workflows/package.yml"
   pull_request:
+    paths-ignore:
+      - "README.md"
+      - "CITATION.cff"
+      - "LICENSE-*"
+      - ".gitignore"
+      - ".gitattributes"
+      - ".github/workflows/package.yml"
   workflow_dispatch:
 
 concurrency:
