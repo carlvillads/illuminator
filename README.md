@@ -120,9 +120,4 @@ If you feel Illuminator has helped you enough to warrant it, you can cite it usi
 
 ## License
 
-Licensed under either of
-
-- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE) or <https://www.apache.org/licenses/LICENSE-2.0>)
-- MIT license ([LICENSE-MIT](LICENSE-MIT) or <https://opensource.org/licenses/MIT>)
-
-at your option.
+Licensed under either the Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE)), or the MIT license ([LICENSE-MIT](LICENSE-MIT)).
