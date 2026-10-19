@@ -303,6 +303,7 @@ impl Viewer {
                 .text_color(color)
         };
         let full = self.info == InfoLevel::Full && view.slice.is_none();
+        let bar = bar.filter(|_| full);
         div()
             .absolute()
             .inset_0()
@@ -322,20 +323,13 @@ impl Viewer {
                             .child(numbered(windowed, window_text)),
                     ),
                 )
-                .when_some(bar, |info, bar| {
-                    info.child(
-                        corner()
-                            .top_0()
-                            .bottom_0()
-                            .right_2()
-                            .flex()
-                            .flex_col()
-                            .justify_center()
-                            .child(bar),
-                    )
-                })
             })
-            .child(corner().bottom_1().right_2().child(position))
+            .child(
+                corner()
+                    .bottom_1()
+                    .right_2()
+                    .child(v_flex().items_end().gap_2().children(bar).child(position)),
+            )
     }
 }
 
