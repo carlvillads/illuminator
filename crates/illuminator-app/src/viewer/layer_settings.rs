@@ -244,7 +244,11 @@ impl Viewer {
                     .gap_2()
                     .child(
                         Checkbox::new(id("suv"))
-                            .label("SUV")
+                            .label(
+                                layer
+                                    .suv
+                                    .map_or("SUV", |suv| suv.inputs.normalization.suv_name()),
+                            )
                             .checked(display.scale() != 1.0)
                             .disabled(layer.suv.is_none())
                             .on_click(cx.listener(move |viewer, checked: &bool, _, cx| {

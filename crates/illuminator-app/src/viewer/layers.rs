@@ -232,10 +232,7 @@ impl Viewer {
         let viewer = cx.entity().downgrade();
         let form = cx.new(|cx| SuvForm::new(load_id, known, viewer, window, cx));
         window.open_dialog(cx, move |dialog, _, _| {
-            dialog
-                .title("SUV (bw)")
-                .width(px(420.0))
-                .child(form.clone())
+            dialog.title("SUV").width(px(420.0)).child(form.clone())
         });
     }
 

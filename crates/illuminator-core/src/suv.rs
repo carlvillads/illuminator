@@ -21,9 +21,63 @@ pub const TRACERS: [(&str, f64); 9] = [
     ("I-124", 6013.44),
 ];
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BiologicalSex {
+    Male,
+    Female,
+}
+
+impl BiologicalSex {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Female => "Female",
+            Self::Male => "Male",
+        }
+    }
+
+    fn from_code(text: &str) -> Option<Self> {
+        match text.trim().to_ascii_uppercase().as_str() {
+            "M" | "MALE" => Some(Self::Male),
+            "F" | "FEMALE" => Some(Self::Female),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Normalization {
+    #[default]
+    BodyWeight,
+    LbmJames,
+    LbmJanma,
+}
+
+impl Normalization {
+    pub const ALL: [Self; 3] = [Self::BodyWeight, Self::LbmJames, Self::LbmJanma];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::BodyWeight => "BW",
+            Self::LbmJames => "LBM (James)",
+            Self::LbmJanma => "LBM (Janma)",
+        }
+    }
+
+    pub fn suv_name(self) -> &'static str {
+        match self {
+            Self::BodyWeight => "SUV-BW",
+            Self::LbmJames => "SUV-LBM (James)",
+            Self::LbmJanma => "SUV-LBM (Janma)",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SuvInputs {
     pub weight_kg: f64,
+    pub height_cm: Option<f64>,
+    pub biological_sex: Option<BiologicalSex>,
+    pub normalization: Normalization,
     pub dose_mbq: f64,
     pub minutes_after_injection: f64,
     pub half_life_minutes: f64,
@@ -49,7 +103,48 @@ impl SuvInputs {
         }
         let decay = 0.5f64.powf(self.minutes_after_injection / self.half_life_minutes);
         let dose_bq = self.dose_mbq * 1e6 * decay;
-        Ok(self.bq_ml_per_unit * self.weight_kg * 1000.0 / dose_bq)
+        Ok(self.bq_ml_per_unit * self.mass_kg()? * 1000.0 / dose_bq)
+    }
+
+    /// BW or LBM depending on normalization.
+    pub fn mass_kg(&self) -> Result<f64> {
+        let weight = self.weight_kg;
+        let body = || match (self.height_cm, self.biological_sex) {
+            (Some(height), Some(biological_sex)) if height.is_finite() && height > 0.0 => {
+                Ok((height, biological_sex))
+            }
+            _ => Err(Error::invalid(
+                "Lean body mass needs a height and biological sex",
+            )),
+        };
+        let lbm = match self.normalization {
+            Normalization::BodyWeight => return Ok(weight),
+            Normalization::LbmJames => {
+                let (height, biological_sex) = body()?;
+                let (a, b) = match biological_sex {
+                    BiologicalSex::Female => (1.07, 148.0),
+                    BiologicalSex::Male => (1.1, 128.0),
+                };
+                a * weight - b * (weight / height).powi(2)
+            }
+            Normalization::LbmJanma => {
+                let (height, biological_sex) = body()?;
+                let bmi = weight / (height / 100.0).powi(2);
+                let (a, b) = match biological_sex {
+                    BiologicalSex::Female => (8.78e3, 244.0),
+                    BiologicalSex::Male => (6.68e3, 216.0),
+                };
+                9.27e3 * weight / (a + b * bmi)
+            }
+        };
+        // the LBMJames parabola goes negative at a very high BMI
+        if lbm > 0.0 {
+            Ok(lbm)
+        } else {
+            Err(Error::invalid(
+                "Lean body mass isn't positive at this weight and height",
+            ))
+        }
     }
 
     pub fn from_sidecar(volume: &Path) -> Option<Result<Self>> {
@@ -92,8 +187,17 @@ impl SuvInputs {
             Some(unit) => bq_ml_per(unit)?,
             None => 1.0,
         };
+        let height_cm = sidecar
+            .number("PatientSize")
+            .map(|size| if size < 3.0 { size * 100.0 } else { size });
+        let biological_sex = sidecar
+            .text("PatientSex")
+            .and_then(BiologicalSex::from_code);
         Ok(Self {
             weight_kg,
+            height_cm,
+            biological_sex,
+            normalization: Normalization::BodyWeight,
             dose_mbq,
             minutes_after_injection: decay_minutes(&sidecar)?,
             half_life_minutes,
@@ -227,6 +331,9 @@ mod tests {
     fn suv_scales_by_weight_and_decayed_dose() {
         let inputs = SuvInputs {
             weight_kg: 70.0,
+            height_cm: None,
+            biological_sex: None,
+            normalization: Normalization::BodyWeight,
             dose_mbq: 350.0,
             minutes_after_injection: 0.0,
             half_life_minutes: 109.77,
