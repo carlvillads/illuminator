@@ -2,8 +2,8 @@
 
 A simple and fast nifti viewer + more!
 
-> [!NOTE]
-> *Disclaimer:* Illuminator is intended for research, educational and/or personal use only and is not certified for any clinical use or diagnosis.
+> [!WARNING]
+> **Disclaimer:** Illuminator is intended for research, educational and/or personal use only and is not certified for any clinical use or diagnosis.
 
 Illuminator opens NIfTI-1 (`.nii`, `.nii.gz` and `.hdr`/`.img` pairs) and NRRD (`.nrrd`, `.nhdr`) volumes (for now).
 
@@ -11,9 +11,9 @@ Some features:
 - Stack volumes as layers, overlaid or side by side with a colormap and window per layer
 - Label maps can optionally be drawn as outlines with per-label statistics
 - Maximum intensity projections (MIPs)
-- Playback of 4D volumes
+- "Playback" of 4D volumes
 - Histogram window
-- SUV for PET volumes
+- SUV-BW, SUV-LBM<sub>James</sub>, and SUV-LBM<sub>Janma</sub>  for PET volumes
 
 ## Installation
 
@@ -29,7 +29,7 @@ Download the latest package from the [releases page](https://github.com/carlvill
 
 ## Use
 
-Open volumes from the command line, with <kbd>Ctrl</kbd>+<kbd>O</kbd> (<kbd>⌘</kbd>+<kbd>O</kbd> on macOS), or by dropping them on the window.
+Open volumes from the command line, or with <kbd>Ctrl</kbd>+<kbd>O</kbd> in an open window, or by dragging and dropping them on a open window.
 
 ```bash
 illuminate ct.nii.gz pet.nii.gz -c inferno -l segmentation.nii.gz --layout compare
@@ -53,33 +53,33 @@ Press <kbd>?</kbd> in Illuminator to see this list.
 
 | Input | Action |
 | --- | --- |
-| Click and drag | Move the cursor |
-| Right-click and drag | Window/level of the selected layer |
+| Click+drag | Move the cursor |
+| Right-click+drag | Window/level of the selected layer |
 | Scroll | Change slice |
 | <kbd>Ctrl</kbd>+scroll | Zoom at the mouse |
-| Middle-click drag or <kbd>Alt</kbd>+drag | Pan a zoomed view |
+| Middle-click+drag or <kbd>Alt</kbd>+drag | Pan a zoomed view |
 | Double-click | Focus or unfocus a view |
-| <kbd>=</kbd> / <kbd>-</kbd> / <kbd>0</kbd> | Zoom in / out / reset |
-| <kbd>1</kbd>–<kbd>5</kbd> | Ortho, compare, grid, single, lightbox layout |
-| <kbd>↑</kbd> / <kbd>↓</kbd> | Next / previous slice (<kbd>Shift</kbd> for ten) |
-| <kbd>←</kbd> / <kbd>→</kbd> | Previous / next frame |
-| <kbd>Space</kbd> | Play or pause frames |
-| <kbd>O</kbd> | Overlaid or side by side layers |
-| <kbd>J</kbd> / <kbd>K</kbd> | Next / previous layer |
-| <kbd>Alt</kbd>+<kbd>J</kbd> / <kbd>K</kbd> | Move layer down / up (or drag it) |
-| <kbd>V</kbd> | Show or hide the layer |
-| <kbd>H</kbd> | Center the cursor |
+| <kbd>=</kbd>/<kbd>-</kbd>/<kbd>0</kbd> | Zoom in/out/reset |
+| <kbd>1</kbd> – <kbd>5</kbd> | View layouts |
+| <kbd>↑</kbd>/<kbd>↓</kbd> | Next/previous slice |
+| <kbd>←</kbd>/<kbd>→</kbd> | Previous/next frame |
+| <kbd>Space</kbd> | Play/pause 4D volumes |
+| <kbd>O</kbd> | Overlaid or side-by-side layers |
+| <kbd>J</kbd>/<kbd>K</kbd> | Next/previous layer |
+| <kbd>Alt</kbd>+<kbd>J</kbd>/<kbd>K</kbd> | Move layer down/up |
+| <kbd>V</kbd> | Show or hide layer |
+| <kbd>H</kbd> | Center cursor |
 | <kbd>A</kbd> | Auto contrast |
 | <kbd>M</kbd> | Next colormap |
-| <kbd>L</kbd> / <kbd>Shift</kbd>+<kbd>L</kbd> | Label map on/off / outlines |
-| <kbd>S</kbd> / <kbd>R</kbd> / <kbd>C</kbd> / <kbd>I</kbd> | Crosshair sync / radiological orientation / crosshairs / corner text |
+| <kbd>L</kbd>/<kbd>Shift</kbd>+<kbd>L</kbd> | Label map on/off/toggle outlines |
+| <kbd>S</kbd>/<kbd>R</kbd>/<kbd>C</kbd>/<kbd>I</kbd> | Crosshair sync/radiological orientation/crosshairs/view overlays |
 | <kbd>P</kbd> | MIPs |
 | <kbd>G</kbd> | Histogram window |
 | <kbd>T</kbd> | Switch theme |
 | <kbd>Ctrl</kbd>+<kbd>R</kbd> | Reload layer from disk |
 | <kbd>Ctrl</kbd>+<kbd>Backspace</kbd> | Close layer |
-| <kbd>Ctrl</kbd>+<kbd>C</kbd> / <kbd>E</kbd> | Copy / save the views as an image |
-| <kbd>Ctrl</kbd>+<kbd>W</kbd> / <kbd>Q</kbd> | Close window / quit |
+| <kbd>Ctrl</kbd>+<kbd>C</kbd>/<kbd>E</kbd> | Copy/save the views as an image |
+| <kbd>Ctrl</kbd>+<kbd>W</kbd>/<kbd>Q</kbd> | Close window/quit |
 
 ## Developing
 
@@ -89,7 +89,7 @@ Press <kbd>?</kbd> in Illuminator to see this list.
 cargo run --release -p illuminator-app -- [FILES]
 ```
 
-Building on Linux needs `libfontconfig-dev libfreetype-dev libwayland-dev libxkbcommon-dev
+Building on GNU/Linux needs `libfontconfig-dev libfreetype-dev libwayland-dev libxkbcommon-dev
 libxkbcommon-x11-dev libx11-xcb-dev`.
 
 Run tests with:
