@@ -6,6 +6,11 @@ This format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 
 ## [Unreleased]
 
+### Changed
+
+- Assume millimeters for volume geometry by default.
+- Update assumeing millimeters warning to be more clear.
+
 ## [0.1.0] - 2026-10-19
 
 ### Added

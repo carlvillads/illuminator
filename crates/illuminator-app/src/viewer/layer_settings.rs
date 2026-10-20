@@ -139,7 +139,7 @@ impl Viewer {
                     div()
                         .text_xs()
                         .text_color(danger)
-                        .child("No orientation in header. Overlay position may be wrong"),
+                        .child("Shown on voxel axes. Overlay position may be wrong"),
                 )
             })
             .into_any_element()
