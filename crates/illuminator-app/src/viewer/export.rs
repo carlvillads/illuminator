@@ -75,7 +75,7 @@ impl Viewer {
         }
         let scale = window.scale_factor();
         let device = |value: f32| (value * scale).round().max(0.0) as u32;
-        let area = view_area(window);
+        let area = view_area(window).size;
         let mut picture = Picture {
             width: device(area.width),
             height: device(area.height),

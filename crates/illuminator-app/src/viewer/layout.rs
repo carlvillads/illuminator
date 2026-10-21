@@ -4,7 +4,7 @@ use gpui_kit::{Context, Pixels, Point, Size, Window, point, size};
 use illuminator_core::geometry::ViewPlane;
 use illuminator_core::slicer::fit_size;
 
-use super::{Hit, Layout, Panel, TOOLBAR_HEIGHT, View, Viewer, view_area};
+use super::{Hit, Layout, Panel, View, Viewer, view_area};
 
 const LIGHTBOX_SLOTS: usize = 6;
 
@@ -15,7 +15,7 @@ impl Viewer {
         if count == 0 {
             return Vec::new();
         }
-        let area = view_area(window);
+        let area = view_area(window).size;
         let mut ortho: Vec<Cell> = ViewPlane::ALL
             .map(|axis| Cell {
                 base: 0,
@@ -143,8 +143,11 @@ impl Viewer {
     }
 
     pub(super) fn hit(&self, position: Point<Pixels>, window: &Window) -> Option<Hit> {
-        let x = f32::from(position.x);
-        let y = f32::from(position.y) - TOOLBAR_HEIGHT;
+        let origin = view_area(window).origin;
+        let (x, y) = (
+            f32::from(position.x) - origin.x,
+            f32::from(position.y) - origin.y,
+        );
         self.views(window).into_iter().find_map(|view| {
             let (local_x, local_y) = (x - view.origin.x, y - view.origin.y);
             if local_x < 0.0

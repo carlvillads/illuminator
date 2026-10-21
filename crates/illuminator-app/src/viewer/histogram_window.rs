@@ -33,7 +33,7 @@ use std::time::Duration;
 
 use crate::shortcuts::{self, CloseWindow, ShowHistogram};
 use crate::theme;
-use crate::ui::{choice_items, format_value};
+use crate::ui::{choice_items, format_value, title_bar, uses_client_manager_decorations};
 
 use self::plot::{Axes, height_at, steps, ticks, value_at};
 use super::{DragEdge, Viewer, WindowEdge};
@@ -1000,7 +1000,7 @@ impl HistogramWindow {
 }
 
 impl Render for HistogramWindow {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let snapshot = self.snapshot(cx);
         if let Some(snapshot) = &snapshot {
             // the region's label map was closed or isn't a label map anymore
@@ -1019,17 +1019,25 @@ impl Render for HistogramWindow {
         let (background, foreground) = (theme.background, theme.foreground);
         v_flex()
             .size_full()
-            .p_3()
-            .gap_2()
             .bg(background)
             .text_color(foreground)
             .text_sm()
             .track_focus(&self.focus_handle)
             .key_context(shortcuts::HISTOGRAM_CONTEXT)
             .on_action(cx.listener(|_, _: &CloseWindow, window, _| window.remove_window()))
-            .child(self.render_controls(snapshot.as_ref(), cx))
-            .child(self.render_plot(snapshot.as_ref(), cx))
-            .child(self.render_legend(snapshot.as_ref(), cx))
+            .when(uses_client_manager_decorations(window), |root| {
+                root.child(title_bar("Histogram"))
+            })
+            .child(
+                v_flex()
+                    .flex_1()
+                    .min_h_0()
+                    .p_3()
+                    .gap_2()
+                    .child(self.render_controls(snapshot.as_ref(), cx))
+                    .child(self.render_plot(snapshot.as_ref(), cx))
+                    .child(self.render_legend(snapshot.as_ref(), cx)),
+            )
     }
 }
 
