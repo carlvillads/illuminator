@@ -258,8 +258,10 @@ fn split_name<'a>(path: &'a Path, suffixes: &[&str]) -> Option<&'a str> {
 }
 
 fn find_sibling(path: &Path, stem: &str, extensions: &[&str]) -> Result<PathBuf> {
+    // some analyze images have uppercase extensions
     extensions
         .iter()
+        .flat_map(|extension| [extension.to_string(), extension.to_ascii_uppercase()])
         .map(|extension| path.with_file_name(format!("{stem}.{extension}")))
         .find(|candidate| candidate.is_file())
         .ok_or_else(|| {
@@ -499,5 +501,15 @@ mod tests {
         assert_eq!(from_header.format, Format::Nifti1Pair);
         assert_eq!(read(&dir.path().join("pair.img")).unwrap(), from_header);
         assert!(read(&dir.path().join("lonely.img")).is_err());
+    }
+
+    #[test]
+    fn opens_pairs_with_upper_case_extensions() {
+        let dir = tempfile::tempdir().unwrap();
+        Fixture::default().write(&dir.path().join("pair.hdr"));
+        std::fs::rename(dir.path().join("pair.hdr"), dir.path().join("PAIR.HDR")).unwrap();
+        std::fs::rename(dir.path().join("pair.img"), dir.path().join("PAIR.IMG")).unwrap();
+        assert!(read(&dir.path().join("PAIR.HDR")).is_ok());
+        assert!(read(&dir.path().join("PAIR.IMG")).is_ok());
     }
 }

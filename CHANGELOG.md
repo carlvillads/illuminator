@@ -16,6 +16,7 @@ This format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 - Fix missing title bars on Linux window managers.
 - Fix mouse pointer alignment in Linux.
 - Prevent that the frame number on 4D series can point past the last frame available.
+- Fix header-image pairing for the Analyze format.
 
 
 ## [0.1.0] - 2026-10-19
