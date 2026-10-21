@@ -18,6 +18,7 @@ This format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 - Fix mouse pointer alignment in Linux.
 - Prevent that the frame number on 4D series can point past the last frame available.
 - Fix header-image pairing for the Analyze format.
+- Fix UI jumping when scrubbing a 4D series.
 
 
 ## [0.1.0] - 2026-10-19
