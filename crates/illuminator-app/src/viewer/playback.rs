@@ -91,6 +91,7 @@ impl Viewer {
             .max()
             .unwrap_or(1);
         let last_frame = frames - 1;
+        self.frame = self.frame.min(last_frame);
         if last_frame == 0 {
             // no 4d layers left
             self.frame_slider = None;
@@ -104,7 +105,7 @@ impl Viewer {
         {
             return;
         }
-        let frame = self.frame.min(last_frame) as f32;
+        let frame = self.frame as f32;
         let state = cx.new(|_| {
             SliderState::new()
                 .min(0.0)
