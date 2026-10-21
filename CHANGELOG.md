@@ -10,6 +10,7 @@ This format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 
 - Assume millimeters for volume geometry by default.
 - Update assumeing millimeters warning to be more clear.
+- Make each layer solid outside of the window by default.
 
 ### Fixed
 

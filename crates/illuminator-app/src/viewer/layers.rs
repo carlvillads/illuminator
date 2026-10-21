@@ -91,7 +91,6 @@ impl Viewer {
         {
             eprintln!("Illuminator: {}: {error}", display.name());
         }
-        display.clip_low = true;
         let at = self
             .layers
             .iter()
