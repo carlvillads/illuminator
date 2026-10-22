@@ -49,6 +49,7 @@ const OVERLAY_OPACITY: f32 = 0.5;
 const TOOLBAR_HEIGHT: f32 = 36.0;
 const STATUS_HEIGHT: f32 = 24.0;
 const CORNER_TEXT: f32 = 10.0;
+const STALE_HISTOGRAM_OPACITY: f32 = 0.3;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum SyncMode {
@@ -130,6 +131,14 @@ impl FrameHistogram {
         self.histogram.as_ref().filter(|_| self.key == Some(key))
     }
 
+    /// Histogram of another frame from the same volume to show while `key` is counted.
+    fn other_frame(&self, key: HistogramKey) -> Option<&Histogram> {
+        self.histogram.as_ref().filter(|_| {
+            self.key
+                .is_some_and(|counted| counted.volume == key.volume && counted.frame != key.frame)
+        })
+    }
+
     fn needs_count(&self, key: HistogramKey) -> bool {
         self.pending.is_none() && self.key != Some(key)
     }
@@ -145,7 +154,7 @@ impl FrameHistogram {
             return false;
         }
         self.pending = None;
-        if request == current {
+        if request == current || self.key != Some(current) {
             self.key = Some(request);
             (self.histogram, self.error) = match histogram {
                 Ok(histogram) => (histogram, None),
@@ -208,6 +217,14 @@ impl Layer {
 
     fn current_histogram(&self) -> Option<&Histogram> {
         self.histogram.current(self.histogram_key())
+    }
+
+    /// Histogram the side bar draws.
+    fn shown_histogram(&self) -> Option<&Histogram> {
+        let key = self.histogram_key();
+        self.histogram
+            .current(key)
+            .or_else(|| self.histogram.other_frame(key))
     }
 
     fn panel(&self, slot: usize) -> Option<&Panel> {

@@ -151,7 +151,7 @@ impl Viewer {
         let Some(layer) = self.layer_by_id(drag.load_id) else {
             return;
         };
-        let Some(histogram) = layer.current_histogram() else {
+        let Some(histogram) = layer.shown_histogram() else {
             return;
         };
         if bounds.size.width <= px(0.0) {

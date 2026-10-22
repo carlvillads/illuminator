@@ -27,7 +27,7 @@ use crate::ui::{
     self, colormap_strip, format_editable, format_value, parse_value, rgb_to_rgba, section_title,
 };
 
-use super::{CORNER_TEXT, DragEdge, Preset, SyncMode, Viewer, WindowEdge};
+use super::{CORNER_TEXT, DragEdge, Preset, STALE_HISTOGRAM_OPACITY, SyncMode, Viewer, WindowEdge};
 
 const HISTOGRAM_HEIGHT: f32 = 56.0;
 const CHART_CURVE_HEIGHT: f32 = 64.0;
@@ -401,11 +401,12 @@ impl Viewer {
 
     fn render_histogram(&self, index: usize, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
-        let (muted, foreground, info, background) = (
+        let (muted, foreground, info, background, border) = (
             theme.muted_foreground,
             theme.foreground,
             theme.info,
             theme.secondary,
+            theme.border,
         );
         let layer = &self.layers[index];
         let load_id = layer.load_id;
@@ -425,16 +426,19 @@ impl Viewer {
                     }
                 }),
             );
-        let Some(histogram) = layer.current_histogram() else {
-            let message: SharedString = if layer.histogram.key == Some(layer.histogram_key()) {
+        let counting: SharedString = if self.time_playing.is_some() {
+            "Counting paused during playback".into()
+        } else {
+            "Counting values\u{2026}".into()
+        };
+        let Some(histogram) = layer.shown_histogram() else {
+            let message = if layer.histogram.key == Some(layer.histogram_key()) {
                 match &layer.histogram.error {
                     Some(error) => format!("Cannot count values: {error}").into(),
                     None => "No values to count".into(),
                 }
-            } else if self.time_playing.is_some() {
-                "Counting paused during playback".into()
             } else {
-                "Counting values\u{2026}".into()
+                counting
             };
             return v_flex()
                 .gap_0p5()
@@ -453,6 +457,8 @@ impl Viewer {
                 .child(value_range("0", "0", muted).invisible()); // holds the height while counting
         };
 
+        let stale = layer.current_histogram().is_none();
+        let fade = if stale { STALE_HISTOGRAM_OPACITY } else { 1.0 };
         let span = histogram.max - histogram.min;
         let at = |value: f64| {
             if span > 0.0 {
@@ -475,9 +481,9 @@ impl Viewer {
                 .w(relative(1.0 / bins))
                 .h(relative(height))
                 .bg(if inside {
-                    foreground
+                    foreground.opacity(fade)
                 } else {
-                    muted.opacity(0.5)
+                    muted.opacity(0.5 * fade)
                 })
         });
         let edge = |edge: WindowEdge, value: f64| {
@@ -518,14 +524,30 @@ impl Viewer {
                             .w(relative(shaded_right - shaded_left))
                             .bg(info.opacity(0.15)),
                     )
+                    .when(stale, |chart| {
+                        chart.child(
+                            div()
+                                .absolute()
+                                .top_1()
+                                .right_1()
+                                .px_1()
+                                .rounded_sm()
+                                .border_1()
+                                .border_color(border)
+                                .bg(background)
+                                .text_size(px(CORNER_TEXT))
+                                .text_color(muted)
+                                .child(counting),
+                        )
+                    })
                     .child(edge(WindowEdge::Low, low))
                     .child(edge(WindowEdge::High, high)),
             )
-            .child(transfer_strip(histogram, layer.display.coloring()))
+            .child(transfer_strip(histogram, layer.display.coloring()).opacity(fade))
             .child(value_range(
                 format_value(histogram.min),
                 format_value(histogram.max),
-                muted,
+                muted.opacity(fade),
             ))
     }
 
