@@ -1,7 +1,7 @@
 //! Small UI helpers and colors that the viewer and dialogs share.
 
 use gpui_kit::component::menu::{PopupMenu, PopupMenuItem};
-use gpui_kit::component::{ActiveTheme, h_flex, v_flex};
+use gpui_kit::component::{ActiveTheme, TitleBar, h_flex, v_flex};
 use gpui_kit::*;
 use illuminator_core::colormap::Colormap;
 use illuminator_core::labels::label_color;
@@ -130,6 +130,15 @@ pub fn choice_items<E: 'static, L: Into<SharedString>, T: Copy + 'static>(
         }));
     }
     menu
+}
+
+/// Whether the users window manager leaves the title bar to the app
+pub fn uses_client_manager_decorations(window: &Window) -> bool {
+    matches!(window.window_decorations(), Decorations::Client { .. })
+}
+
+pub fn title_bar(title: &'static str) -> TitleBar {
+    TitleBar::new().child(div().text_sm().child(title))
 }
 
 #[cfg(test)]

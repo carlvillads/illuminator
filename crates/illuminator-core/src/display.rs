@@ -122,7 +122,10 @@ pub struct VolumeDisplay {
 
 impl VolumeDisplay {
     pub fn new(loaded: LoadedVolume) -> Result<Self> {
-        let options = GeometryOptions::default();
+        let options = GeometryOptions {
+            assume_mm: true, // units are often left out and implied to be mm
+            ..GeometryOptions::default()
+        };
         let geometry = loaded.volume.geometry(options)?;
         let window = IntensityWindow::initial(loaded.volume.meta(), loaded.range)?;
         let raw = Arc::new(loaded.volume);

@@ -17,7 +17,7 @@ mod toolbar;
 use futures::StreamExt;
 use futures::channel::mpsc;
 use gpui_kit::component::slider::{SliderEvent, SliderState};
-use gpui_kit::component::{ActiveTheme, h_flex, v_flex};
+use gpui_kit::component::{ActiveTheme, TITLE_BAR_HEIGHT, h_flex, v_flex, window_paddings};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use illuminator_core::cache::VolumeCache;
@@ -37,6 +37,7 @@ use std::sync::Arc;
 
 use crate::cli::{Cli, LayoutName};
 use crate::shortcuts::{self, *};
+use crate::ui::{title_bar, uses_client_manager_decorations};
 use crate::zoom::{Visible, Zoom};
 
 use self::layer_settings::LimitInputs;
@@ -48,6 +49,7 @@ const OVERLAY_OPACITY: f32 = 0.5;
 const TOOLBAR_HEIGHT: f32 = 36.0;
 const STATUS_HEIGHT: f32 = 24.0;
 const CORNER_TEXT: f32 = 10.0;
+const STALE_HISTOGRAM_OPACITY: f32 = 0.3;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum SyncMode {
@@ -129,6 +131,14 @@ impl FrameHistogram {
         self.histogram.as_ref().filter(|_| self.key == Some(key))
     }
 
+    /// Histogram of another frame from the same volume to show while `key` is counted.
+    fn other_frame(&self, key: HistogramKey) -> Option<&Histogram> {
+        self.histogram.as_ref().filter(|_| {
+            self.key
+                .is_some_and(|counted| counted.volume == key.volume && counted.frame != key.frame)
+        })
+    }
+
     fn needs_count(&self, key: HistogramKey) -> bool {
         self.pending.is_none() && self.key != Some(key)
     }
@@ -144,7 +154,7 @@ impl FrameHistogram {
             return false;
         }
         self.pending = None;
-        if request == current {
+        if request == current || self.key != Some(current) {
             self.key = Some(request);
             (self.histogram, self.error) = match histogram {
                 Ok(histogram) => (histogram, None),
@@ -207,6 +217,14 @@ impl Layer {
 
     fn current_histogram(&self) -> Option<&Histogram> {
         self.histogram.current(self.histogram_key())
+    }
+
+    /// Histogram the side bar draws.
+    fn shown_histogram(&self) -> Option<&Histogram> {
+        let key = self.histogram_key();
+        self.histogram
+            .current(key)
+            .or_else(|| self.histogram.other_frame(key))
     }
 
     fn panel(&self, slot: usize) -> Option<&Panel> {
@@ -712,6 +730,9 @@ impl Render for Viewer {
                     viewer.loader.enqueue(path.clone());
                 }
             }))
+            .when(uses_client_manager_decorations(window), |root| {
+                root.child(title_bar("Illuminator"))
+            })
             .child(self.render_toolbar(window, cx))
             .child(
                 h_flex()
@@ -724,12 +745,38 @@ impl Render for Viewer {
     }
 }
 
-fn view_area(window: &Window) -> Size<f32> {
+/// Where the views are in the window.
+fn view_area(window: &Window) -> Bounds<f32> {
     let viewport = window.viewport_size();
-    size(
-        (f32::from(viewport.width) - SIDEBAR_WIDTH).max(0.0),
-        (f32::from(viewport.height) - TOOLBAR_HEIGHT - STATUS_HEIGHT).max(0.0),
-    )
+    let frame = window_frame(window);
+    let title_bar = if uses_client_manager_decorations(window) {
+        f32::from(TITLE_BAR_HEIGHT)
+    } else {
+        0.0
+    };
+    let top = frame.top + title_bar + TOOLBAR_HEIGHT;
+    Bounds {
+        origin: point(frame.left, top),
+        size: size(
+            (f32::from(viewport.width) - frame.left - frame.right - SIDEBAR_WIDTH).max(0.0),
+            (f32::from(viewport.height) - top - STATUS_HEIGHT - frame.bottom).max(0.0),
+        ),
+    }
+}
+
+/// How far the content is from each edge of the window.
+fn window_frame(window: &Window) -> Edges<f32> {
+    let Decorations::Client { tiling } = window.window_decorations() else {
+        return Edges::default();
+    };
+    let shadow = window_paddings(window);
+    let side = |shadow: Pixels, tiled: bool| f32::from(shadow) + if tiled { 0.0 } else { 1.0 };
+    Edges {
+        top: side(shadow.top, tiling.top),
+        right: side(shadow.right, tiling.right),
+        bottom: side(shadow.bottom, tiling.bottom),
+        left: side(shadow.left, tiling.left),
+    }
 }
 
 fn opacity_slider(load_id: u64, cx: &mut Context<Viewer>) -> (Entity<SliderState>, Subscription) {

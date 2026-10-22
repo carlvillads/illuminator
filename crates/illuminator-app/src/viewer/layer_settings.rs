@@ -10,9 +10,10 @@ use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{ActiveTheme, Disableable, Sizable, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::{
-    AnyElement, AppContext, Context, Div, DragMoveEvent, Entity, Focusable, InteractiveElement,
-    IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent, ParentElement, SharedString,
-    StatefulInteractiveElement, Styled, Subscription, Window, canvas, div, px, relative,
+    AnyElement, AppContext, Context, Div, DragMoveEvent, Entity, Focusable, Hsla,
+    InteractiveElement, IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent, ParentElement,
+    SharedString, StatefulInteractiveElement, Styled, Subscription, Window, canvas, div, px,
+    relative,
 };
 use illuminator_core::colormap::Colormap;
 use illuminator_core::display::VolumeDisplay;
@@ -26,10 +27,11 @@ use crate::ui::{
     self, colormap_strip, format_editable, format_value, parse_value, rgb_to_rgba, section_title,
 };
 
-use super::{CORNER_TEXT, DragEdge, Preset, SyncMode, Viewer, WindowEdge};
+use super::{CORNER_TEXT, DragEdge, Preset, STALE_HISTOGRAM_OPACITY, SyncMode, Viewer, WindowEdge};
 
 const HISTOGRAM_HEIGHT: f32 = 56.0;
 const CHART_CURVE_HEIGHT: f32 = 64.0;
+const TRANSFER_STRIP_HEIGHT: f32 = 6.0;
 const PRESETS: &[PresetGroup] = &[
     PresetGroup {
         title: "CT (HU)",
@@ -139,7 +141,7 @@ impl Viewer {
                     div()
                         .text_xs()
                         .text_color(danger)
-                        .child("No orientation in header. Overlay position may be wrong"),
+                        .child("Shown on voxel axes. Overlay position may be wrong"),
                 )
             })
             .into_any_element()
@@ -399,11 +401,12 @@ impl Viewer {
 
     fn render_histogram(&self, index: usize, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
-        let (muted, foreground, info, background) = (
+        let (muted, foreground, info, background, border) = (
             theme.muted_foreground,
             theme.foreground,
             theme.info,
             theme.secondary,
+            theme.border,
         );
         let layer = &self.layers[index];
         let load_id = layer.load_id;
@@ -423,30 +426,39 @@ impl Viewer {
                     }
                 }),
             );
-        let Some(histogram) = layer.current_histogram() else {
-            let message: SharedString = if layer.histogram.key == Some(layer.histogram_key()) {
+        let counting: SharedString = if self.time_playing.is_some() {
+            "Counting paused during playback".into()
+        } else {
+            "Counting values\u{2026}".into()
+        };
+        let Some(histogram) = layer.shown_histogram() else {
+            let message = if layer.histogram.key == Some(layer.histogram_key()) {
                 match &layer.histogram.error {
                     Some(error) => format!("Cannot count values: {error}").into(),
                     None => "No values to count".into(),
                 }
-            } else if self.time_playing.is_some() {
-                "Counting paused during playback".into()
             } else {
-                "Counting values\u{2026}".into()
+                counting
             };
-            return v_flex().child(
-                chart
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .px_2()
-                    .text_center()
-                    .text_xs()
-                    .text_color(muted)
-                    .child(message),
-            );
+            return v_flex()
+                .gap_0p5()
+                .child(
+                    chart
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .px_2()
+                        .text_center()
+                        .text_xs()
+                        .text_color(muted)
+                        .child(message),
+                )
+                .child(div().h(px(TRANSFER_STRIP_HEIGHT)))
+                .child(value_range("0", "0", muted).invisible()); // holds the height while counting
         };
 
+        let stale = layer.current_histogram().is_none();
+        let fade = if stale { STALE_HISTOGRAM_OPACITY } else { 1.0 };
         let span = histogram.max - histogram.min;
         let at = |value: f64| {
             if span > 0.0 {
@@ -469,9 +481,9 @@ impl Viewer {
                 .w(relative(1.0 / bins))
                 .h(relative(height))
                 .bg(if inside {
-                    foreground
+                    foreground.opacity(fade)
                 } else {
-                    muted.opacity(0.5)
+                    muted.opacity(0.5 * fade)
                 })
         });
         let edge = |edge: WindowEdge, value: f64| {
@@ -512,18 +524,31 @@ impl Viewer {
                             .w(relative(shaded_right - shaded_left))
                             .bg(info.opacity(0.15)),
                     )
+                    .when(stale, |chart| {
+                        chart.child(
+                            div()
+                                .absolute()
+                                .top_1()
+                                .right_1()
+                                .px_1()
+                                .rounded_sm()
+                                .border_1()
+                                .border_color(border)
+                                .bg(background)
+                                .text_size(px(CORNER_TEXT))
+                                .text_color(muted)
+                                .child(counting),
+                        )
+                    })
                     .child(edge(WindowEdge::Low, low))
                     .child(edge(WindowEdge::High, high)),
             )
-            .child(transfer_strip(histogram, layer.display.coloring()))
-            .child(
-                h_flex()
-                    .justify_between()
-                    .text_size(px(CORNER_TEXT))
-                    .text_color(muted)
-                    .child(format_value(histogram.min))
-                    .child(format_value(histogram.max)),
-            )
+            .child(transfer_strip(histogram, layer.display.coloring()).opacity(fade))
+            .child(value_range(
+                format_value(histogram.min),
+                format_value(histogram.max),
+                muted.opacity(fade),
+            ))
     }
 
     fn render_time_curve(&self, index: usize, cx: &mut Context<Self>) -> Option<AnyElement> {
@@ -541,16 +566,29 @@ impl Viewer {
         );
         let title = section_title("Curve at cursor", cx);
         let Some(curve) = &layer.curve else {
+            let message = if layer.curve_pending {
+                "Reading the curve\u{2026}"
+            } else {
+                "Cursor is outside the volume"
+            };
             return Some(
                 v_flex()
                     .gap_1()
                     .child(title)
                     .child(
                         div()
+                            .w_full()
+                            .h(px(CHART_CURVE_HEIGHT))
+                            .rounded_sm()
+                            .bg(background)
+                            .flex()
+                            .items_center()
+                            .justify_center()
                             .text_xs()
                             .text_color(muted)
-                            .child("Cursor is outside the volume"),
+                            .child(message),
                     )
+                    .child(curve_footer("0", "0", muted).invisible())
                     .into_any_element(),
             );
         };
@@ -623,18 +661,11 @@ impl Viewer {
                 .gap_1()
                 .child(title)
                 .child(plot)
-                .child(
-                    h_flex()
-                        .justify_between()
-                        .text_xs()
-                        .text_color(muted)
-                        .child(format!(
-                            "{} \u{2013} {}",
-                            format_value(low),
-                            format_value(high)
-                        ))
-                        .child(format!("frame {}: {}", frame + 1, format_value(value))),
-                )
+                .child(curve_footer(
+                    format!("{} \u{2013} {}", format_value(low), format_value(high)),
+                    format!("frame {}: {}", frame + 1, format_value(value)),
+                    muted,
+                ))
                 .into_any_element(),
         )
     }
@@ -708,6 +739,30 @@ fn display_checkbox(
             let checked = *checked;
             viewer.change(index, |display| set(display, checked), cx);
         }))
+}
+
+/// Lowest and highest values under a histogram.
+fn value_range(low: impl Into<SharedString>, high: impl Into<SharedString>, color: Hsla) -> Div {
+    h_flex()
+        .justify_between()
+        .text_size(px(CORNER_TEXT))
+        .text_color(color)
+        .child(low.into())
+        .child(high.into())
+}
+
+/// The value range of a time curve and the value at the shown frame.
+fn curve_footer(
+    range: impl Into<SharedString>,
+    at_frame: impl Into<SharedString>,
+    color: Hsla,
+) -> Div {
+    h_flex()
+        .justify_between()
+        .text_xs()
+        .text_color(color)
+        .child(range.into())
+        .child(at_frame.into())
 }
 
 /// The colors along the histogram's value axis, as the views show them
