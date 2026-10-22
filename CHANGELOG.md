@@ -6,6 +6,10 @@ This format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 
 ## [Unreleased]
 
+### Added
+
+- Add a stale histogram while counting the next in 4D series.
+
 ### Changed
 
 - Assume millimeters for volume geometry by default.
