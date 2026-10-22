@@ -8,7 +8,7 @@ This format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 
 ### Added
 
-- Add a stale histogram while counting the next in 4D series.
+- Add stale histograms while counting new frames.
 
 ### Changed
 
