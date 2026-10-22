@@ -36,7 +36,7 @@ use crate::theme;
 use crate::ui::{choice_items, format_value, title_bar, uses_client_manager_decorations};
 
 use self::plot::{Axes, height_at, steps, ticks, value_at};
-use super::{DragEdge, Viewer, WindowEdge};
+use super::{DragEdge, STALE_HISTOGRAM_OPACITY, Viewer, WindowEdge};
 
 const HISTOGRAM_WINDOW_SIZE: (f32, f32) = (760.0, 480.0);
 const HISTOGRAM_NOTICE_TIME: Duration = Duration::from_secs(4);
@@ -122,6 +122,17 @@ struct CurveKey {
     region: Option<RegionKey>,
 }
 
+impl CurveKey {
+    /// Whether this key counts the same values as `key` in another frame.
+    fn other_frame_of(&self, key: &CurveKey) -> bool {
+        self.frame != key.frame
+            && self.volume == key.volume
+            && self.geometry == key.geometry
+            && self.counting == key.counting
+            && self.region == key.region
+    }
+}
+
 #[derive(Clone, PartialEq)]
 struct RegionKey {
     volume: u64,
@@ -162,6 +173,7 @@ struct Shown<'a> {
     line: &'a Line,
     histogram: &'a Histogram,
     heights: Vec<f64>,
+    stale: bool,
 }
 
 /// A curve's outline as fractions of the plot.
@@ -442,6 +454,19 @@ impl HistogramWindow {
             .collect()
     }
 
+    /// The curves to plot of the layers not hidden in the legend in layer order and whether each is another frames.
+    fn plotted<'a>(&'a self, snapshot: &'a ViewerSnapshot) -> Vec<(&'a Line, &'a Histogram, bool)> {
+        snapshot
+            .lines
+            .iter()
+            .filter(|line| !self.hidden.contains(&line.load_id))
+            .filter_map(|line| {
+                let (histogram, stale) = plotted_curve(&self.curves, line)?;
+                Some((line, histogram, stale))
+            })
+            .collect()
+    }
+
     fn csv(&self, snapshot: &ViewerSnapshot) -> Option<String> {
         if !export_ready(&snapshot.lines, &self.curves, &self.hidden) {
             return None;
@@ -698,14 +723,20 @@ impl HistogramWindow {
             return message("No visible intensity layers");
         }
         let settings = self.settings;
+        let counting = if snapshot.playing {
+            "Pause playback to count values"
+        } else {
+            "Counting values\u{2026}"
+        };
         // selected layer last so it is drawn on top
         let mut shown: Vec<Shown> = self
-            .shown(snapshot)
+            .plotted(snapshot)
             .into_iter()
-            .map(|(line, histogram)| Shown {
+            .map(|(line, histogram, stale)| Shown {
                 line,
                 histogram,
                 heights: settings.y_axis.heights(histogram),
+                stale,
             })
             .collect();
         shown.sort_by_key(|shown| shown.line.selected);
@@ -721,11 +752,7 @@ impl HistogramWindow {
                     !self.hidden.contains(&line.load_id)
                         && current_curve(&self.curves, line).is_none()
                 }) {
-                    if snapshot.playing {
-                        "Pause playback to count values"
-                    } else {
-                        "Counting values\u{2026}"
-                    }
+                    counting
                 } else {
                     "No values to count"
                 },
@@ -755,7 +782,11 @@ impl HistogramWindow {
         let strokes: Vec<Stroke> = shown
             .iter()
             .map(|shown| Stroke {
-                color: shown.line.color,
+                color: if shown.stale {
+                    shown.line.color.opacity(STALE_HISTOGRAM_OPACITY)
+                } else {
+                    shown.line.color
+                },
                 width: if shown.line.selected { 2.0 } else { 1.25 },
                 points: steps(&axes, shown.histogram, &shown.heights, cumulative),
             })
@@ -803,6 +834,29 @@ impl HistogramWindow {
                     .absolute()
                     .size_full(),
             );
+        // plot another frames curve while counting the current one
+        if shown.iter().any(|shown| shown.stale) {
+            plot = plot.child(
+                div()
+                    .absolute()
+                    .top_1()
+                    .left_0()
+                    .right_0()
+                    .flex()
+                    .justify_center()
+                    .child(
+                        div()
+                            .px_1()
+                            .rounded_sm()
+                            .border_1()
+                            .border_color(border)
+                            .bg(plot_background)
+                            .text_xs()
+                            .text_color(muted)
+                            .child(counting),
+                    ),
+            );
+        }
 
         // the selected layers window
         if let Some(line) = shown
@@ -850,18 +904,22 @@ impl HistogramWindow {
 
         if let Some(value) = self.hover {
             let at = axes.x(value);
-            let rows = shown.iter().rev().map(|shown| {
-                let height = height_at(shown.histogram, &shown.heights, value, cumulative);
-                let line = shown.line;
-                h_flex()
-                    .gap_1()
-                    .child(div().w(px(8.0)).h(px(8.0)).bg(line.color))
-                    .child(format!(
-                        "{} {}",
-                        line.number,
-                        settings.y_axis.format(height)
-                    ))
-            });
+            let rows = shown
+                .iter()
+                .rev()
+                .filter(|shown| !shown.stale)
+                .map(|shown| {
+                    let height = height_at(shown.histogram, &shown.heights, value, cumulative);
+                    let line = shown.line;
+                    h_flex()
+                        .gap_1()
+                        .child(div().w(px(8.0)).h(px(8.0)).bg(line.color))
+                        .child(format!(
+                            "{} {}",
+                            line.number,
+                            settings.y_axis.format(height)
+                        ))
+                });
             let readout = v_flex()
                 .absolute()
                 .top_1()
@@ -1091,6 +1149,18 @@ fn current_curve<'a>(curves: &'a HashMap<u64, Curve>, line: &Line) -> Option<&'a
     curves
         .get(&line.load_id)
         .filter(|curve| curve.key == line.key)
+}
+
+fn plotted_curve<'a>(
+    curves: &'a HashMap<u64, Curve>,
+    line: &Line,
+) -> Option<(&'a Histogram, bool)> {
+    let curve = curves.get(&line.load_id)?;
+    let stale = curve.key != line.key;
+    if stale && !curve.key.other_frame_of(&line.key) {
+        return None;
+    }
+    Some((curve.histogram.as_ref()?, stale))
 }
 
 fn export_ready(lines: &[Line], curves: &HashMap<u64, Curve>, hidden: &HashSet<u64>) -> bool {
