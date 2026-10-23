@@ -2,6 +2,8 @@
 
 A simple and fast nifti viewer + more!
 
+![Screenshot of Illuminator](https://cvrp.dk/illuminator/screenshots/2.png)
+
 > [!WARNING]
 > **Disclaimer:** Illuminator is intended for research, educational and/or personal use only and is not certified for any clinical use or diagnosis.
 
@@ -113,6 +115,16 @@ cargo packager --release -p illuminator-app
 ```
 
 The packages are written to `target/packages`. Changes should be recorded in [CHANGELOG.md](CHANGELOG.md).
+
+## Screenshots
+
+![Extra screenshot 1](https://cvrp.dk/illuminator/screenshots/1.png)
+
+![Extra screenshot 2](https://cvrp.dk/illuminator/screenshots/3.png)
+
+![Extra screenshot 3](https://cvrp.dk/illuminator/screenshots/4.png)
+
+![Extra screenshot 4](https://cvrp.dk/illuminator/screenshots/5.png)
 
 ## Citing
 
