@@ -84,6 +84,8 @@ actions!(
         ZoomReset,
         /// Opens histogram window
         ShowHistogram,
+        /// Opens time series window
+        ShowTimeSeries,
         /// Switches between the dark and the Platinum theme
         ToggleTheme,
     ]
@@ -91,6 +93,7 @@ actions!(
 
 pub const CONTEXT: &str = "Viewer";
 pub const HISTOGRAM_CONTEXT: &str = "Histogram";
+pub const TIME_SERIES_CONTEXT: &str = "TimeSeries";
 const NOT_TYPING: &str = "Viewer && !Input";
 pub const SECONDARY: &str = if cfg!(target_os = "macos") {
     "\u{2318}"
@@ -110,6 +113,7 @@ pub fn bind(cx: &mut App) {
         KeyBinding::new("secondary-q", Quit, None),
         KeyBinding::new("secondary-w", CloseWindow, viewer),
         KeyBinding::new("secondary-w", CloseWindow, Some(HISTOGRAM_CONTEXT)),
+        KeyBinding::new("secondary-w", CloseWindow, Some(TIME_SERIES_CONTEXT)),
         KeyBinding::new("secondary-o", OpenFiles, viewer),
         KeyBinding::new("secondary-c", CopyImage, viewer),
         KeyBinding::new("secondary-e", SaveImage, viewer),
@@ -131,6 +135,7 @@ pub fn bind(cx: &mut App) {
         KeyBinding::new("p", ToggleMip, keys),
         KeyBinding::new("?", ShowHelp, keys),
         KeyBinding::new("g", ShowHistogram, keys),
+        KeyBinding::new("shift-g", ShowTimeSeries, keys),
         KeyBinding::new("t", ToggleTheme, keys),
         KeyBinding::new("o", ToggleOverlay, keys),
         KeyBinding::new("shift-l", ToggleOutline, keys),
@@ -180,6 +185,7 @@ pub fn help() -> Vec<(String, &'static str)> {
         ("S/R/C/I".into(), "Sync/radiological/crosshair/corner text"),
         ("P".into(), "Maximum intensity projection (MIP)"),
         ("G".into(), "Histogram window"),
+        ("Shift+G".into(), "Time series window"),
         ("T".into(), "Switch theme"),
         ("?".into(), "This list"),
         (format!("{ALT}J/K"), "Move layer down/up"),
