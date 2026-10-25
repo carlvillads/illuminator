@@ -6,6 +6,14 @@ This format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 
 ## [Unreleased]
 
+- Add a time series window (<kbd>Shift</kbd>+<kbd>G</kbd>, and the button next to "Curve at cursor").
+- Measure the time series at, or in a cube around the cursor ($3 \times 3 \times 3$, $5 \times 5 \times 5$ or $7 \times 7 \times 7$ voxels), or inside label map labels.
+- Show the mean, minimum, or maximum of the area in each frame.
+
+### Changed
+
+- Share one window layout between the histogram and time series windows.
+
 ## [0.1.1] - 2026-10-22
 
 ### Added
