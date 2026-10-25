@@ -92,8 +92,7 @@ actions!(
 );
 
 pub const CONTEXT: &str = "Viewer";
-pub const HISTOGRAM_CONTEXT: &str = "Histogram";
-pub const TIME_SERIES_CONTEXT: &str = "TimeSeries";
+pub const PLOT_CONTEXT: &str = "Plot";
 const NOT_TYPING: &str = "Viewer && !Input";
 pub const SECONDARY: &str = if cfg!(target_os = "macos") {
     "\u{2318}"
@@ -112,8 +111,7 @@ pub fn bind(cx: &mut App) {
     cx.bind_keys([
         KeyBinding::new("secondary-q", Quit, None),
         KeyBinding::new("secondary-w", CloseWindow, viewer),
-        KeyBinding::new("secondary-w", CloseWindow, Some(HISTOGRAM_CONTEXT)),
-        KeyBinding::new("secondary-w", CloseWindow, Some(TIME_SERIES_CONTEXT)),
+        KeyBinding::new("secondary-w", CloseWindow, Some(PLOT_CONTEXT)),
         KeyBinding::new("secondary-o", OpenFiles, viewer),
         KeyBinding::new("secondary-c", CopyImage, viewer),
         KeyBinding::new("secondary-e", SaveImage, viewer),
