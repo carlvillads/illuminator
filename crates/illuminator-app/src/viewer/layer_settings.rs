@@ -27,7 +27,7 @@ use crate::ui::{
     self, colormap_strip, format_editable, format_value, parse_value, rgb_to_rgba, section_title,
 };
 
-use super::{CORNER_TEXT, DragEdge, Preset, STALE_HISTOGRAM_OPACITY, SyncMode, Viewer, WindowEdge};
+use super::{CORNER_TEXT, DragEdge, Preset, STALE_OPACITY, SyncMode, Viewer, WindowEdge};
 
 const HISTOGRAM_HEIGHT: f32 = 56.0;
 const CHART_CURVE_HEIGHT: f32 = 64.0;

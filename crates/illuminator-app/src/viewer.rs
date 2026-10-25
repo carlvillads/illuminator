@@ -52,7 +52,7 @@ const OVERLAY_OPACITY: f32 = 0.5;
 const TOOLBAR_HEIGHT: f32 = 36.0;
 const STATUS_HEIGHT: f32 = 24.0;
 const CORNER_TEXT: f32 = 10.0;
-const STALE_HISTOGRAM_OPACITY: f32 = 0.3;
+const STALE_OPACITY: f32 = 0.3;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum SyncMode {
