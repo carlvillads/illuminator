@@ -458,7 +458,7 @@ impl Viewer {
         };
 
         let stale = layer.current_histogram().is_none();
-        let fade = if stale { STALE_HISTOGRAM_OPACITY } else { 1.0 };
+        let fade = if stale { STALE_OPACITY } else { 1.0 };
         let span = histogram.max - histogram.min;
         let at = |value: f64| {
             if span > 0.0 {

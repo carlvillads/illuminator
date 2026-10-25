@@ -1,7 +1,7 @@
 //! Histogram window.
 //! The values of the visible layers counted into bins
 
-mod plot;
+mod bars;
 
 use gpui_kit::component::Sizable;
 use gpui_kit::component::button::Button;
@@ -22,10 +22,10 @@ use std::sync::Arc;
 use crate::shortcuts::ShowHistogram;
 use crate::ui::{choice_items, format_value};
 
-use self::plot::{height_at, steps};
+use self::bars::{height_at, steps};
 use super::plot_window::{
-    Axes, Chart, Job, LabelMap, Line, Plot, PlotWindow, Plotted, RegionJob, RegionKey, Snapshot,
-    ticks, value_at,
+    Axes, Chart, Job, LabelArea, LabelMap, Plot, PlotLayer, PlotWindow, Plotted, RegionKey,
+    Snapshot, Texts, ticks, value_at,
 };
 use super::{DragEdge, Viewer, WindowEdge};
 
@@ -116,12 +116,19 @@ impl Plot for HistogramPlot {
     type Key = CurveKey;
     type Value = Histogram;
 
-    const TITLE: &'static str = "Histogram";
-    const CSV_NAME: &'static str = "histogram";
-    const COPY_TOOLTIP: &'static str = "Copy shown histograms as CSV";
-    const MEASURING: &'static str = "Counting values\u{2026}";
-    const MEASURING_NOTE: &'static str = " (counting\u{2026})";
-    const NO_VALUES: &'static str = "No values to count";
+    const TEXTS: Texts = Texts {
+        title: "Histogram",
+        csv_name: "histogram",
+        copy_tooltip: "Copy shown histograms as CSV",
+        no_layers: "No visible intensity layers",
+        measuring: "Counting values\u{2026}",
+        measuring_note: " (counting\u{2026})",
+        waiting: "Pause playback to count values",
+        waiting_note: " (pause to count)",
+        nothing_to_measure: "Nothing to count",
+        nothing_to_measure_note: " (nothing to count)",
+        no_values: "No values to count",
+    };
     const WAITS_FOR_PAUSE: bool = true;
 
     fn key(&self, display: &VolumeDisplay, region: Option<&RegionKey>) -> Option<CurveKey> {
@@ -135,8 +142,8 @@ impl Plot for HistogramPlot {
     }
 
     fn job(key: &CurveKey, volume: Arc<Volume>, label_maps: &[LabelMap]) -> Option<Job<Histogram>> {
-        let region = match &key.region {
-            Some(region) => Some(region.job(label_maps)?),
+        let labels = match &key.region {
+            Some(region) => Some(region.resolve(label_maps)?),
             None => None,
         };
         let (geometry, frame, counting) = (key.geometry.clone(), key.frame, key.counting);
@@ -149,7 +156,7 @@ impl Plot for HistogramPlot {
             Histogram::counted(
                 values,
                 counting,
-                region.as_ref().map(RegionJob::mask),
+                labels.as_ref().map(LabelArea::mask),
                 progress,
             )
         }))
@@ -159,18 +166,18 @@ impl Plot for HistogramPlot {
         old.other_frame_of(new)
     }
 
-    fn csv(shown: &[(&Line<CurveKey>, &Histogram)]) -> String {
+    fn csv(exported: &[(&PlotLayer<CurveKey>, &Histogram)]) -> String {
         to_csv(
-            shown
+            exported
                 .iter()
-                .map(|&(line, histogram)| (line.number, line.name.as_ref(), histogram)),
+                .map(|&(layer, histogram)| (layer.number, layer.name.as_ref(), histogram)),
         )
     }
 
     fn controls(
         window: &PlotWindow<Self>,
         controls: Div,
-        snapshot: Option<&Snapshot<CurveKey>>,
+        snapshot: &Snapshot<CurveKey>,
         cx: &mut Context<PlotWindow<Self>>,
     ) -> Div {
         let this = cx.entity().downgrade();
@@ -283,18 +290,7 @@ impl Plot for HistogramPlot {
         }
     }
 
-    fn x_name(x: f64) -> String {
-        format_value(x)
-    }
-
-    fn readout(&self, histogram: &Histogram, x: f64) -> String {
-        let heights = self.y_axis.heights(histogram);
-        let cumulative = self.y_axis == AxisY::Cumulative;
-        self.y_axis
-            .format(height_at(histogram, &heights, x, cumulative))
-    }
-
-    fn decorate(
+    fn overlay(
         &self,
         mut plot: Stateful<Div>,
         axes: &Axes,
@@ -303,14 +299,14 @@ impl Plot for HistogramPlot {
         cx: &mut Context<PlotWindow<Self>>,
     ) -> Stateful<Div> {
         // the selected layers window
-        if let Some(line) = plotted
+        if let Some(layer) = plotted
             .iter()
-            .map(|plotted| plotted.line)
-            .find(|line| line.selected)
+            .map(|plotted| plotted.layer)
+            .find(|layer| layer.selected)
         {
-            let (low, high) = line.limits;
+            let (low, high) = layer.limits;
             let (left, right) = (axes.x(low).clamp(0.0, 1.0), axes.x(high).clamp(0.0, 1.0));
-            let load_id = line.load_id;
+            let load_id = layer.load_id;
             let edge = |edge: WindowEdge, value: f64| {
                 let id = match edge {
                     WindowEdge::Low => "window-low",
@@ -327,7 +323,7 @@ impl Plot for HistogramPlot {
                     .flex()
                     .justify_center()
                     .cursor_ew_resize()
-                    .child(div().w(px(2.0)).h_full().bg(line.color))
+                    .child(div().w(px(2.0)).h_full().bg(layer.color))
                     .on_drag(DragEdge { load_id, edge }, |drag, _, _, cx| {
                         cx.new(|_| *drag)
                     })
@@ -340,7 +336,7 @@ impl Plot for HistogramPlot {
                         .bottom_0()
                         .left(relative(left))
                         .w(relative(right - left))
-                        .bg(line.color.opacity(0.1)),
+                        .bg(layer.color.opacity(0.1)),
                 )
                 .child(edge(WindowEdge::Low, low))
                 .child(edge(WindowEdge::High, high));
@@ -355,6 +351,17 @@ impl Plot for HistogramPlot {
                 this.update_viewer(cx, |viewer, _, cx| viewer.move_window_edge(drag, value, cx));
             }),
         )
+    }
+
+    fn readout_title(x: f64) -> String {
+        format_value(x)
+    }
+
+    fn readout(&self, histogram: &Histogram, x: f64) -> String {
+        let heights = self.y_axis.heights(histogram);
+        let cumulative = self.y_axis == AxisY::Cumulative;
+        self.y_axis
+            .format(height_at(histogram, &heights, x, cumulative))
     }
 }
 
@@ -414,56 +421,14 @@ impl Viewer {
 
 #[cfg(test)]
 mod tests {
-    use super::super::plot_window::{Line, Measured, RegionKey, current, export_ready};
+    use super::super::plot_window::RegionKey;
+    use super::super::plot_window::test_util::loaded_display;
     use super::CurveKey;
-    use gpui_kit::rgb;
-    use illuminator_core::cache::VolumeCache;
-    use illuminator_core::display::VolumeDisplay;
-    use illuminator_core::histogram::{Counting, Histogram};
-    use illuminator_core::loader::VolumeLoader;
-    use std::collections::{HashMap, HashSet};
-    use std::path::PathBuf;
-    use std::sync::Arc;
-    use std::sync::atomic::{AtomicU64, Ordering};
-    use std::sync::mpsc;
-    use std::time::{Duration, Instant};
+    use illuminator_core::histogram::Counting;
 
-    struct TestDirectory(PathBuf);
-
-    impl Drop for TestDirectory {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
-    }
-
-    fn line_fixture() -> (TestDirectory, Line<CurveKey>) {
-        static NEXT: AtomicU64 = AtomicU64::new(0);
-        let directory = TestDirectory(std::env::temp_dir().join(format!(
-            "illuminator-histogram-test-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        )));
-        std::fs::create_dir(&directory.0).unwrap();
-        let path = directory.0.join("values.nrrd");
-        let mut data = b"NRRD0004\ntype: uchar\ndimension: 4\nsizes: 2 1 1 2\nencoding: raw\nspace: RAS\nspace directions: (1,0,0) (0,1,0) (0,0,1) none\n\n".to_vec();
-        data.extend_from_slice(&[1, 2, 3, 4]);
-        std::fs::write(&path, data).unwrap();
-        let (sender, receiver) = mpsc::channel();
-        let cache = VolumeCache::new(directory.0.join("cache"), 1 << 20).unwrap();
-        let loader = VolumeLoader::new(Arc::new(cache), move || {
-            let _ = sender.send(());
-        });
-        let load_id = loader.enqueue(path);
-        let deadline = Instant::now() + Duration::from_secs(10);
-        let loaded = loop {
-            if let Some(loaded) = loader.take_completed().pop() {
-                break loaded;
-            }
-            receiver
-                .recv_timeout(deadline.saturating_duration_since(Instant::now()))
-                .expect("test volume did not load");
-        };
-        let display = VolumeDisplay::new(loaded).unwrap();
+    #[test]
+    fn curve_keys_change_with_their_sources_and_settings() {
+        let (_directory, display) = loaded_display();
         let key = CurveKey {
             volume: display.volume().id(),
             frame: display.frame(),
@@ -472,48 +437,13 @@ mod tests {
                 bins: Some(32),
                 ignore_zeros: true,
             },
-            region: None,
+            region: Some(RegionKey {
+                volume: 42,
+                frame: 0,
+                geometry: display.geometry().clone(),
+                label: Some(1),
+            }),
         };
-        let line = Line {
-            load_id,
-            number: 1,
-            name: "values".into(),
-            color: rgb(crate::theme::HISTOGRAM_CURVE_COLORS_DARK[0]).into(),
-            volume: display.shared_volume(),
-            key: Some(key),
-            limits: display.window_limits(),
-            selected: true,
-        };
-        (directory, line)
-    }
-
-    fn histogram() -> Histogram {
-        Histogram {
-            min: 2.0,
-            max: 6.0,
-            counts: vec![1, 3],
-        }
-    }
-
-    #[test]
-    fn curve_keys_reject_stale_sources_and_settings() {
-        let (_directory, mut line) = line_fixture();
-        let mut key = line.key.clone().unwrap();
-        key.region = Some(RegionKey {
-            volume: 42,
-            frame: 0,
-            geometry: key.geometry.clone(),
-            label: Some(1),
-        });
-        line.key = Some(key.clone());
-        let mut results = HashMap::from([(
-            line.load_id,
-            Measured {
-                key: key.clone(),
-                value: Some(histogram()),
-            },
-        )]);
-        assert!(current(&results, &line).is_some());
         type KeyChange = (&'static str, fn(&mut CurveKey));
         let changes: [KeyChange; 10] = [
             ("volume", |key| key.volume += 1),
@@ -538,70 +468,8 @@ mod tests {
         for (name, change) in changes {
             let mut changed = key.clone();
             change(&mut changed);
-            line.key = Some(changed);
-            assert!(current(&results, &line).is_none(), "{name}");
+            assert!(changed != key, "{name}");
+            assert_eq!(changed.other_frame_of(&key), name == "frame", "{name}");
         }
-        results.get_mut(&line.load_id).unwrap().value = None;
-        assert!(current(&results, &line).is_none());
-        line.key = None;
-        assert!(current(&results, &line).is_none());
-        line.key = Some(key);
-        assert!(current(&results, &line).unwrap().value.is_none());
-        line.load_id += 1;
-        assert!(current(&results, &line).is_none());
-    }
-
-    #[test]
-    fn export_waits_for_every_nonhidden_desired_curve() {
-        let (_directory, first) = line_fixture();
-        let key = first.key.clone().unwrap();
-        let second = Line {
-            load_id: first.load_id + 1,
-            number: 2,
-            name: "second".into(),
-            color: first.color,
-            volume: Arc::clone(&first.volume),
-            key: Some(key.clone()),
-            limits: first.limits,
-            selected: true,
-        };
-        let lines = [first, second];
-        let mut results = HashMap::from([(
-            lines[0].load_id,
-            Measured {
-                key: key.clone(),
-                value: Some(histogram()),
-            },
-        )]);
-        let mut hidden = HashSet::new();
-        assert!(!export_ready(&lines, &results, &hidden));
-        hidden.insert(lines[1].load_id);
-        assert!(export_ready(&lines, &results, &hidden));
-        hidden.clear();
-        let mut stale_key = key.clone();
-        stale_key.frame += 1;
-        results.insert(
-            lines[1].load_id,
-            Measured {
-                key: stale_key,
-                value: None,
-            },
-        );
-        assert!(!export_ready(&lines, &results, &hidden));
-        results.get_mut(&lines[1].load_id).unwrap().value = Some(histogram());
-        assert!(!export_ready(&lines, &results, &hidden));
-        let second = results.get_mut(&lines[1].load_id).unwrap();
-        second.key = key;
-        second.value = None;
-        assert!(export_ready(&lines, &results, &hidden));
-        results.get_mut(&lines[0].load_id).unwrap().value = None;
-        assert!(!export_ready(&lines, &results, &hidden));
-        hidden.extend(lines.iter().map(|line| line.load_id));
-        assert!(!export_ready(&lines, &results, &hidden));
-        assert!(!export_ready::<CurveKey, Histogram>(
-            &[],
-            &results,
-            &HashSet::new()
-        ));
     }
 }

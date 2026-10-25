@@ -1,6 +1,8 @@
 //! Time series window.
 //! The values of an area in every frame of the visible 4D layers.
 
+mod series;
+
 use gpui_kit::component::button::Button;
 use gpui_kit::component::menu::DropdownMenu;
 use gpui_kit::component::{ActiveTheme, Sizable};
@@ -19,9 +21,10 @@ use std::sync::Arc;
 use crate::shortcuts::ShowTimeSeries;
 use crate::ui::{choice_items, format_value};
 
+use self::series::{segments, value_range};
 use super::Viewer;
 use super::plot_window::{
-    Axes, Chart, Job, LabelMap, Line, Plot, PlotWindow, Plotted, Polyline, RegionKey, Snapshot,
+    Axes, Chart, Job, LabelMap, Plot, PlotLayer, PlotWindow, Plotted, RegionKey, Snapshot, Texts,
     ticks,
 };
 
@@ -90,12 +93,19 @@ impl Plot for TimeSeriesPlot {
     type Key = SeriesKey;
     type Value = Vec<Option<Summary>>;
 
-    const TITLE: &'static str = "Time series";
-    const CSV_NAME: &'static str = "time_series";
-    const COPY_TOOLTIP: &'static str = "Copy shown series as CSV";
-    const MEASURING: &'static str = "Measuring\u{2026}";
-    const MEASURING_NOTE: &'static str = " (measuring\u{2026})";
-    const NO_VALUES: &'static str = "No values in this area";
+    const TEXTS: Texts = Texts {
+        title: "Time series",
+        csv_name: "time_series",
+        copy_tooltip: "Copy shown series as CSV",
+        no_layers: "No visible 4D intensity layers",
+        measuring: "Measuring\u{2026}",
+        measuring_note: " (measuring\u{2026})",
+        waiting: "Pause playback to measure",
+        waiting_note: " (pause to measure)",
+        nothing_to_measure: "The cursor is outside the layers",
+        nothing_to_measure_note: " (cursor outside)",
+        no_values: "No values in this area",
+    };
     const ONLY_4D: bool = true;
 
     fn key(&self, display: &VolumeDisplay, region: Option<&RegionKey>) -> Option<SeriesKey> {
@@ -128,9 +138,9 @@ impl Plot for TimeSeriesPlot {
                 time_series(&volume, &geometry, area, progress).map(with_values)
             }),
             AreaKey::Labels(region) => {
-                let region = region.job(label_maps)?;
+                let labels = region.resolve(label_maps)?;
                 Box::new(move |progress: &Progress| {
-                    let area = Area::Labels(region.mask());
+                    let area = Area::Labels(labels.mask());
                     time_series(&volume, &geometry, area, progress).map(with_values)
                 })
             }
@@ -138,18 +148,18 @@ impl Plot for TimeSeriesPlot {
         Some(job)
     }
 
-    fn csv(shown: &[(&Line<SeriesKey>, &Self::Value)]) -> String {
+    fn csv(exported: &[(&PlotLayer<SeriesKey>, &Self::Value)]) -> String {
         to_csv(
-            shown
+            exported
                 .iter()
-                .map(|&(line, frames)| (line.number, line.name.as_ref(), &frames[..])),
+                .map(|&(layer, frames)| (layer.number, layer.name.as_ref(), &frames[..])),
         )
     }
 
     fn controls(
         window: &PlotWindow<Self>,
         controls: Div,
-        snapshot: Option<&Snapshot<SeriesKey>>,
+        snapshot: &Snapshot<SeriesKey>,
         cx: &mut Context<PlotWindow<Self>>,
     ) -> Div {
         let this = cx.entity().downgrade();
@@ -216,24 +226,7 @@ impl Plot for TimeSeriesPlot {
         }
     }
 
-    fn snap(x: f64) -> f64 {
-        x.round()
-    }
-
-    fn x_name(x: f64) -> String {
-        format!("Frame {}", x as usize + 1)
-    }
-
-    fn readout(&self, frames: &Self::Value, x: f64) -> String {
-        frames
-            .get(x as usize)
-            .and_then(Option::as_ref)
-            .map_or("\u{2013}".into(), |summary| {
-                format_value(self.statistic.of(summary))
-            })
-    }
-
-    fn decorate(
+    fn overlay(
         &self,
         plot: Stateful<Div>,
         axes: &Axes,
@@ -273,6 +266,23 @@ impl Plot for TimeSeriesPlot {
                 }
             }))
     }
+
+    fn snap_x(x: f64) -> f64 {
+        x.round()
+    }
+
+    fn readout_title(x: f64) -> String {
+        format!("Frame {}", x as usize + 1)
+    }
+
+    fn readout(&self, frames: &Self::Value, x: f64) -> String {
+        frames
+            .get(x as usize)
+            .and_then(Option::as_ref)
+            .map_or("\u{2013}".into(), |summary| {
+                format_value(self.statistic.of(summary))
+            })
+    }
 }
 
 impl TimeSeriesPlot {
@@ -309,73 +319,12 @@ fn go_to_frame(window: &PlotWindow<TimeSeriesPlot>, frame: usize, cx: &mut App) 
 /// The most frames of any layer (min. 2)
 fn frames(snapshot: &Snapshot<SeriesKey>) -> usize {
     snapshot
-        .lines
+        .layers
         .iter()
-        .map(|line| line.volume.meta().timepoints())
+        .map(|layer| layer.volume.meta().timepoints())
         .fold(2, usize::max)
 }
 
 fn with_values(frames: Vec<Option<Summary>>) -> Option<Vec<Option<Summary>>> {
     frames.iter().any(Option::is_some).then_some(frames)
-}
-
-fn value_range<'a>(values: impl Iterator<Item = &'a Option<f64>>) -> Option<(f64, f64)> {
-    let (low, high) = values
-        .flatten()
-        .fold((f64::INFINITY, f64::NEG_INFINITY), |(low, high), &value| {
-            (low.min(value), high.max(value))
-        });
-    if low > high {
-        return None;
-    }
-    let padding = if high > low { (high - low) * 0.05 } else { 0.5 };
-    Some((low - padding, high + padding))
-}
-
-fn segments(axes: &Axes, values: &[Option<f64>]) -> Vec<Polyline> {
-    let mut segments = vec![Vec::new()];
-    for (frame, value) in values.iter().enumerate() {
-        match value {
-            Some(value) => segments
-                .last_mut()
-                .unwrap()
-                .push((axes.x(frame as f64), axes.y(*value))),
-            None if segments.last().is_some_and(|last| !last.is_empty()) => {
-                segments.push(Vec::new());
-            }
-            None => {}
-        }
-    }
-    segments.retain(|segment| !segment.is_empty());
-    segments
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{Axes, segments, value_range};
-
-    #[test]
-    fn series_break_at_frames_without_values() {
-        let axes = Axes {
-            x: (0.0, 4.0),
-            y: (0.0, 10.0),
-            log: false,
-        };
-        let values = [Some(0.0), Some(5.0), None, None, Some(10.0)];
-        assert_eq!(
-            segments(&axes, &values),
-            vec![vec![(0.0, 0.0), (0.25, 0.5)], vec![(1.0, 1.0)]]
-        );
-        assert!(segments(&axes, &[None, None]).is_empty());
-    }
-
-    #[test]
-    fn value_range_has_room_around_the_values() {
-        assert_eq!(
-            value_range([Some(0.0), None, Some(10.0)].iter()),
-            Some((-0.5, 10.5))
-        );
-        assert_eq!(value_range([Some(3.0)].iter()), Some((2.5, 3.5)));
-        assert_eq!(value_range([None].iter()), None);
-    }
 }

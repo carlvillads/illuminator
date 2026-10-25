@@ -1,4 +1,4 @@
-//! Histogram graph plot.
+//! Histogram bars.
 
 use illuminator_core::histogram::Histogram;
 
