@@ -134,7 +134,7 @@ impl Counts {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct RunningStats {
+pub(crate) struct RunningStats {
     count: usize,
     mean: f64,
     m2: f64,
@@ -155,7 +155,7 @@ impl Default for RunningStats {
 }
 
 impl RunningStats {
-    fn push(&mut self, value: f64) {
+    pub(crate) fn push(&mut self, value: f64) {
         self.count += 1;
         let delta = value - self.mean;
         self.mean += delta / self.count as f64;
@@ -183,7 +183,7 @@ impl RunningStats {
         }
     }
 
-    fn summary(self) -> Option<Summary> {
+    pub(crate) fn summary(self) -> Option<Summary> {
         (self.count > 0).then(|| Summary {
             count: self.count,
             mean: self.mean,
