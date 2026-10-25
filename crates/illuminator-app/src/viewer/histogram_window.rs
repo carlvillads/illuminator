@@ -1,47 +1,34 @@
 //! Histogram window.
-//! In a window of its own beside the viewer.
+//! The values of the visible layers counted into bins
 
 mod plot;
 
-use gpui_kit::component::button::{Button, ButtonVariants};
+use gpui_kit::component::Sizable;
+use gpui_kit::component::button::Button;
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::menu::DropdownMenu;
-use gpui_kit::component::tooltip::Tooltip;
-use gpui_kit::component::{ActiveTheme, Disableable, Sizable, h_flex, v_flex};
-use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::{
-    AnyElement, App, AppContext, Bounds, ClipboardItem, Context, Div, DragMoveEvent, Entity,
-    FocusHandle, FontWeight, Hsla, InteractiveElement, IntoElement, MouseMoveEvent, ParentElement,
-    PathBuilder, Pixels, Render, SharedString, StatefulInteractiveElement, Styled, Subscription,
-    Task, TitlebarOptions, WeakEntity, Window, WindowBounds, WindowOptions, canvas, div, fill,
-    point, px, relative, size,
+    AppContext, Context, Div, DragMoveEvent, InteractiveElement, ParentElement, Stateful,
+    StatefulInteractiveElement, Styled, Window, div, px, relative,
 };
-use illuminator_core::Error;
-use illuminator_core::geometry::{GeometryOptions, VolumeGeometry};
-use illuminator_core::histogram::{Counting, Histogram, LabelMask, to_csv};
-use illuminator_core::meta::strip_extension;
+use illuminator_core::display::VolumeDisplay;
+use illuminator_core::geometry::VolumeGeometry;
+use illuminator_core::histogram::{Counting, Histogram, to_csv};
 use illuminator_core::progress::Progress;
 use illuminator_core::stats::Source;
 use illuminator_core::volume::Volume;
-use std::cell::Cell;
-use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
-use std::rc::Rc;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
 
-use crate::shortcuts::{self, CloseWindow, ShowHistogram};
-use crate::theme;
-use crate::ui::{choice_items, format_value, title_bar, uses_client_manager_decorations};
+use crate::shortcuts::ShowHistogram;
+use crate::ui::{choice_items, format_value};
 
-use self::plot::{Axes, height_at, steps, ticks, value_at};
-use super::{DragEdge, STALE_HISTOGRAM_OPACITY, Viewer, WindowEdge};
+use self::plot::{height_at, steps};
+use super::plot_window::{
+    Axes, Chart, Job, LabelMap, Line, Plot, PlotWindow, Plotted, RegionJob, RegionKey, Snapshot,
+    ticks, value_at,
+};
+use super::{DragEdge, Viewer, WindowEdge};
 
-const HISTOGRAM_WINDOW_SIZE: (f32, f32) = (760.0, 480.0);
-const HISTOGRAM_NOTICE_TIME: Duration = Duration::from_secs(4);
-const HISTOGRAM_AXIS_WIDTH: f32 = 56.0;
-const HISTOGRAM_AXIS_HEIGHT: f32 = 20.0;
 const HISTOGRAM_X_TICKS: usize = 8;
 const HISTOGRAM_Y_TICKS: usize = 5;
 const HISTOGRAM_BIN_CHOICES: [Option<usize>; 7] = [
@@ -97,24 +84,9 @@ impl AxisY {
     }
 }
 
-/// Only count voxels on the labels of a label map layer
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct LabelRegion {
-    load_id: u64,
-    label: Option<i64>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-struct Settings {
-    counting: Counting,
-    y_axis: AxisY,
-    log: bool,
-    region: Option<LabelRegion>,
-}
-
 /// What a curve is counted from.
 #[derive(Clone, PartialEq)]
-struct CurveKey {
+pub(super) struct CurveKey {
     volume: u64,
     frame: usize,
     geometry: VolumeGeometry,
@@ -133,453 +105,81 @@ impl CurveKey {
     }
 }
 
-#[derive(Clone, PartialEq)]
-struct RegionKey {
-    volume: u64,
-    frame: usize,
-    geometry: VolumeGeometry,
-    label: Option<i64>,
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(super) struct HistogramPlot {
+    counting: Counting,
+    y_axis: AxisY,
+    log: bool,
 }
 
-struct Curve {
-    key: CurveKey,
-    histogram: Option<Histogram>,
-}
+impl Plot for HistogramPlot {
+    type Key = CurveKey;
+    type Value = Histogram;
 
-/// An intensity layer as the window shows it.
-struct Line {
-    load_id: u64,
-    number: usize,
-    name: SharedString,
-    color: Hsla,
-    volume: Arc<Volume>,
-    key: CurveKey,
-    limits: (f64, f64),
-    selected: bool,
-}
+    const TITLE: &'static str = "Histogram";
+    const CSV_NAME: &'static str = "histogram";
+    const COPY_TOOLTIP: &'static str = "Copy shown histograms as CSV";
+    const MEASURING: &'static str = "Counting values\u{2026}";
+    const MEASURING_NOTE: &'static str = " (counting\u{2026})";
+    const NO_VALUES: &'static str = "No values to count";
+    const WAITS_FOR_PAUSE: bool = true;
 
-/// A label map layer to count inside of.
-struct LabelMap {
-    load_id: u64,
-    name: SharedString,
-    labels: Vec<i64>,
-    volume: Arc<Volume>,
-    geometry: VolumeGeometry,
-    frame: usize,
-}
-
-/// A layers curve in the plot.
-struct Shown<'a> {
-    line: &'a Line,
-    histogram: &'a Histogram,
-    heights: Vec<f64>,
-    stale: bool,
-}
-
-/// A curve's outline as fractions of the plot.
-struct Stroke {
-    color: Hsla,
-    width: f32,
-    points: Vec<(f32, f32)>,
-}
-
-/// The viewers layers as the window needs them.
-struct ViewerSnapshot {
-    lines: Vec<Line>,
-    label_maps: Vec<LabelMap>,
-    playing: bool,
-}
-
-/// What the window shows of the viewer. It redraws only when this changes.
-#[derive(PartialEq)]
-struct Watched {
-    layers: Vec<WatchedLayer>,
-    selected: Option<usize>,
-    playing: bool,
-}
-
-#[derive(PartialEq)]
-struct WatchedLayer {
-    load_id: u64,
-    visible: bool,
-    label_mode: bool,
-    volume: u64,
-    frame: usize,
-    options: GeometryOptions,
-    limits: (f64, f64),
-}
-
-impl Watched {
-    fn of(viewer: &Viewer) -> Self {
-        let layers = viewer.layers.iter().map(|layer| WatchedLayer {
-            load_id: layer.load_id,
-            visible: layer.visible,
-            label_mode: layer.display.label_mode(),
-            volume: layer.display.volume().id(),
-            frame: layer.display.frame(),
-            options: layer.display.options(),
-            limits: layer.display.window_limits(),
-        });
-        Self {
-            layers: layers.collect(),
-            selected: viewer.selected(),
-            playing: viewer.time_playing.is_some(),
-        }
-    }
-}
-
-pub struct HistogramWindow {
-    viewer: WeakEntity<Viewer>,
-    settings: Settings,
-    /// By layer load id
-    curves: HashMap<u64, Curve>,
-    /// Counts running in the background by layer
-    counting: HashMap<u64, (CurveKey, Arc<AtomicBool>)>,
-    hidden: HashSet<u64>,
-    /// The value under the mouse
-    hover: Option<f64>,
-    plot_bounds: Rc<Cell<Bounds<Pixels>>>,
-    notice: Option<SharedString>,
-    notice_timer: Task<()>,
-    watched: Option<Watched>,
-    focus_handle: FocusHandle,
-    _viewer_changes: Subscription,
-    _viewer_closed: Subscription,
-}
-
-impl HistogramWindow {
-    fn new(viewer: &Entity<Viewer>, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let focus_handle = cx.focus_handle();
-        focus_handle.focus(window, cx);
-        Self {
-            viewer: viewer.downgrade(),
-            settings: Settings {
-                counting: Counting {
-                    bins: None,
-                    ignore_zeros: true,
-                },
-                y_axis: AxisY::Count,
-                log: false,
-                region: None,
-            },
-            curves: HashMap::new(),
-            counting: HashMap::new(),
-            hidden: HashSet::new(),
-            hover: None,
-            plot_bounds: Rc::default(),
-            notice: None,
-            notice_timer: Task::ready(()),
-            watched: None,
-            focus_handle,
-            _viewer_changes: cx.observe(viewer, |this, viewer, cx| {
-                let watched = Watched::of(viewer.read(cx));
-                if this.watched.as_ref() != Some(&watched) {
-                    this.watched = Some(watched);
-                    cx.notify();
-                }
-            }),
-            _viewer_closed: cx.observe_release_in(viewer, window, |_, _, window, _| {
-                window.remove_window();
-            }),
-        }
-    }
-
-    fn snapshot(&self, cx: &App) -> Option<ViewerSnapshot> {
-        let viewer = self.viewer.upgrade()?;
-        let viewer = viewer.read(cx);
-        let label_maps: Vec<LabelMap> = viewer
-            .layers
-            .iter()
-            .filter(|layer| layer.display.label_mode())
-            .map(|layer| LabelMap {
-                load_id: layer.load_id,
-                name: layer.display.name().into(),
-                labels: layer.display.labels().to_vec(),
-                volume: layer.display.shared_volume(),
-                geometry: layer.display.geometry().clone(),
-                frame: layer.display.frame(),
-            })
-            .collect();
-        let region = self.settings.region.and_then(|region| {
-            let map = label_maps
-                .iter()
-                .find(|map| map.load_id == region.load_id)?;
-            Some(RegionKey {
-                volume: map.volume.id(),
-                frame: map.frame,
-                geometry: map.geometry.clone(),
-                label: region.label,
-            })
-        });
-        let lines = viewer
-            .layers
-            .iter()
-            .enumerate()
-            .filter(|(_, layer)| layer.visible && !layer.display.label_mode())
-            .map(|(index, layer)| {
-                let display = &layer.display;
-                Line {
-                    load_id: layer.load_id,
-                    number: index + 1,
-                    name: display.name().into(),
-                    color: theme::curve_color(index, cx),
-                    volume: display.shared_volume(),
-                    key: CurveKey {
-                        volume: display.volume().id(),
-                        frame: display.frame(),
-                        geometry: display.geometry().clone(),
-                        counting: self.settings.counting,
-                        region: region.clone(),
-                    },
-                    limits: display.window_limits(),
-                    selected: viewer.selected() == Some(index),
-                }
-            })
-            .collect();
-        Some(ViewerSnapshot {
-            lines,
-            label_maps,
-            playing: viewer.time_playing.is_some(),
+    fn key(&self, display: &VolumeDisplay, region: Option<&RegionKey>) -> Option<CurveKey> {
+        Some(CurveKey {
+            volume: display.volume().id(),
+            frame: display.frame(),
+            geometry: display.geometry().clone(),
+            counting: self.counting,
+            region: region.cloned(),
         })
     }
 
-    /// Counts layers whose curves are missing or out of date in the background.
-    fn schedule(&mut self, snapshot: &ViewerSnapshot, cx: &mut Context<Self>) {
-        self.curves
-            .retain(|load_id, _| snapshot.lines.iter().any(|line| line.load_id == *load_id));
-        // layers hidden in the legend are counted when they are shown again
-        let wanted: Vec<&Line> = snapshot
-            .lines
-            .iter()
-            .filter(|line| !self.hidden.contains(&line.load_id))
-            .collect();
-        // stop counts that are out of date or no longer wanted, so their layer is free sooner
-        for (load_id, (key, cancelled)) in &self.counting {
-            if !wanted
-                .iter()
-                .any(|line| line.load_id == *load_id && line.key == *key)
-            {
-                cancelled.store(true, Ordering::Relaxed);
-            }
-        }
-        // Only count when the "movie" isn't playing
-        if snapshot.playing {
-            return;
-        }
-        for line in wanted {
-            if current_curve(&self.curves, line).is_some()
-                || self.counting.contains_key(&line.load_id)
-            {
-                continue;
-            }
-            self.count(line, snapshot, cx);
-        }
-    }
-
-    fn count(&mut self, line: &Line, snapshot: &ViewerSnapshot, cx: &mut Context<Self>) {
-        let load_id = line.load_id;
-        let key = line.key.clone();
-        let cancelled = Arc::new(AtomicBool::new(false));
-        self.counting
-            .insert(load_id, (key.clone(), Arc::clone(&cancelled)));
-        let (volume, geometry, frame) = (Arc::clone(&line.volume), key.geometry.clone(), key.frame);
-        let counting = key.counting;
-        let labels = self.settings.region.and_then(|region| {
-            let map = snapshot
-                .label_maps
-                .iter()
-                .find(|map| map.load_id == region.load_id)?;
-            Some((
-                Arc::clone(&map.volume),
-                map.geometry.clone(),
-                map.frame,
-                region.label,
-            ))
-        });
-        cx.spawn(async move |this, cx| {
-            let histogram = cx
-                .background_spawn(async move {
-                    let values = Source {
-                        volume: &volume,
-                        geometry: &geometry,
-                        frame,
-                    };
-                    let mask = labels
-                        .as_ref()
-                        .map(|(volume, geometry, frame, label)| LabelMask {
-                            labels: Source {
-                                volume,
-                                geometry,
-                                frame: *frame,
-                            },
-                            label: *label,
-                        });
-                    let progress = Progress::cancellable(cancelled);
-                    Histogram::counted(values, counting, mask, &progress)
-                })
-                .await;
-            let _ = this.update(cx, |this, cx| {
-                this.counting.remove(&load_id);
-                let current = this.snapshot(cx).is_some_and(|snapshot| {
-                    snapshot
-                        .lines
-                        .iter()
-                        .any(|line| line.load_id == load_id && line.key == key)
-                });
-                match histogram {
-                    Err(Error::Cancelled) => {}
-                    histogram if current => {
-                        let histogram = histogram.unwrap_or_else(|error| {
-                            eprintln!("Illuminator: Histogram: {error}");
-                            None
-                        });
-                        this.curves.insert(load_id, Curve { key, histogram });
-                    }
-                    _ => {}
-                }
-                // Even obsolete work must wake rendering so the current key gets scheduled
-                cx.notify();
-            });
-        })
-        .detach();
-    }
-
-    /// The counted curves of the layers not hidden in the legend in layer order.
-    fn shown<'a>(&'a self, snapshot: &'a ViewerSnapshot) -> Vec<(&'a Line, &'a Histogram)> {
-        snapshot
-            .lines
-            .iter()
-            .filter(|line| !self.hidden.contains(&line.load_id))
-            .filter_map(|line| Some((line, current_curve(&self.curves, line)?.histogram.as_ref()?)))
-            .collect()
-    }
-
-    /// The curves to plot of the layers not hidden in the legend in layer order and whether each is another frames.
-    fn plotted<'a>(&'a self, snapshot: &'a ViewerSnapshot) -> Vec<(&'a Line, &'a Histogram, bool)> {
-        snapshot
-            .lines
-            .iter()
-            .filter(|line| !self.hidden.contains(&line.load_id))
-            .filter_map(|line| {
-                let (histogram, stale) = plotted_curve(&self.curves, line)?;
-                Some((line, histogram, stale))
-            })
-            .collect()
-    }
-
-    fn csv(&self, snapshot: &ViewerSnapshot) -> Option<String> {
-        if !export_ready(&snapshot.lines, &self.curves, &self.hidden) {
-            return None;
-        }
-        let shown = self.shown(snapshot);
-        let curves = shown
-            .iter()
-            .map(|&(line, histogram)| (line.number, line.name.as_ref(), histogram));
-        Some(to_csv(curves))
-    }
-
-    fn copy(&mut self, cx: &mut Context<Self>) {
-        let Some(snapshot) = self.snapshot(cx) else {
-            return;
+    fn job(key: &CurveKey, volume: Arc<Volume>, label_maps: &[LabelMap]) -> Option<Job<Histogram>> {
+        let region = match &key.region {
+            Some(region) => Some(region.job(label_maps)?),
+            None => None,
         };
-        if let Some(csv) = self.csv(&snapshot) {
-            cx.write_to_clipboard(ClipboardItem::new_string(csv));
-            self.show_notice("Copied.".into(), cx);
-        }
-    }
-
-    /// Shows `notice` beside the export buttons for a few seconds
-    fn show_notice(&mut self, notice: SharedString, cx: &mut Context<Self>) {
-        self.notice = Some(notice);
-        // replacing the timer drops the one of an earlier notice
-        self.notice_timer = cx.spawn(async move |this, cx| {
-            cx.background_executor().timer(HISTOGRAM_NOTICE_TIME).await;
-            let _ = this.update(cx, |this, cx| {
-                this.notice = None;
-                cx.notify();
-            });
-        });
-        cx.notify();
-    }
-
-    fn save(&mut self, cx: &mut Context<Self>) {
-        let Some(snapshot) = self.snapshot(cx) else {
-            return;
-        };
-        let Some(csv) = self.csv(&snapshot) else {
-            return;
-        };
-        let shown = self.shown(&snapshot);
-        // next to the selected layers file, or the first one shown
-        let Some((line, _)) = shown
-            .iter()
-            .find(|(line, _)| line.selected)
-            .or(shown.first())
-        else {
-            return;
-        };
-        let directory = line
-            .volume
-            .path()
-            .parent()
-            .map(PathBuf::from)
-            .unwrap_or_default();
-        let name = format!("{}_histogram.csv", strip_extension(&line.name));
-        let chosen = cx.prompt_for_new_path(&directory, Some(&name));
-        cx.spawn(async move |this, cx| {
-            let Ok(Ok(Some(path))) = chosen.await else {
-                return; // cancelled
+        let (geometry, frame, counting) = (key.geometry.clone(), key.frame, key.counting);
+        Some(Box::new(move |progress: &Progress| {
+            let values = Source {
+                volume: &volume,
+                geometry: &geometry,
+                frame,
             };
-            let file = path.clone();
-            let saved = cx
-                .background_spawn(async move { std::fs::write(&file, csv) })
-                .await;
-            let notice = match saved {
-                Ok(()) => format!("Saved to {}", path.display()),
-                Err(error) => {
-                    eprintln!("Illuminator: saving {}: {error}", path.display());
-                    format!("Cannot save: {error}")
-                }
-            };
-            let _ = this.update(cx, |this, cx| this.show_notice(notice.into(), cx));
-        })
-        .detach();
+            Histogram::counted(
+                values,
+                counting,
+                region.as_ref().map(RegionJob::mask),
+                progress,
+            )
+        }))
     }
 
-    fn render_controls(&self, snapshot: Option<&ViewerSnapshot>, cx: &mut Context<Self>) -> Div {
-        let muted = cx.theme().muted_foreground;
-        let can_export = snapshot
-            .is_some_and(|snapshot| export_ready(&snapshot.lines, &self.curves, &self.hidden));
+    fn shows_stale(old: &CurveKey, new: &CurveKey) -> bool {
+        old.other_frame_of(new)
+    }
+
+    fn csv(shown: &[(&Line<CurveKey>, &Histogram)]) -> String {
+        to_csv(
+            shown
+                .iter()
+                .map(|&(line, histogram)| (line.number, line.name.as_ref(), histogram)),
+        )
+    }
+
+    fn controls(
+        window: &PlotWindow<Self>,
+        controls: Div,
+        snapshot: Option<&Snapshot<CurveKey>>,
+        cx: &mut Context<PlotWindow<Self>>,
+    ) -> Div {
         let this = cx.entity().downgrade();
-        let settings = self.settings;
-        let bins = match settings.counting.bins {
+        let plot = window.plot;
+        let bins = match plot.counting.bins {
             None => "Auto".to_string(),
             Some(bins) => bins.to_string(),
         };
-        let maps: Vec<(SharedString, u64, Vec<i64>)> = snapshot
-            .map(|snapshot| {
-                let maps = snapshot.label_maps.iter();
-                maps.map(|map| (map.name.clone(), map.load_id, map.labels.clone()))
-                    .collect()
-            })
-            .unwrap_or_default();
-        let region = match settings.region {
-            None => "Whole volume".to_string(),
-            Some(region) => {
-                let name = maps
-                    .iter()
-                    .find(|(_, load_id, _)| *load_id == region.load_id)
-                    .map_or_else(SharedString::default, |(name, _, _)| name.clone());
-                match region.label {
-                    None => format!("{name}, all labels"),
-                    Some(label) => format!("{name}, label {label}"),
-                }
-            }
-        };
-
-        h_flex()
-            .gap_3()
-            .flex_wrap()
+        controls
             .child(
                 Button::new("bins")
                     .xsmall()
@@ -594,7 +194,7 @@ impl HistogramWindow {
                                 (name, bins)
                             });
                             choice_items(menu, &this, choices, |this, bins, _, cx| {
-                                this.settings.counting.bins = bins;
+                                this.plot.counting.bins = bins;
                                 cx.notify();
                             })
                         }
@@ -604,164 +204,56 @@ impl HistogramWindow {
                 Button::new("y-axis")
                     .xsmall()
                     .outline()
-                    .label(settings.y_axis.name())
+                    .label(plot.y_axis.name())
                     .dropdown_caret(true)
-                    .dropdown_menu({
-                        let this = this.clone();
-                        move |menu, _, _| {
-                            let choices = AxisY::ALL.map(|y_axis| (y_axis.name(), y_axis));
-                            choice_items(menu, &this, choices, |this, y_axis, _, cx| {
-                                this.settings.y_axis = y_axis;
-                                cx.notify();
-                            })
-                        }
+                    .dropdown_menu(move |menu, _, _| {
+                        let choices = AxisY::ALL.map(|y_axis| (y_axis.name(), y_axis));
+                        choice_items(menu, &this, choices, |this, y_axis, _, cx| {
+                            this.plot.y_axis = y_axis;
+                            cx.notify();
+                        })
                     }),
             )
             .child(
                 Checkbox::new("log")
                     .label("Log scale")
-                    .checked(settings.log)
+                    .checked(plot.log)
                     .on_click(cx.listener(|this, checked: &bool, _, cx| {
-                        this.settings.log = *checked;
+                        this.plot.log = *checked;
                         cx.notify();
                     })),
             )
             .child(
                 Checkbox::new("ignore-zeros")
                     .label("Ignore zeros")
-                    .checked(settings.counting.ignore_zeros)
+                    .checked(plot.counting.ignore_zeros)
                     .on_click(cx.listener(|this, checked: &bool, _, cx| {
-                        this.settings.counting.ignore_zeros = *checked;
+                        this.plot.counting.ignore_zeros = *checked;
                         cx.notify();
                     })),
             )
-            .child(
-                Button::new("region")
-                    .xsmall()
-                    .outline()
-                    .label(format!("Region: {region}"))
-                    .dropdown_caret(true)
-                    .dropdown_menu(move |menu, _, _| {
-                        let mut menu = choice_items(
-                            menu.max_h(px(360.0)).scrollable(true),
-                            &this,
-                            [("Whole volume", None)],
-                            |this: &mut Self, region, _, cx| {
-                                this.settings.region = region;
-                                cx.notify();
-                            },
-                        );
-                        for (name, load_id, labels) in &maps {
-                            let load_id = *load_id;
-                            let all = std::iter::once(("All labels".to_string(), None));
-                            let each = labels
-                                .iter()
-                                .map(|&label| (format!("Label {label}"), Some(label)));
-                            let choices = all
-                                .chain(each)
-                                .map(|(text, label)| (text, Some(LabelRegion { load_id, label })));
-                            menu = choice_items(
-                                menu.separator().label(name.clone()),
-                                &this,
-                                choices,
-                                |this, region, _, cx| {
-                                    this.settings.region = region;
-                                    cx.notify();
-                                },
-                            );
-                        }
-                        menu
-                    }),
-            )
-            .child(div().flex_1())
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(muted)
-                    .children(self.notice.clone()),
-            )
-            .child(
-                Button::new("copy")
-                    .xsmall()
-                    .ghost()
-                    .label("Copy")
-                    .tooltip("Copy shown histograms as CSV")
-                    .disabled(!can_export)
-                    .on_click(cx.listener(|this, _, _, cx| this.copy(cx))),
-            )
-            .child(
-                Button::new("save")
-                    .xsmall()
-                    .label("Save CSV\u{2026}")
-                    .disabled(!can_export)
-                    .on_click(cx.listener(|this, _, _, cx| this.save(cx))),
-            )
+            .child(window.region_button(
+                "Region",
+                "Whole volume".into(),
+                vec![("Whole volume".into(), ())],
+                |_, ()| {},
+                snapshot,
+                cx,
+            ))
     }
 
-    fn render_plot(&self, snapshot: Option<&ViewerSnapshot>, cx: &mut Context<Self>) -> AnyElement {
-        let theme = cx.theme();
-        let (muted, border, plot_background, background) = (
-            theme.muted_foreground,
-            theme.border,
-            theme.secondary,
-            theme.background,
-        );
-        let message = |text: &'static str| {
-            div()
-                .flex_1()
-                .flex()
-                .items_center()
-                .justify_center()
-                .text_color(muted)
-                .child(text)
-                .into_any_element()
-        };
-        let Some(snapshot) = snapshot else {
-            return message("The viewer is closed");
-        };
-        if snapshot.lines.is_empty() {
-            return message("No visible intensity layers");
-        }
-        let settings = self.settings;
-        let counting = if snapshot.playing {
-            "Pause playback to count values"
-        } else {
-            "Counting values\u{2026}"
-        };
-        // selected layer last so it is drawn on top
-        let mut shown: Vec<Shown> = self
-            .plotted(snapshot)
-            .into_iter()
-            .map(|(line, histogram, stale)| Shown {
-                line,
-                histogram,
-                heights: settings.y_axis.heights(histogram),
-                stale,
-            })
+    fn chart(&self, plotted: &[Plotted<Self>], _: &Snapshot<CurveKey>) -> Chart {
+        let heights: Vec<Vec<f64>> = plotted
+            .iter()
+            .map(|plotted| self.y_axis.heights(plotted.value))
             .collect();
-        shown.sort_by_key(|shown| shown.line.selected);
-        if shown.is_empty() {
-            return message(
-                if snapshot
-                    .lines
-                    .iter()
-                    .all(|line| self.hidden.contains(&line.load_id))
-                {
-                    "All layers are hidden"
-                } else if snapshot.lines.iter().any(|line| {
-                    !self.hidden.contains(&line.load_id)
-                        && current_curve(&self.curves, line).is_none()
-                }) {
-                    counting
-                } else {
-                    "No values to count"
-                },
-            );
-        }
-
-        let axes = axes(&shown, settings);
-        let x_ticks = ticks(axes.x.0, axes.x.1, HISTOGRAM_X_TICKS);
-        let y_ticks: Vec<(f32, String)> = if settings.log {
+        let axes = self.axes(plotted, &heights);
+        let (values, decimals) = ticks(axes.x.0, axes.x.1, HISTOGRAM_X_TICKS);
+        let x_ticks = values
+            .into_iter()
+            .map(|value| (axes.x(value), format!("{value:.decimals$}")))
+            .collect();
+        let y_ticks = if self.log {
             let decades = axes.y.0.ceil() as i32..=axes.y.1.floor() as i32;
             decades
                 .map(|decade| {
@@ -777,91 +269,43 @@ impl HistogramWindow {
                 .map(|height| (axes.y(height), format!("{height:.decimals$}")))
                 .collect()
         };
-        let grid: Vec<f32> = y_ticks.iter().map(|&(at, _)| at).collect();
-        let cumulative = settings.y_axis == AxisY::Cumulative;
-        let strokes: Vec<Stroke> = shown
+        let cumulative = self.y_axis == AxisY::Cumulative;
+        let curves = plotted
             .iter()
-            .map(|shown| Stroke {
-                color: if shown.stale {
-                    shown.line.color.opacity(STALE_HISTOGRAM_OPACITY)
-                } else {
-                    shown.line.color
-                },
-                width: if shown.line.selected { 2.0 } else { 1.25 },
-                points: steps(&axes, shown.histogram, &shown.heights, cumulative),
-            })
+            .zip(&heights)
+            .map(|(plotted, heights)| vec![steps(&axes, plotted.value, heights, cumulative)])
             .collect();
-        let paint = move |bounds: Bounds<Pixels>, _, window: &mut Window, _: &mut App| {
-            let at = |(x, y): (f32, f32)| {
-                point(
-                    bounds.left() + bounds.size.width * x,
-                    bounds.bottom() - bounds.size.height * y,
-                )
-            };
-            for &y in &grid {
-                let origin = at((0.0, y));
-                window.paint_quad(fill(
-                    Bounds::new(origin, size(bounds.size.width, px(1.0))),
-                    border,
-                ));
-            }
-            for stroke in strokes {
-                let mut path = PathBuilder::stroke(px(stroke.width));
-                for (index, &step) in stroke.points.iter().enumerate() {
-                    if index == 0 {
-                        path.move_to(at(step));
-                    } else {
-                        path.line_to(at(step));
-                    }
-                }
-                if let Ok(path) = path.build() {
-                    window.paint_path(path, stroke.color);
-                }
-            }
-        };
-        let bounds = Rc::clone(&self.plot_bounds);
-        let mut plot = div()
-            .id("plot")
-            .relative()
-            .flex_1()
-            .h_full()
-            .overflow_hidden()
-            .border_1()
-            .border_color(border)
-            .bg(plot_background)
-            .child(
-                canvas(move |area, _, _| bounds.set(area), paint)
-                    .absolute()
-                    .size_full(),
-            );
-        // plot another frames curve while counting the current one
-        if shown.iter().any(|shown| shown.stale) {
-            plot = plot.child(
-                div()
-                    .absolute()
-                    .top_1()
-                    .left_0()
-                    .right_0()
-                    .flex()
-                    .justify_center()
-                    .child(
-                        div()
-                            .px_1()
-                            .rounded_sm()
-                            .border_1()
-                            .border_color(border)
-                            .bg(plot_background)
-                            .text_xs()
-                            .text_color(muted)
-                            .child(counting),
-                    ),
-            );
+        Chart {
+            axes,
+            x_ticks,
+            y_ticks,
+            curves,
         }
+    }
 
+    fn x_name(x: f64) -> String {
+        format_value(x)
+    }
+
+    fn readout(&self, histogram: &Histogram, x: f64) -> String {
+        let heights = self.y_axis.heights(histogram);
+        let cumulative = self.y_axis == AxisY::Cumulative;
+        self.y_axis
+            .format(height_at(histogram, &heights, x, cumulative))
+    }
+
+    fn decorate(
+        &self,
+        mut plot: Stateful<Div>,
+        axes: &Axes,
+        plotted: &[Plotted<Self>],
+        _: &Snapshot<CurveKey>,
+        cx: &mut Context<PlotWindow<Self>>,
+    ) -> Stateful<Div> {
         // the selected layers window
-        if let Some(line) = shown
+        if let Some(line) = plotted
             .iter()
-            .map(|shown| shown.line)
+            .map(|plotted| plotted.line)
             .find(|line| line.selected)
         {
             let (low, high) = line.limits;
@@ -901,314 +345,77 @@ impl HistogramWindow {
                 .child(edge(WindowEdge::Low, low))
                 .child(edge(WindowEdge::High, high));
         }
-
-        if let Some(value) = self.hover {
-            let at = axes.x(value);
-            let rows = shown
-                .iter()
-                .rev()
-                .filter(|shown| !shown.stale)
-                .map(|shown| {
-                    let height = height_at(shown.histogram, &shown.heights, value, cumulative);
-                    let line = shown.line;
-                    h_flex()
-                        .gap_1()
-                        .child(div().w(px(8.0)).h(px(8.0)).bg(line.color))
-                        .child(format!(
-                            "{} {}",
-                            line.number,
-                            settings.y_axis.format(height)
-                        ))
-                });
-            let readout = v_flex()
-                .absolute()
-                .top_1()
-                .p_1()
-                .gap_0p5()
-                .bg(background.opacity(0.9))
-                .text_xs()
-                .child(format_value(value))
-                .children(rows);
-            plot = plot
-                .child(
-                    div()
-                        .absolute()
-                        .top_0()
-                        .bottom_0()
-                        .left(relative(at))
-                        .w(px(1.0))
-                        .bg(muted),
-                )
-                .child(if at < 0.5 {
-                    readout.right_1()
-                } else {
-                    readout.left_1()
-                });
-        }
-
         let x = axes.x;
-        let plot = plot
-            .on_mouse_move(cx.listener(move |this, event: &MouseMoveEvent, _, cx| {
-                let bounds = this.plot_bounds.get();
-                let width = f32::from(bounds.size.width);
-                if width > 0.0 {
-                    let fraction = f32::from(event.position.x - bounds.left()) / width;
-                    this.hover = Some(value_at(x, fraction));
-                    cx.notify();
-                }
-            }))
-            .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
-                if !hovered {
-                    this.hover = None;
-                    cx.notify();
-                }
-            }))
-            .on_drag_move(
-                cx.listener(move |this, event: &DragMoveEvent<DragEdge>, _, cx| {
-                    let drag = *event.drag(cx);
-                    let width = f32::from(event.bounds.size.width);
-                    let fraction = f32::from(event.event.position.x - event.bounds.left()) / width;
-                    let value = value_at(x, fraction);
-                    if let Some(viewer) = this.viewer.upgrade() {
-                        viewer.update(cx, |viewer, cx| viewer.move_window_edge(drag, value, cx));
-                    }
-                }),
-            );
-
-        let y_labels = div()
-            .relative()
-            .w(px(HISTOGRAM_AXIS_WIDTH))
-            .h_full()
-            .children(y_ticks.into_iter().map(|(at, label)| {
-                div()
-                    .absolute()
-                    .right(px(6.0))
-                    .top(relative(1.0 - at))
-                    .mt(px(-7.0))
-                    .text_xs()
-                    .text_color(muted)
-                    .child(label)
-            }));
-        let (values, decimals) = x_ticks;
-        let x_labels = div()
-            .relative()
-            .h(px(HISTOGRAM_AXIS_HEIGHT))
-            .ml(px(HISTOGRAM_AXIS_WIDTH))
-            .children(values.into_iter().map(|value| {
-                div()
-                    .absolute()
-                    .top_0p5()
-                    .left(relative(axes.x(value)))
-                    .ml(px(-40.0))
-                    .w(px(80.0))
-                    .flex()
-                    .justify_center()
-                    .text_xs()
-                    .text_color(muted)
-                    .child(format!("{value:.decimals$}"))
-            }));
-        v_flex()
-            .flex_1()
-            .min_h_0()
-            .child(h_flex().flex_1().min_h_0().child(y_labels).child(plot))
-            .child(x_labels)
-            .into_any_element()
-    }
-
-    fn render_legend(&self, snapshot: Option<&ViewerSnapshot>, cx: &mut Context<Self>) -> Div {
-        let muted = cx.theme().muted_foreground;
-        let lines = snapshot.map_or(&[][..], |snapshot| &snapshot.lines);
-        h_flex()
-            .gap_4()
-            .flex_wrap()
-            .text_xs()
-            .children(lines.iter().map(|line| {
-                let load_id = line.load_id;
-                let hidden = self.hidden.contains(&load_id);
-                let note = match current_curve(&self.curves, line) {
-                    // hidden layers aren't counted until they are shown
-                    None if hidden => "",
-                    None if snapshot.is_some_and(|snapshot| snapshot.playing) => {
-                        " (pause to count)"
-                    }
-                    None => " (counting\u{2026})",
-                    Some(curve) if curve.histogram.is_none() => " (no values)",
-                    Some(_) => "",
-                };
-                h_flex()
-                    .id(("legend", load_id))
-                    .gap_1()
-                    .cursor_pointer()
-                    .when(hidden, |entry| entry.opacity(0.4))
-                    .when(line.selected, |entry| {
-                        entry.font_weight(FontWeight::SEMIBOLD)
-                    })
-                    .child(div().w(px(14.0)).h(px(3.0)).bg(line.color))
-                    .child(format!("{} {}", line.number, line.name))
-                    .child(div().text_color(muted).child(note))
-                    .tooltip(|window, cx| Tooltip::new("Show or hide").build(window, cx))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        if !this.hidden.remove(&load_id) {
-                            this.hidden.insert(load_id);
-                        }
-                        cx.notify();
-                    }))
-            }))
+        plot.on_drag_move(
+            cx.listener(move |this, event: &DragMoveEvent<DragEdge>, _, cx| {
+                let drag = *event.drag(cx);
+                let width = f32::from(event.bounds.size.width);
+                let fraction = f32::from(event.event.position.x - event.bounds.left()) / width;
+                let value = value_at(x, fraction);
+                this.update_viewer(cx, |viewer, _, cx| viewer.move_window_edge(drag, value, cx));
+            }),
+        )
     }
 }
 
-impl Render for HistogramWindow {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let snapshot = self.snapshot(cx);
-        if let Some(snapshot) = &snapshot {
-            // the region's label map was closed or isn't a label map anymore
-            if let Some(region) = self.settings.region
-                && !snapshot
-                    .label_maps
-                    .iter()
-                    .any(|map| map.load_id == region.load_id)
-            {
-                self.settings.region = None;
-                cx.notify();
+impl HistogramPlot {
+    /// Ranges of the x and y axes that fit every plotted curve
+    fn axes(&self, plotted: &[Plotted<Self>], heights: &[Vec<f64>]) -> Axes {
+        let low = plotted.iter().map(|plotted| plotted.value.min);
+        let high = plotted.iter().map(|plotted| plotted.value.max);
+        let (low, high) = (
+            low.fold(f64::INFINITY, f64::min),
+            high.fold(f64::NEG_INFINITY, f64::max),
+        );
+        let heights = || heights.iter().flatten().copied();
+        let top = heights().fold(0.0, f64::max);
+        let y = if self.log {
+            let lowest = heights().filter(|&height| height > 0.0).fold(top, f64::min);
+            if top > 0.0 {
+                // Make sure single voxels still show
+                (lowest.log10().floor() - 0.3, top.log10() + 0.1)
+            } else {
+                (0.0, 1.0)
             }
-            self.schedule(snapshot, cx);
+        } else {
+            (0.0, if top > 0.0 { top * 1.05 } else { 1.0 })
+        };
+        Axes {
+            x: if high > low {
+                (low, high)
+            } else {
+                (low - 0.5, low + 0.5)
+            },
+            y,
+            log: self.log,
         }
-        let theme = cx.theme();
-        let (background, foreground) = (theme.background, theme.foreground);
-        v_flex()
-            .size_full()
-            .bg(background)
-            .text_color(foreground)
-            .text_sm()
-            .track_focus(&self.focus_handle)
-            .key_context(shortcuts::HISTOGRAM_CONTEXT)
-            .on_action(cx.listener(|_, _: &CloseWindow, window, _| window.remove_window()))
-            .when(uses_client_manager_decorations(window), |root| {
-                root.child(title_bar("Histogram"))
-            })
-            .child(
-                v_flex()
-                    .flex_1()
-                    .min_h_0()
-                    .p_3()
-                    .gap_2()
-                    .child(self.render_controls(snapshot.as_ref(), cx))
-                    .child(self.render_plot(snapshot.as_ref(), cx))
-                    .child(self.render_legend(snapshot.as_ref(), cx)),
-            )
     }
 }
 
 impl Viewer {
-    /// Opens histogram window or brings it to the front.
+    /// Opens histogram window or brings it to the front
     pub(super) fn show_histogram(
         &mut self,
         _: &ShowHistogram,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let Some(handle) = self.histogram_window
-            && handle
-                .update(cx, |_, window, _| window.activate_window())
-                .is_ok()
-        {
-            return;
-        }
-        let viewer = cx.entity();
-        // Opened after this update so the new window can read the viewer when it draws
-        cx.defer(move |cx| {
-            let (width, height) = HISTOGRAM_WINDOW_SIZE;
-            let options = WindowOptions {
-                window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
-                    None,
-                    size(px(width), px(height)),
-                    cx,
-                ))),
-                titlebar: Some(TitlebarOptions {
-                    title: Some("Histogram".into()),
-                    ..Default::default()
-                }),
-                app_id: Some("illuminator".into()),
-                ..Default::default()
-            };
-            let opened = gpui_kit::open_window(options, cx, |window, cx| {
-                cx.new(|cx| HistogramWindow::new(&viewer, window, cx))
-            });
-            match opened {
-                Ok((handle, _)) => {
-                    viewer.update(cx, |viewer, _| viewer.histogram_window = Some(handle));
-                }
-                Err(error) => eprintln!("Illuminator: cannot open the histogram window: {error}"),
-            }
-        });
-    }
-}
-
-/// Only curves counted for the desired source and settings may be shown or exported.
-fn current_curve<'a>(curves: &'a HashMap<u64, Curve>, line: &Line) -> Option<&'a Curve> {
-    curves
-        .get(&line.load_id)
-        .filter(|curve| curve.key == line.key)
-}
-
-fn plotted_curve<'a>(
-    curves: &'a HashMap<u64, Curve>,
-    line: &Line,
-) -> Option<(&'a Histogram, bool)> {
-    let curve = curves.get(&line.load_id)?;
-    let stale = curve.key != line.key;
-    if stale && !curve.key.other_frame_of(&line.key) {
-        return None;
-    }
-    Some((curve.histogram.as_ref()?, stale))
-}
-
-fn export_ready(lines: &[Line], curves: &HashMap<u64, Curve>, hidden: &HashSet<u64>) -> bool {
-    let mut has_values = false;
-    for line in lines.iter().filter(|line| !hidden.contains(&line.load_id)) {
-        let Some(curve) = current_curve(curves, line) else {
-            return false;
+        let plot = HistogramPlot {
+            counting: Counting {
+                bins: None,
+                ignore_zeros: true,
+            },
+            y_axis: AxisY::Count,
+            log: false,
         };
-        has_values |= curve.histogram.is_some();
-    }
-    has_values
-}
-
-/// Ranges of the x and y axes that fit every shown curve
-fn axes(shown: &[Shown], settings: Settings) -> Axes {
-    let low = shown.iter().map(|shown| shown.histogram.min);
-    let high = shown.iter().map(|shown| shown.histogram.max);
-    let (low, high) = (
-        low.fold(f64::INFINITY, f64::min),
-        high.fold(f64::NEG_INFINITY, f64::max),
-    );
-    let heights = || shown.iter().flat_map(|shown| shown.heights.iter().copied());
-    let top = heights().fold(0.0, f64::max);
-    let y = if settings.log {
-        let lowest = heights().filter(|&height| height > 0.0).fold(top, f64::min);
-        if top > 0.0 {
-            // Make sure single voxels still show
-            (lowest.log10().floor() - 0.3, top.log10() + 0.1)
-        } else {
-            (0.0, 1.0)
-        }
-    } else {
-        (0.0, if top > 0.0 { top * 1.05 } else { 1.0 })
-    };
-    Axes {
-        x: if high > low {
-            (low, high)
-        } else {
-            (low - 0.5, low + 0.5)
-        },
-        y,
-        log: settings.log,
+        self.show_plot_window(plot, window, cx);
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Curve, CurveKey, Line, RegionKey, current_curve, export_ready};
+    use super::super::plot_window::{Line, Measured, RegionKey, current, export_ready};
+    use super::CurveKey;
     use gpui_kit::rgb;
     use illuminator_core::cache::VolumeCache;
     use illuminator_core::display::VolumeDisplay;
@@ -1229,7 +436,7 @@ mod tests {
         }
     }
 
-    fn line_fixture() -> (TestDirectory, Line) {
+    fn line_fixture() -> (TestDirectory, Line<CurveKey>) {
         static NEXT: AtomicU64 = AtomicU64::new(0);
         let directory = TestDirectory(std::env::temp_dir().join(format!(
             "illuminator-histogram-test-{}-{}",
@@ -1242,7 +449,6 @@ mod tests {
         data.extend_from_slice(&[1, 2, 3, 4]);
         std::fs::write(&path, data).unwrap();
         let (sender, receiver) = mpsc::channel();
-        // a cache of its own, not the one the environment points the app at
         let cache = VolumeCache::new(directory.0.join("cache"), 1 << 20).unwrap();
         let loader = VolumeLoader::new(Arc::new(cache), move || {
             let _ = sender.send(());
@@ -1274,7 +480,7 @@ mod tests {
             name: "values".into(),
             color: rgb(crate::theme::HISTOGRAM_CURVE_COLORS_DARK[0]).into(),
             volume: display.shared_volume(),
-            key,
+            key: Some(key),
             limits: display.window_limits(),
             selected: true,
         };
@@ -1292,21 +498,22 @@ mod tests {
     #[test]
     fn curve_keys_reject_stale_sources_and_settings() {
         let (_directory, mut line) = line_fixture();
-        line.key.region = Some(RegionKey {
+        let mut key = line.key.clone().unwrap();
+        key.region = Some(RegionKey {
             volume: 42,
             frame: 0,
-            geometry: line.key.geometry.clone(),
+            geometry: key.geometry.clone(),
             label: Some(1),
         });
-        let key = line.key.clone();
-        let mut curves = HashMap::from([(
+        line.key = Some(key.clone());
+        let mut results = HashMap::from([(
             line.load_id,
-            Curve {
+            Measured {
                 key: key.clone(),
-                histogram: Some(histogram()),
+                value: Some(histogram()),
             },
         )]);
-        assert!(current_curve(&curves, &line).is_some());
+        assert!(current(&results, &line).is_some());
         type KeyChange = (&'static str, fn(&mut CurveKey));
         let changes: [KeyChange; 10] = [
             ("volume", |key| key.volume += 1),
@@ -1329,65 +536,72 @@ mod tests {
             }),
         ];
         for (name, change) in changes {
-            line.key = key.clone();
-            change(&mut line.key);
-            assert!(current_curve(&curves, &line).is_none(), "{name}");
+            let mut changed = key.clone();
+            change(&mut changed);
+            line.key = Some(changed);
+            assert!(current(&results, &line).is_none(), "{name}");
         }
-        // A cached empty result must also match the current key before claiming no values.
-        curves.get_mut(&line.load_id).unwrap().histogram = None;
-        assert!(current_curve(&curves, &line).is_none());
-        line.key = key;
-        assert!(current_curve(&curves, &line).unwrap().histogram.is_none());
+        results.get_mut(&line.load_id).unwrap().value = None;
+        assert!(current(&results, &line).is_none());
+        line.key = None;
+        assert!(current(&results, &line).is_none());
+        line.key = Some(key);
+        assert!(current(&results, &line).unwrap().value.is_none());
         line.load_id += 1;
-        assert!(current_curve(&curves, &line).is_none());
+        assert!(current(&results, &line).is_none());
     }
 
     #[test]
     fn export_waits_for_every_nonhidden_desired_curve() {
         let (_directory, first) = line_fixture();
+        let key = first.key.clone().unwrap();
         let second = Line {
             load_id: first.load_id + 1,
             number: 2,
             name: "second".into(),
             color: first.color,
             volume: Arc::clone(&first.volume),
-            key: first.key.clone(),
+            key: Some(key.clone()),
             limits: first.limits,
             selected: true,
         };
         let lines = [first, second];
-        let mut curves = HashMap::from([(
+        let mut results = HashMap::from([(
             lines[0].load_id,
-            Curve {
-                key: lines[0].key.clone(),
-                histogram: Some(histogram()),
+            Measured {
+                key: key.clone(),
+                value: Some(histogram()),
             },
         )]);
         let mut hidden = HashSet::new();
-        assert!(!export_ready(&lines, &curves, &hidden));
+        assert!(!export_ready(&lines, &results, &hidden));
         hidden.insert(lines[1].load_id);
-        assert!(export_ready(&lines, &curves, &hidden));
+        assert!(export_ready(&lines, &results, &hidden));
         hidden.clear();
-        let mut stale_key = lines[1].key.clone();
+        let mut stale_key = key.clone();
         stale_key.frame += 1;
-        curves.insert(
+        results.insert(
             lines[1].load_id,
-            Curve {
+            Measured {
                 key: stale_key,
-                histogram: None,
+                value: None,
             },
         );
-        assert!(!export_ready(&lines, &curves, &hidden));
-        curves.get_mut(&lines[1].load_id).unwrap().histogram = Some(histogram());
-        assert!(!export_ready(&lines, &curves, &hidden));
-        let second = curves.get_mut(&lines[1].load_id).unwrap();
-        second.key = lines[1].key.clone();
-        second.histogram = None;
-        assert!(export_ready(&lines, &curves, &hidden));
-        curves.get_mut(&lines[0].load_id).unwrap().histogram = None;
-        assert!(!export_ready(&lines, &curves, &hidden));
+        assert!(!export_ready(&lines, &results, &hidden));
+        results.get_mut(&lines[1].load_id).unwrap().value = Some(histogram());
+        assert!(!export_ready(&lines, &results, &hidden));
+        let second = results.get_mut(&lines[1].load_id).unwrap();
+        second.key = key;
+        second.value = None;
+        assert!(export_ready(&lines, &results, &hidden));
+        results.get_mut(&lines[0].load_id).unwrap().value = None;
+        assert!(!export_ready(&lines, &results, &hidden));
         hidden.extend(lines.iter().map(|line| line.load_id));
-        assert!(!export_ready(&lines, &curves, &hidden));
-        assert!(!export_ready(&[], &curves, &HashSet::new()));
+        assert!(!export_ready(&lines, &results, &hidden));
+        assert!(!export_ready::<CurveKey, Histogram>(
+            &[],
+            &results,
+            &HashSet::new()
+        ));
     }
 }
