@@ -10,8 +10,10 @@ mod layout;
 mod mouse;
 mod panels;
 mod playback;
+mod plot_window;
 mod sidebar;
 mod status_bar;
+mod time_series_window;
 mod toolbar;
 
 use futures::StreamExt;
@@ -28,6 +30,7 @@ use illuminator_core::histogram::Histogram;
 use illuminator_core::loader::{LoadState, VolumeLoader};
 use illuminator_core::slicer::{Coloring, SampledSlice};
 use illuminator_core::suv::SuvInputs;
+use std::any::TypeId;
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
@@ -386,7 +389,7 @@ pub struct Viewer {
     label_loads: HashSet<u64>,
     load_colormaps: HashMap<u64, Colormap>,
     retired: Vec<Arc<RenderImage>>,
-    histogram_window: Option<AnyWindowHandle>,
+    plot_windows: HashMap<TypeId, AnyWindowHandle>,
     _loader_events: Task<()>,
     _open_requests: Task<()>,
 }
@@ -486,7 +489,7 @@ impl Viewer {
             label_loads,
             load_colormaps,
             retired: Vec::new(),
-            histogram_window: None,
+            plot_windows: HashMap::new(),
             _loader_events: loader_events,
             _open_requests: open_requests,
         }
@@ -722,6 +725,7 @@ impl Render for Viewer {
             .on_action(cx.listener(Self::toggle_mip))
             .on_action(cx.listener(Self::show_help))
             .on_action(cx.listener(Self::show_histogram))
+            .on_action(cx.listener(Self::show_time_series))
             .on_action(cx.listener(Self::zoom_in))
             .on_action(cx.listener(Self::zoom_out))
             .on_action(cx.listener(Self::reset_zoom))
