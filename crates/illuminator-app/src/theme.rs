@@ -61,12 +61,21 @@ pub fn init(cx: &mut App) {
         ThemeMode::Dark
     };
     Theme::change(mode, None, cx);
-    Root::register_plugin(cx, |_, _| {
-        let features = UI_FONT_FEATURES.iter().map(|tag| (tag.to_string(), 1));
-        InterfaceFont(FontFeatures(Arc::new(features.collect())))
-    });
+    Root::register_plugin(cx, |_, _| InterfaceFont(ui_font_features()));
     cx.set_reduce_motion(true);
     watch(cx);
+}
+
+pub fn ui_font(cx: &App) -> Font {
+    Font {
+        features: ui_font_features(),
+        ..font(cx.theme().font_family.clone())
+    }
+}
+
+fn ui_font_features() -> FontFeatures {
+    let features = UI_FONT_FEATURES.iter().map(|tag| (tag.to_string(), 1));
+    FontFeatures(Arc::new(features.collect()))
 }
 
 /// Switches every window between the dark and the light theme.
