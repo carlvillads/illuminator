@@ -166,7 +166,7 @@ pub fn to_csv<'a>(histograms: impl IntoIterator<Item = (usize, &'a str, &'a Hist
 }
 
 /// `text` as one CSV field.
-fn quoted(text: &str) -> Cow<'_, str> {
+pub(crate) fn quoted(text: &str) -> Cow<'_, str> {
     if text.contains([',', '"', '\n', '\r']) {
         format!("\"{}\"", text.replace('"', "\"\"")).into()
     } else {
@@ -190,7 +190,7 @@ pub struct LabelMask<'a> {
 
 impl LabelMask<'_> {
     /// Whether the voxel xyz of a volume lies inside the mask.
-    fn contains(&self, geometry: &VolumeGeometry, [x, y, z]: [usize; 3]) -> bool {
+    pub(crate) fn contains(&self, geometry: &VolumeGeometry, [x, y, z]: [usize; 3]) -> bool {
         let voxel = Point3D::new(x as f64, y as f64, z as f64);
         let world = geometry.voxel_to_world.point(voxel);
         let value = self

@@ -22,12 +22,12 @@ use illuminator_core::slicer::Coloring;
 use std::rc::Rc;
 
 use crate::assets::Carbon;
-use crate::shortcuts::{self, AutoContrast, NextColormap, ShowHistogram};
+use crate::shortcuts::{self, AutoContrast, NextColormap, ShowHistogram, ShowTimeSeries};
 use crate::ui::{
     self, colormap_strip, format_editable, format_value, parse_value, rgb_to_rgba, section_title,
 };
 
-use super::{CORNER_TEXT, DragEdge, Preset, STALE_HISTOGRAM_OPACITY, SyncMode, Viewer, WindowEdge};
+use super::{CORNER_TEXT, DragEdge, Preset, STALE_OPACITY, SyncMode, Viewer, WindowEdge};
 
 const HISTOGRAM_HEIGHT: f32 = 56.0;
 const CHART_CURVE_HEIGHT: f32 = 64.0;
@@ -458,7 +458,7 @@ impl Viewer {
         };
 
         let stale = layer.current_histogram().is_none();
-        let fade = if stale { STALE_HISTOGRAM_OPACITY } else { 1.0 };
+        let fade = if stale { STALE_OPACITY } else { 1.0 };
         let span = histogram.max - histogram.min;
         let at = |value: f64| {
             if span > 0.0 {
@@ -564,7 +564,20 @@ impl Viewer {
             theme.secondary,
             theme.foreground,
         );
-        let title = section_title("Curve at cursor", cx);
+        let title = section_title("Curve at cursor", cx).child(
+            Button::new(("time-series-window", index))
+                .ghost()
+                .xsmall()
+                .icon(Carbon::Expand)
+                .tooltip_with_action(
+                    "Time series window",
+                    &ShowTimeSeries,
+                    Some(shortcuts::CONTEXT),
+                )
+                .on_click(cx.listener(|viewer, _, window, cx| {
+                    viewer.show_time_series(&ShowTimeSeries, window, cx);
+                })),
+        );
         let Some(curve) = &layer.curve else {
             let message = if layer.curve_pending {
                 "Reading the curve\u{2026}"

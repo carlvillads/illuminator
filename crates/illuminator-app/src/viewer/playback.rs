@@ -125,7 +125,12 @@ impl Viewer {
         });
     }
 
-    fn go_to_frame(&mut self, frame: usize, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn go_to_frame(
+        &mut self,
+        frame: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(slider) = &self.frame_slider else {
             return;
         };

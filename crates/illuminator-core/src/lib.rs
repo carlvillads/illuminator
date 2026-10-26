@@ -23,6 +23,7 @@ mod projection;
 pub mod slicer;
 pub mod stats;
 pub mod suv;
+pub mod time_series;
 pub mod volume;
 pub mod voxel;
 
