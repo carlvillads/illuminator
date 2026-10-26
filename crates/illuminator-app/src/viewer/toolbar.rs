@@ -87,7 +87,7 @@ const SYNC: Tool = Tool {
 const IMAGE: Tool = Tool {
     id: "image",
     icon: Carbon::Camera,
-    text: "Image",
+    text: "Screenshot",
 };
 const THEME: Tool = Tool {
     id: "theme",
