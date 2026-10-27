@@ -1,7 +1,7 @@
 //! Colormaps.
 //! Each map has its own file under `cmaps/`.
 
-use crate::cmaps::{self, Cmap};
+use crate::colormap_definitions::{self, Cmap};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Colormap {
@@ -48,23 +48,23 @@ impl Colormap {
 
     fn cmap(self) -> &'static Cmap {
         match self {
-            Self::Grayscale => &cmaps::GRAYSCALE,
-            Self::InvGrayscale => &cmaps::INVERSE_GRAYSCALE,
-            Self::Red => &cmaps::RED,
-            Self::Blue => &cmaps::BLUE,
-            Self::Viridis => &cmaps::VIRIDIS,
-            Self::Plasma => &cmaps::PLASMA,
-            Self::Magma => &cmaps::MAGMA,
-            Self::Inferno => &cmaps::INFERNO,
-            Self::Hot => &cmaps::HOT,
-            Self::Bone => &cmaps::BONE,
-            Self::Cool => &cmaps::COOL,
-            Self::Turbo => &cmaps::TURBO,
-            Self::GrayC => &cmaps::GRAYC,
-            Self::Lipari => &cmaps::LIPARI,
-            Self::Navia => &cmaps::NAVIA,
-            Self::Berlin => &cmaps::BERLIN,
-            Self::Vik => &cmaps::VIK,
+            Self::Grayscale => &colormap_definitions::GRAYSCALE,
+            Self::InvGrayscale => &colormap_definitions::INVERSE_GRAYSCALE,
+            Self::Red => &colormap_definitions::RED,
+            Self::Blue => &colormap_definitions::BLUE,
+            Self::Viridis => &colormap_definitions::VIRIDIS,
+            Self::Plasma => &colormap_definitions::PLASMA,
+            Self::Magma => &colormap_definitions::MAGMA,
+            Self::Inferno => &colormap_definitions::INFERNO,
+            Self::Hot => &colormap_definitions::HOT,
+            Self::Bone => &colormap_definitions::BONE,
+            Self::Cool => &colormap_definitions::COOL,
+            Self::Turbo => &colormap_definitions::TURBO,
+            Self::GrayC => &colormap_definitions::GRAYC,
+            Self::Lipari => &colormap_definitions::LIPARI,
+            Self::Navia => &colormap_definitions::NAVIA,
+            Self::Berlin => &colormap_definitions::BERLIN,
+            Self::Vik => &colormap_definitions::VIK,
         }
     }
 
@@ -126,7 +126,7 @@ impl ColorTable {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cmaps::Ramp;
+    use crate::colormap_definitions::Ramp;
 
     #[test]
     fn color_tables_match_the_colormaps() {
