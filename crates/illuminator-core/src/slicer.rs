@@ -8,9 +8,9 @@ use crate::geometry::{Point3D, SlicePlane, VolumeGeometry, aspect_scale};
 use crate::labels::{label_color, label_id};
 use crate::projection;
 use crate::volume::Volume;
-use crate::voxel::{Endian, Scalar, with_scalar};
+use crate::voxel::{ByteOrder, Scalar, dispatch_data_type};
 
-const INVALID_LABEL: [u8; 4] = [255, 0, 255, 255];
+const INVALID_LABEL_COLOR: [u8; 4] = [255, 0, 255, 255];
 const OUTLINE_WIDTH: usize = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -91,7 +91,7 @@ impl LabelSample {
 
 impl Slice<'_> {
     pub(crate) fn sample(&self, width: usize, height: usize) -> SampledSlice {
-        let samples = with_scalar!(self.volume.meta().datatype, |T| {
+        let samples = dispatch_data_type!(self.volume.metadata().data_type, |T| {
             self.sample_typed::<T>(width, height)
         });
         SampledSlice {
@@ -102,17 +102,17 @@ impl Slice<'_> {
     }
 
     pub(crate) fn sample_mip(&self, width: usize, height: usize) -> SampledSlice {
-        let axis = projection::depth_axis(self.geometry, &self.plane);
+        let axis = projection::projection_axis(self.geometry, &self.plane);
         let mip = self.volume.projection(self.frame, axis);
         let samples = if self.labels {
             Samples::Labels(
                 self.sample_pixels(width, height, LabelSample::Outside, |voxel| {
-                    LabelSample::of(f64::from(mip.nearest(voxel)))
+                    LabelSample::of(f64::from(mip.sample_nearest(voxel)))
                 }),
             )
         } else {
             Samples::Intensity(
-                self.sample_pixels(width, height, f32::NAN, |voxel| mip.linear(voxel)),
+                self.sample_pixels(width, height, f32::NAN, |voxel| mip.sample_bilinear(voxel)),
             )
         };
         SampledSlice {
@@ -123,17 +123,17 @@ impl Slice<'_> {
     }
 
     fn sample_typed<T: Scalar>(&self, width: usize, height: usize) -> Samples {
-        let voxels = Voxels::<T>::new(self.volume, self.frame);
-        let scaling = self.volume.meta().scaling;
+        let voxels = TypedVoxelReader::<T>::new(self.volume, self.frame);
+        let scaling = self.volume.metadata().scaling;
         if self.labels {
             Samples::Labels(
                 self.sample_pixels(width, height, LabelSample::Outside, |voxel| {
-                    LabelSample::of(scaling.apply(voxels.nearest(voxel)))
+                    LabelSample::of(scaling.apply(voxels.sample_nearest(voxel)))
                 }),
             )
         } else {
             Samples::Intensity(self.sample_pixels(width, height, f32::NAN, |voxel| {
-                let raw = voxels.linear(voxel);
+                let raw = voxels.sample_trilinear(voxel);
                 if raw.is_finite() {
                     scaling.apply(raw) as f32
                 } else {
@@ -155,9 +155,9 @@ impl Slice<'_> {
             return pixels;
         }
         let to_voxel = &self.geometry.world_to_voxel;
-        let origin = to_voxel.point(self.plane.origin);
-        let step_s = to_voxel.point(self.plane.origin + self.plane.u) - origin;
-        let step_t = to_voxel.point(self.plane.origin + self.plane.v) - origin;
+        let origin = to_voxel.transform_point(self.plane.origin);
+        let step_s = to_voxel.transform_point(self.plane.origin + self.plane.u) - origin;
+        let step_t = to_voxel.transform_point(self.plane.origin + self.plane.v) - origin;
 
         pixels
             .par_chunks_exact_mut(width)
@@ -180,12 +180,13 @@ impl Slice<'_> {
 impl SampledSlice {
     pub fn colorize(&self, coloring: Coloring) -> SliceImage {
         let mut pixels = vec![0; self.width * self.height * 4];
-        let out = pixels.as_chunks_mut::<4>().0;
+        let rgba_pixels = pixels.as_chunks_mut::<4>().0;
         let row = self.width.max(1);
         match (&self.samples, coloring) {
             (Samples::Intensity(values), Coloring::Intensity { colormap, .. }) => {
                 let table = ColorTable::new(colormap);
-                out.par_chunks_mut(row)
+                rgba_pixels
+                    .par_chunks_mut(row)
                     .zip(values.par_chunks(row))
                     .for_each(|(line, values)| {
                         for (pixel, &value) in line.iter_mut().zip(values) {
@@ -199,18 +200,21 @@ impl SampledSlice {
             (Samples::Labels(labels), coloring) => {
                 let outline = matches!(coloring, Coloring::Labels { outline: true });
                 let (width, height) = (self.width, self.height);
-                out.par_chunks_mut(row).enumerate().for_each(|(y, line)| {
-                    for (x, pixel) in line.iter_mut().enumerate() {
-                        if outline && !on_edge(labels, width, height, x, y) {
-                            continue;
+                rgba_pixels
+                    .par_chunks_mut(row)
+                    .enumerate()
+                    .for_each(|(y, line)| {
+                        for (x, pixel) in line.iter_mut().enumerate() {
+                            if outline && !is_label_boundary(labels, width, height, x, y) {
+                                continue;
+                            }
+                            *pixel = match labels[y * width + x] {
+                                LabelSample::Outside => [0; 4],
+                                LabelSample::Invalid => INVALID_LABEL_COLOR,
+                                LabelSample::Id(id) => label_color(id),
+                            };
                         }
-                        *pixel = match labels[y * width + x] {
-                            LabelSample::Outside => [0; 4],
-                            LabelSample::Invalid => INVALID_LABEL,
-                            LabelSample::Id(id) => label_color(id),
-                        };
-                    }
-                });
+                    });
             }
             (Samples::Intensity(_), Coloring::Labels { .. }) => {}
         }
@@ -236,59 +240,60 @@ pub fn fit_size(plane: &SlicePlane, panel_width: usize, panel_height: usize) -> 
     (fit(panel_width, scale_x), fit(panel_height, scale_y))
 }
 
-struct Voxels<'a, T> {
+struct TypedVoxelReader<'a, T> {
     bytes: &'a [u8],
-    endian: Endian,
-    dims: [usize; 3],
-    _type: PhantomData<T>,
+    endian: ByteOrder,
+    dimensions: [usize; 3],
+    _scalar_type: PhantomData<T>,
 }
 
-impl<'a, T: Scalar> Voxels<'a, T> {
+impl<'a, T: Scalar> TypedVoxelReader<'a, T> {
     fn new(volume: &'a Volume, frame: usize) -> Self {
-        let meta = volume.meta();
+        let metadata = volume.metadata();
         Self {
-            bytes: volume.frame(frame),
-            endian: meta.endian,
-            dims: [meta.width(), meta.height(), meta.depth()],
-            _type: PhantomData,
+            bytes: volume.frame_bytes(frame),
+            endian: metadata.endian,
+            dimensions: [metadata.width(), metadata.height(), metadata.depth()],
+            _scalar_type: PhantomData,
         }
     }
 
-    fn get(&self, [x, y, z]: [usize; 3]) -> f64 {
-        let index = x + self.dims[0] * (y + self.dims[1] * z);
+    fn value_at(&self, [x, y, z]: [usize; 3]) -> f64 {
+        let index = x + self.dimensions[0] * (y + self.dimensions[1] * z);
         T::read(
             &self.bytes[index * T::SIZE..(index + 1) * T::SIZE],
             self.endian,
         )
     }
 
-    fn nearest(&self, p: Point3D) -> f64 {
-        self.get(std::array::from_fn(|axis| {
-            clamp_index((p[axis] + 0.5).floor(), self.dims[axis])
+    fn sample_nearest(&self, p: Point3D) -> f64 {
+        self.value_at(std::array::from_fn(|axis| {
+            clamp_index((p[axis] + 0.5).floor(), self.dimensions[axis])
         }))
     }
 
-    fn linear(&self, p: Point3D) -> f64 {
+    fn sample_trilinear(&self, p: Point3D) -> f64 {
         let base: [f64; 3] = std::array::from_fn(|axis| p[axis].floor());
-        let frac: [f64; 3] = std::array::from_fn(|axis| p[axis] - base[axis]);
-        let low: [usize; 3] = std::array::from_fn(|axis| clamp_index(base[axis], self.dims[axis]));
+        let fraction: [f64; 3] = std::array::from_fn(|axis| p[axis] - base[axis]);
+        let low: [usize; 3] =
+            std::array::from_fn(|axis| clamp_index(base[axis], self.dimensions[axis]));
         let high: [usize; 3] =
-            std::array::from_fn(|axis| clamp_index(base[axis] + 1.0, self.dims[axis]));
+            std::array::from_fn(|axis| clamp_index(base[axis] + 1.0, self.dimensions[axis]));
 
         let mut sum = 0.0;
         for corner in 0..8 {
             let mut weight = 1.0;
             let index = std::array::from_fn(|axis| {
                 if corner & (1 << axis) != 0 {
-                    weight *= frac[axis];
+                    weight *= fraction[axis];
                     high[axis]
                 } else {
-                    weight *= 1.0 - frac[axis];
+                    weight *= 1.0 - fraction[axis];
                     low[axis]
                 }
             });
             if weight != 0.0 {
-                sum += weight * self.get(index);
+                sum += weight * self.value_at(index);
             }
         }
         sum
@@ -300,7 +305,13 @@ fn clamp_index(coordinate: f64, size: usize) -> usize {
     (coordinate as usize).min(size - 1)
 }
 
-fn on_edge(labels: &[LabelSample], width: usize, height: usize, x: usize, y: usize) -> bool {
+fn is_label_boundary(
+    labels: &[LabelSample],
+    width: usize,
+    height: usize,
+    x: usize,
+    y: usize,
+) -> bool {
     let label = labels[y * width + x];
     let differs = |x: usize, y: usize| labels[y * width + x] != label;
     (1..=OUTLINE_WIDTH).any(|d| {
@@ -314,9 +325,9 @@ fn on_edge(labels: &[LabelSample], width: usize, height: usize, x: usize, y: usi
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::geometry::{Affine, GeometryOptions, ViewPlane};
-    use crate::meta::Mat3x4;
-    use crate::test_util::{Fixture, load};
+    use crate::geometry::{AffineTransform, GeometryOptions, ViewPlane};
+    use crate::metadata::Matrix3x4;
+    use crate::test_fixtures::{Fixture, write_and_load};
     use crate::voxel::DataType;
 
     /// The value at world point `p` interpolated.
@@ -326,14 +337,15 @@ mod tests {
         frame: usize,
         p: Point3D,
     ) -> Option<f64> {
-        let voxel = geometry.world_to_voxel.point(p);
+        let voxel = geometry.world_to_voxel.transform_point(p);
         if !geometry.contains_voxel(voxel) {
             return None;
         }
-        let raw = with_scalar!(volume.meta().datatype, |T| {
-            Voxels::<T>::new(volume, frame).linear(voxel)
+        let raw = dispatch_data_type!(volume.metadata().data_type, |T| {
+            TypedVoxelReader::<T>::new(volume, frame).sample_trilinear(voxel)
         });
-        raw.is_finite().then(|| volume.meta().scaling.apply(raw))
+        raw.is_finite()
+            .then(|| volume.metadata().scaling.apply(raw))
     }
 
     fn geometry_of(volume: &Volume) -> VolumeGeometry {
@@ -341,7 +353,7 @@ mod tests {
     }
 
     fn plane_at(geometry: &VolumeGeometry, axis: ViewPlane, voxel: Point3D) -> SlicePlane {
-        geometry.plane(axis, geometry.voxel_to_world.point(voxel), false)
+        geometry.plane(axis, geometry.voxel_to_world.transform_point(voxel), false)
     }
 
     fn grayscale(level: f64, width: f64) -> Coloring {
@@ -372,13 +384,13 @@ mod tests {
 
     #[test]
     fn samples_voxel_centers_exactly() {
-        let dir = tempfile::tempdir().unwrap();
+        let directory = tempfile::tempdir().unwrap();
         let ramp = Fixture {
             datatype: DataType::F32,
             value: |i| (i / 12) as f64 * 10.0,
             ..Fixture::default()
         };
-        let volume = load(&dir, &ramp, "ramp.nii");
+        let volume = write_and_load(&directory, &ramp, "ramp.nii");
         let geometry = geometry_of(&volume);
         let at = |z| sample_linear(&volume, &geometry, 0, Point3D::new(1.0, 1.0, z));
         assert_eq!(at(1.0), Some(10.0));
@@ -392,7 +404,7 @@ mod tests {
 
     #[test]
     fn applies_intensity_scaling() {
-        let dir = tempfile::tempdir().unwrap();
+        let directory = tempfile::tempdir().unwrap();
         for (slope, expected) in [(0.0, 10.0), (-2.0, 80.0), (0.001, 100.01)] {
             let scaled = Fixture {
                 datatype: DataType::F32,
@@ -401,7 +413,7 @@ mod tests {
                 intercept: 100.0,
                 ..Fixture::default()
             };
-            let volume = load(&dir, &scaled, &format!("scaled-{slope}.nii"));
+            let volume = write_and_load(&directory, &scaled, &format!("scaled-{slope}.nii"));
             let geometry = geometry_of(&volume);
             let value = sample_linear(&volume, &geometry, 0, Point3D::new(1.0, 1.0, 1.0)).unwrap();
             assert!((value - expected).abs() < 1e-4, "slope {slope}: {value}");
@@ -410,13 +422,17 @@ mod tests {
 
     #[test]
     fn hides_non_finite_values_and_empty_space() {
-        let dir = tempfile::tempdir().unwrap();
+        let directory = tempfile::tempdir().unwrap();
         let all_nan = Fixture {
             datatype: DataType::F32,
             value: |_| f64::NAN,
             ..Fixture::default()
         };
-        let image = render_axial(&load(&dir, &all_nan, "nan.nii"), grayscale(0.0, 1.0), 0);
+        let image = render_axial(
+            &write_and_load(&directory, &all_nan, "nan.nii"),
+            grayscale(0.0, 1.0),
+            0,
+        );
         assert!(image.pixels.chunks(4).all(|p| p[3] == 0));
 
         let first_slice_nan = Fixture {
@@ -424,13 +440,13 @@ mod tests {
             value: |i| if i < 12 { f64::NAN } else { 1.0 },
             ..Fixture::default()
         };
-        let volume = load(&dir, &first_slice_nan, "partial.nii");
+        let volume = write_and_load(&directory, &first_slice_nan, "partial.nii");
         let geometry = geometry_of(&volume);
         let at = |z| sample_linear(&volume, &geometry, 0, Point3D::new(1.0, 1.0, z));
         assert_eq!(at(1.0), Some(1.0));
         assert_eq!(at(0.5), None);
 
-        let volume = load(&dir, &Fixture::default(), "outside.nii");
+        let volume = write_and_load(&directory, &Fixture::default(), "outside.nii");
         let geometry = geometry_of(&volume);
         let slice = Slice {
             volume: &volume,
@@ -447,7 +463,7 @@ mod tests {
         20.0 + p.x + 2.0 * p.y + 3.0 * p.z
     }
 
-    fn orientation(case: usize) -> Mat3x4 {
+    fn orientation(case: usize) -> Matrix3x4 {
         let (sin, cos) = (f64::from(0.4f32.sin()), f64::from(0.4f32.cos()));
         match case {
             0 => [
@@ -476,16 +492,16 @@ mod tests {
     fn phantom(case: usize, i: usize) -> f64 {
         let voxel = Point3D::new((i % 7) as f64, ((i / 7) % 9) as f64, (i / 63) as f64);
         field(
-            Affine {
-                m: orientation(case),
+            AffineTransform {
+                matrix: orientation(case),
             }
-            .point(voxel),
+            .transform_point(voxel),
         )
     }
 
     #[test]
     fn reslices_every_orientation_exactly() {
-        let dir = tempfile::tempdir().unwrap();
+        let directory = tempfile::tempdir().unwrap();
         let values: [fn(usize) -> f64; 4] = [
             |i| phantom(0, i),
             |i| phantom(1, i),
@@ -495,17 +511,19 @@ mod tests {
         let (mut sampled, mut rendered) = (0, 0);
         for (case, value) in values.into_iter().enumerate() {
             let fixture = Fixture {
-                dims: vec![7, 9, 5],
+                dimensions: vec![7, 9, 5],
                 datatype: DataType::F32,
                 sform: orientation(case),
                 value,
                 ..Fixture::default()
             };
-            let volume = load(&dir, &fixture, &format!("orientation-{case}.nii"));
+            let volume = write_and_load(&directory, &fixture, &format!("orientation-{case}.nii"));
             let geometry = geometry_of(&volume);
-            let cursor = geometry.voxel_to_world.point(Point3D::new(3.0, 4.0, 2.0));
+            let cursor = geometry
+                .voxel_to_world
+                .transform_point(Point3D::new(3.0, 4.0, 2.0));
             let interior = |world: Point3D| {
-                let voxel = geometry.world_to_voxel.point(world);
+                let voxel = geometry.world_to_voxel.transform_point(world);
                 (0..3).all(|a| voxel[a] >= 0.0 && voxel[a] <= geometry.dimensions[a] as f64 - 1.0)
             };
 
@@ -560,17 +578,17 @@ mod tests {
 
     #[test]
     fn labels_keep_their_colors() {
-        let dir = tempfile::tempdir().unwrap();
+        let directory = tempfile::tempdir().unwrap();
         let labels = Fixture {
             datatype: DataType::I32,
-            dims: vec![4, 3, 4, 2],
+            dimensions: vec![4, 3, 4, 2],
             value: |i| {
                 const IDS: [f64; 4] = [0.0, 300.0, 1000.0, 16_777_217.0];
                 IDS[(i + usize::from(i >= 48)) % 4]
             },
             ..Fixture::default()
         };
-        let volume = load(&dir, &labels, "labels.nii");
+        let volume = write_and_load(&directory, &labels, "labels.nii");
         let frame0 = render_axial(&volume, Coloring::Labels { outline: false }, 0);
         let row = 2;
         assert_eq!(pixel(&frame0, 0, row), [0, 0, 0, 0]);
@@ -584,8 +602,8 @@ mod tests {
 
     #[test]
     fn recolors_without_resampling() {
-        let dir = tempfile::tempdir().unwrap();
-        let volume = load(&dir, &Fixture::default(), "recolor.nii");
+        let directory = tempfile::tempdir().unwrap();
+        let volume = write_and_load(&directory, &Fixture::default(), "recolor.nii");
         let geometry = geometry_of(&volume);
         let slice = Slice {
             volume: &volume,
@@ -620,13 +638,13 @@ mod tests {
 
     #[test]
     fn clips_values_below_the_window() {
-        let dir = tempfile::tempdir().unwrap();
+        let directory = tempfile::tempdir().unwrap();
         let ramp = Fixture {
             datatype: DataType::F32,
             value: |i| (i % 4) as f64 * 10.0,
             ..Fixture::default()
         };
-        let volume = load(&dir, &ramp, "clip.nii");
+        let volume = write_and_load(&directory, &ramp, "clip.nii");
         let clipped = Coloring::Intensity {
             level: 15.0,
             width: 10.0,
@@ -640,8 +658,8 @@ mod tests {
 
     #[test]
     fn fits_images_inside_panels() {
-        let dir = tempfile::tempdir().unwrap();
-        let volume = load(&dir, &Fixture::default(), "fit.nii");
+        let directory = tempfile::tempdir().unwrap();
+        let volume = write_and_load(&directory, &Fixture::default(), "fit.nii");
         let geometry = geometry_of(&volume);
         let plane = plane_at(&geometry, ViewPlane::Axial, Point3D::new(1.0, 1.0, 1.0));
         assert_eq!(fit_size(&plane, 400, 400), (400, 300));
@@ -651,13 +669,13 @@ mod tests {
 
     #[test]
     fn outlines_only_draw_edges() {
-        let dir = tempfile::tempdir().unwrap();
+        let directory = tempfile::tempdir().unwrap();
         let halves = Fixture {
             datatype: DataType::I32,
             value: |i| if i % 4 == 0 { 0.0 } else { 1.0 },
             ..Fixture::default()
         };
-        let volume = load(&dir, &halves, "halves.nii");
+        let volume = write_and_load(&directory, &halves, "halves.nii");
         let image = render_axial(&volume, Coloring::Labels { outline: true }, 0);
         let alpha = |col| pixel(&image, col, 1)[3];
         assert_eq!([alpha(0), alpha(1), alpha(2), alpha(3)], [0, 255, 255, 0]);

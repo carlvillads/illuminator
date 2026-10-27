@@ -3,7 +3,7 @@
 use std::ops::{Add, Index, IndexMut, Mul, Neg, Sub};
 
 use crate::error::{Error, Result};
-use crate::meta::{Mat3x4, SpatialUnits, VolumeMeta};
+use crate::metadata::{Matrix3x4, SpatialUnits, VolumeMetadata};
 
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct Point3D {
@@ -41,7 +41,7 @@ impl Point3D {
         self.x.is_finite() && self.y.is_finite() && self.z.is_finite()
     }
 
-    pub(crate) fn min(self, other: Self) -> Self {
+    pub(crate) fn minimum(self, other: Self) -> Self {
         Self::new(
             self.x.min(other.x),
             self.y.min(other.y),
@@ -49,7 +49,7 @@ impl Point3D {
         )
     }
 
-    pub(crate) fn max(self, other: Self) -> Self {
+    pub(crate) fn maximum(self, other: Self) -> Self {
         Self::new(
             self.x.max(other.x),
             self.y.max(other.y),
@@ -116,60 +116,72 @@ impl IndexMut<usize> for Point3D {
 
 /// Transform with implicit last row (0, 0, 0, 1)
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) struct Affine {
-    pub(crate) m: Mat3x4,
+pub(crate) struct AffineTransform {
+    pub(crate) matrix: Matrix3x4,
 }
 
-impl Affine {
+impl AffineTransform {
     pub(crate) const IDENTITY: Self = Self {
-        m: [
+        matrix: [
             [1.0, 0.0, 0.0, 0.0],
             [0.0, 1.0, 0.0, 0.0],
             [0.0, 0.0, 1.0, 0.0],
         ],
     };
 
-    pub(crate) fn point(&self, p: Point3D) -> Point3D {
+    pub(crate) fn transform_point(&self, p: Point3D) -> Point3D {
         let row = |r: [f64; 4]| r[0] * p.x + r[1] * p.y + r[2] * p.z + r[3];
-        Point3D::new(row(self.m[0]), row(self.m[1]), row(self.m[2]))
+        Point3D::new(
+            row(self.matrix[0]),
+            row(self.matrix[1]),
+            row(self.matrix[2]),
+        )
     }
 
     pub(crate) fn inverse(&self) -> Result<Self> {
-        if self.m.iter().flatten().any(|value| !value.is_finite()) {
+        if self.matrix.iter().flatten().any(|value| !value.is_finite()) {
             return Err(Error::invalid("Nonfinite image affine"));
         }
-        let [[a, b, c, _], [d, e, f, _], [g, h, i, _]] = self.m;
-        let det = self.determinant();
+        let [[a, b, c, _], [d, e, f, _], [g, h, i, _]] = self.matrix;
+        let determinant = self.determinant();
         let scale = Point3D::new(a, d, g).length()
             * Point3D::new(b, e, h).length()
             * Point3D::new(c, f, i).length();
-        if !scale.is_finite() || scale == 0.0 || !det.is_finite() || det.abs() / scale < 1e-10 {
+        if !scale.is_finite()
+            || scale == 0.0
+            || !determinant.is_finite()
+            || determinant.abs() / scale < 1e-10
+        {
             return Err(Error::invalid("Singular image affine"));
         }
         let mut inverse = Self {
-            m: [
+            matrix: [
                 [
-                    (e * i - f * h) / det,
-                    (c * h - b * i) / det,
-                    (b * f - c * e) / det,
+                    (e * i - f * h) / determinant,
+                    (c * h - b * i) / determinant,
+                    (b * f - c * e) / determinant,
                     0.0,
                 ],
                 [
-                    (f * g - d * i) / det,
-                    (a * i - c * g) / det,
-                    (c * d - a * f) / det,
+                    (f * g - d * i) / determinant,
+                    (a * i - c * g) / determinant,
+                    (c * d - a * f) / determinant,
                     0.0,
                 ],
                 [
-                    (d * h - e * g) / det,
-                    (b * g - a * h) / det,
-                    (a * e - b * d) / det,
+                    (d * h - e * g) / determinant,
+                    (b * g - a * h) / determinant,
+                    (a * e - b * d) / determinant,
                     0.0,
                 ],
             ],
         };
-        let t = inverse.point(Point3D::new(self.m[0][3], self.m[1][3], self.m[2][3]));
-        for (row, value) in inverse.m.iter_mut().zip([t.x, t.y, t.z]) {
+        let t = inverse.transform_point(Point3D::new(
+            self.matrix[0][3],
+            self.matrix[1][3],
+            self.matrix[2][3],
+        ));
+        for (row, value) in inverse.matrix.iter_mut().zip([t.x, t.y, t.z]) {
             row[3] = -value;
         }
         Ok(inverse)
@@ -177,30 +189,30 @@ impl Affine {
 
     /// Determinant of the 3x3 matrix without the last implicit row.
     pub(crate) fn determinant(&self) -> f64 {
-        let [[a, b, c, _], [d, e, f, _], [g, h, i, _]] = self.m;
+        let [[a, b, c, _], [d, e, f, _], [g, h, i, _]] = self.matrix;
         a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g)
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct Bounds3D {
-    pub(crate) min: Point3D,
-    pub(crate) max: Point3D,
+    pub(crate) minimum: Point3D,
+    pub(crate) maximum: Point3D,
 }
 
 impl Bounds3D {
     pub(crate) const EMPTY: Self = Self {
-        min: Point3D::new(f64::INFINITY, f64::INFINITY, f64::INFINITY),
-        max: Point3D::new(f64::NEG_INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY),
+        minimum: Point3D::new(f64::INFINITY, f64::INFINITY, f64::INFINITY),
+        maximum: Point3D::new(f64::NEG_INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY),
     };
 
     pub(crate) fn include(&mut self, p: Point3D) {
-        self.min = self.min.min(p);
-        self.max = self.max.max(p);
+        self.minimum = self.minimum.minimum(p);
+        self.maximum = self.maximum.maximum(p);
     }
 
     pub(crate) fn extent(&self) -> Point3D {
-        self.max - self.min
+        self.maximum - self.minimum
     }
 }
 
@@ -246,14 +258,14 @@ pub struct GeometryOptions {
     /// Ignore the sform/qform and show the image on its own voxel axes
     pub native: bool,
     /// Treat unknown spatial units as mm
-    pub assume_mm: bool,
+    pub assume_millimeters: bool,
 }
 
 /// Where a volumes voxels sit in world space in mm
 #[derive(Debug, Clone, PartialEq)]
 pub struct VolumeGeometry {
-    pub(crate) voxel_to_world: Affine,
-    pub(crate) world_to_voxel: Affine,
+    pub(crate) voxel_to_world: AffineTransform,
+    pub(crate) world_to_voxel: AffineTransform,
     pub(crate) bounds: Bounds3D,
     pub(crate) cursor_bounds: Bounds3D,
     pub(crate) dimensions: [usize; 3],
@@ -265,12 +277,12 @@ pub struct VolumeGeometry {
 }
 
 impl VolumeGeometry {
-    pub(crate) fn new(meta: &VolumeMeta, options: GeometryOptions) -> Result<Self> {
-        let (factor, units_known, unit_name) = match meta.units {
+    pub(crate) fn new(metadata: &VolumeMetadata, options: GeometryOptions) -> Result<Self> {
+        let (factor, units_known, unit_name) = match metadata.spatial_units {
             SpatialUnits::Meter => (1000.0, true, "meters"),
             SpatialUnits::Millimeter => (1.0, true, "mm"),
-            SpatialUnits::Micron => (0.001, true, "microns"),
-            SpatialUnits::Unknown if options.assume_mm => (1.0, true, "assumed mm"),
+            SpatialUnits::Micrometer => (0.001, true, "microns"),
+            SpatialUnits::Unknown if options.assume_millimeters => (1.0, true, "assumed mm"),
             SpatialUnits::Unknown => (1.0, false, "unknown"),
         };
 
@@ -278,18 +290,18 @@ impl VolumeGeometry {
         let transform = if options.native || !units_known {
             None
         } else {
-            meta.transform.as_ref()
+            metadata.transform.as_ref()
         };
         let anatomical = transform.is_some();
         let (voxel_to_world, transform_name) = match transform {
             Some(transform) => {
                 let m = transform.matrix.map(|row| row.map(|value| value * factor));
-                (Affine { m }, transform.name)
+                (AffineTransform { matrix: m }, transform.name)
             }
             None => {
-                let mut affine = Affine::IDENTITY;
-                for (axis, row) in affine.m.iter_mut().enumerate() {
-                    let spacing = meta.spacing[axis].abs();
+                let mut affine = AffineTransform::IDENTITY;
+                for (axis, row) in affine.matrix.iter_mut().enumerate() {
+                    let spacing = metadata.spacing[axis].abs();
                     let spacing = if spacing.is_finite() && spacing > 0.0 {
                         spacing
                     } else {
@@ -302,7 +314,7 @@ impl VolumeGeometry {
             }
         };
         let world_to_voxel = voxel_to_world.inverse()?;
-        let dimensions = [meta.width(), meta.height(), meta.depth()];
+        let dimensions = [metadata.width(), metadata.height(), metadata.depth()];
 
         let mut bounds = Bounds3D::EMPTY;
         let mut cursor_bounds = Bounds3D::EMPTY;
@@ -316,12 +328,12 @@ impl VolumeGeometry {
                     }
                 }))
             };
-            let edge = voxel_to_world.point(voxel(0.0));
+            let edge = voxel_to_world.transform_point(voxel(0.0));
             if !edge.is_finite() {
                 return Err(Error::invalid("invalid image FoV"));
             }
             bounds.include(edge);
-            cursor_bounds.include(voxel_to_world.point(voxel(0.5)));
+            cursor_bounds.include(voxel_to_world.transform_point(voxel(0.5)));
         }
 
         Ok(Self {
@@ -343,12 +355,12 @@ impl VolumeGeometry {
     }
 
     pub fn contains_world(&self, p: Point3D) -> bool {
-        self.contains_voxel(self.world_to_voxel.point(p))
+        self.contains_voxel(self.world_to_voxel.transform_point(p))
     }
 
     /// Voxel whose center is the closest to the world point `p` if `p` is in the volume.
     pub(crate) fn nearest_voxel(&self, p: Point3D) -> Option<[usize; 3]> {
-        let voxel = self.world_to_voxel.point(p);
+        let voxel = self.world_to_voxel.transform_point(p);
         if !self.contains_voxel(voxel) {
             return None;
         }
@@ -356,21 +368,21 @@ impl VolumeGeometry {
     }
 
     pub(crate) fn plane(&self, axis: ViewPlane, cursor: Point3D, radiological: bool) -> SlicePlane {
-        let min = self.bounds.min;
+        let minimum = self.bounds.minimum;
         let extent = self.bounds.extent();
         let mut plane = match axis {
             ViewPlane::Axial => SlicePlane {
-                origin: Point3D::new(min.x, min.y, cursor.z),
+                origin: Point3D::new(minimum.x, minimum.y, cursor.z),
                 u: Point3D::new(extent.x, 0.0, 0.0),
                 v: Point3D::new(0.0, extent.y, 0.0),
             },
             ViewPlane::Coronal => SlicePlane {
-                origin: Point3D::new(min.x, cursor.y, min.z),
+                origin: Point3D::new(minimum.x, cursor.y, minimum.z),
                 u: Point3D::new(extent.x, 0.0, 0.0),
                 v: Point3D::new(0.0, 0.0, extent.z),
             },
             ViewPlane::Sagittal => SlicePlane {
-                origin: Point3D::new(cursor.x, min.y, min.z),
+                origin: Point3D::new(cursor.x, minimum.y, minimum.z),
                 u: Point3D::new(0.0, extent.y, 0.0),
                 v: Point3D::new(0.0, 0.0, extent.z),
             },
@@ -383,22 +395,22 @@ impl VolumeGeometry {
     }
 
     /// Whether views of `axis` are flipped left to right.
-    pub(crate) fn mirrors(&self, axis: ViewPlane, radiological: bool) -> bool {
+    pub(crate) fn is_mirrored(&self, axis: ViewPlane, radiological: bool) -> bool {
         self.anatomical && radiological && axis != ViewPlane::Sagittal
     }
 }
 
 pub(crate) fn aspect_scale(
-    view_w: f32,
-    view_h: f32,
-    physical_w: f64,
-    physical_h: f64,
+    view_width: f32,
+    view_height: f32,
+    physical_width: f64,
+    physical_height: f64,
 ) -> (f32, f32) {
-    if view_w <= 0.0 || view_h <= 0.0 || physical_w <= 0.0 || physical_h <= 0.0 {
+    if view_width <= 0.0 || view_height <= 0.0 || physical_width <= 0.0 || physical_height <= 0.0 {
         return (1.0, 1.0);
     }
-    let view = f64::from(view_w) / f64::from(view_h);
-    let physical = physical_w / physical_h;
+    let view = f64::from(view_width) / f64::from(view_height);
+    let physical = physical_width / physical_height;
     if view > physical {
         ((physical / view) as f32, 1.0)
     } else {
@@ -411,8 +423,8 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
-    use crate::meta::{DataFile, Format, Transform};
-    use crate::voxel::{DataType, Endian, Scaling};
+    use crate::metadata::{DataFile, Format, Transform};
+    use crate::voxel::{ByteOrder, DataType, Scaling};
 
     fn near(a: f64, b: f64) -> bool {
         (a - b).abs() <= 1e-6
@@ -422,35 +434,35 @@ mod tests {
         (a - b).length() <= 1e-6
     }
 
-    fn header(sform: Option<Mat3x4>) -> VolumeMeta {
-        VolumeMeta {
+    fn header(sform: Option<Matrix3x4>) -> VolumeMetadata {
+        VolumeMetadata {
             format: Format::Nifti1,
-            dims: [4, 3, 4, 1],
+            dimensions: [4, 3, 4, 1],
             spacing: [1.0; 3],
-            units: SpatialUnits::Millimeter,
+            spatial_units: SpatialUnits::Millimeter,
             transform: sform.map(|matrix| Transform {
                 name: "sform",
                 matrix,
             }),
-            datatype: DataType::I16,
-            endian: Endian::Little,
+            data_type: DataType::I16,
+            endian: ByteOrder::LittleEndian,
             scaling: Scaling::default(),
             display_range: None,
             data: DataFile {
                 path: PathBuf::from("test.nii"),
-                offset: 352,
-                bytes: 4 * 3 * 4 * 2,
-                gzip: false,
-                start: 0,
+                voxel_offset: 352,
+                byte_count: 4 * 3 * 4 * 2,
+                gzip_compressed: false,
+                stream_offset: 0,
             },
         }
     }
 
-    fn geometry(meta: &VolumeMeta) -> VolumeGeometry {
-        VolumeGeometry::new(meta, GeometryOptions::default()).unwrap()
+    fn geometry(metadata: &VolumeMetadata) -> VolumeGeometry {
+        VolumeGeometry::new(metadata, GeometryOptions::default()).unwrap()
     }
 
-    const FLIP: Mat3x4 = [
+    const FLIP: Matrix3x4 = [
         [-2.0, 0.0, 0.0, 30.0],
         [0.0, 3.0, 0.0, -20.0],
         [0.0, 0.0, 4.0, 10.0],
@@ -476,10 +488,12 @@ mod tests {
     #[test]
     fn applies_and_inverts_affine() {
         let geo = geometry(&header(Some(FLIP)));
-        let p = geo.voxel_to_world.point(Point3D::new(1.0, 2.0, 3.0));
+        let p = geo
+            .voxel_to_world
+            .transform_point(Point3D::new(1.0, 2.0, 3.0));
         assert_eq!(p, Point3D::new(28.0, -14.0, 22.0));
         assert!(near_point(
-            geo.world_to_voxel.point(p),
+            geo.world_to_voxel.transform_point(p),
             Point3D::new(1.0, 2.0, 3.0)
         ));
         assert!(geo.anatomical);
@@ -489,9 +503,9 @@ mod tests {
     #[test]
     fn bounds_cover_voxel_edges() {
         let geo = geometry(&header(Some(FLIP)));
-        assert_eq!((geo.bounds.min.x, geo.bounds.max.x), (23.0, 31.0));
+        assert_eq!((geo.bounds.minimum.x, geo.bounds.maximum.x), (23.0, 31.0));
         assert_eq!(
-            (geo.cursor_bounds.min.x, geo.cursor_bounds.max.x),
+            (geo.cursor_bounds.minimum.x, geo.cursor_bounds.maximum.x),
             (24.0, 30.0)
         );
         assert!(!geo.contains_world(Point3D::new(10000.0, 0.0, 0.0)));
@@ -519,10 +533,10 @@ mod tests {
     #[test]
     fn converts_meters_to_millimeters() {
         let mut meters = header(Some(FLIP.map(|row| row.map(|value| value * 0.001))));
-        meters.units = SpatialUnits::Meter;
+        meters.spatial_units = SpatialUnits::Meter;
         let p = geometry(&meters)
             .voxel_to_world
-            .point(Point3D::new(1.0, 2.0, 3.0));
+            .transform_point(Point3D::new(1.0, 2.0, 3.0));
         assert!(near_point(p, Point3D::new(28.0, -14.0, 22.0)));
     }
 
@@ -534,7 +548,9 @@ mod tests {
             [0.0, 4.0, 0.0, -10.0],
         ])));
         assert_eq!(
-            permuted.voxel_to_world.point(Point3D::new(1.0, 1.0, 1.0)),
+            permuted
+                .voxel_to_world
+                .transform_point(Point3D::new(1.0, 1.0, 1.0)),
             Point3D::new(27.0, -18.0, -6.0)
         );
 
@@ -548,7 +564,7 @@ mod tests {
         assert!(near_point(
             oblique
                 .world_to_voxel
-                .point(oblique.voxel_to_world.point(p)),
+                .transform_point(oblique.voxel_to_world.transform_point(p)),
             p
         ));
     }
@@ -556,11 +572,11 @@ mod tests {
     #[test]
     fn unknown_units_are_not_assumed() {
         let assume_mm = GeometryOptions {
-            assume_mm: true,
+            assume_millimeters: true,
             ..Default::default()
         };
         let mut h = header(Some(FLIP));
-        h.units = SpatialUnits::Unknown;
+        h.spatial_units = SpatialUnits::Unknown;
         let geo = geometry(&h);
         assert!(!geo.anatomical);
         assert_eq!(geo.unit_name, "unknown");
@@ -587,7 +603,8 @@ mod tests {
         assert_eq!(geo.transform_name, "native voxel axes");
         // |-2| = 2, and a spacing of 0 falls back to 1.
         assert_eq!(
-            geo.voxel_to_world.point(Point3D::new(1.0, 1.0, 1.0)),
+            geo.voxel_to_world
+                .transform_point(Point3D::new(1.0, 1.0, 1.0)),
             Point3D::new(2.0, 3.0, 1.0)
         );
     }

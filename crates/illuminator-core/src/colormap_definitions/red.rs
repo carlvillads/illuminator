@@ -1,10 +1,10 @@
 //! Red colormap.
 
-use super::{Cmap, Ramp};
+use super::{ColormapDefinition, Ramp};
 
-pub(crate) const RED: Cmap = Cmap {
+pub(crate) const RED: ColormapDefinition = ColormapDefinition {
     name: "Red",
     id: "red",
-    desc: "Black to red",
+    description: "Black to red",
     ramp: Ramp::Stops(&[(0.0, [0.0, 0.0, 0.0]), (1.0, [1.0, 0.0, 0.0])]),
 };

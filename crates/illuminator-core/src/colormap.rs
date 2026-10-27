@@ -1,13 +1,13 @@
 //! Colormaps.
-//! Each map has its own file under `cmaps/`.
+//! Each map has its own file under `colormap_definitions/`.
 
-use crate::colormap_definitions::{self, Cmap};
+use crate::colormap_definitions::{self, ColormapDefinition};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Colormap {
     #[default]
     Grayscale,
-    InvGrayscale,
+    InverseGrayscale,
     Red,
     Blue,
     Viridis,
@@ -28,7 +28,7 @@ pub enum Colormap {
 impl Colormap {
     pub const ALL: [Self; 17] = [
         Self::Grayscale,
-        Self::InvGrayscale,
+        Self::InverseGrayscale,
         Self::Red,
         Self::Blue,
         Self::Viridis,
@@ -46,10 +46,10 @@ impl Colormap {
         Self::Vik,
     ];
 
-    fn cmap(self) -> &'static Cmap {
+    fn definition(self) -> &'static ColormapDefinition {
         match self {
             Self::Grayscale => &colormap_definitions::GRAYSCALE,
-            Self::InvGrayscale => &colormap_definitions::INVERSE_GRAYSCALE,
+            Self::InverseGrayscale => &colormap_definitions::INVERSE_GRAYSCALE,
             Self::Red => &colormap_definitions::RED,
             Self::Blue => &colormap_definitions::BLUE,
             Self::Viridis => &colormap_definitions::VIRIDIS,
@@ -69,15 +69,15 @@ impl Colormap {
     }
 
     pub fn name(self) -> &'static str {
-        self.cmap().name
+        self.definition().name
     }
 
     pub fn id(self) -> &'static str {
-        self.cmap().id
+        self.definition().id
     }
 
     pub fn description(self) -> &'static str {
-        self.cmap().desc
+        self.definition().description
     }
 
     /// The colormap after the current one in [`Self::ALL`].
@@ -87,7 +87,7 @@ impl Colormap {
     }
 
     pub fn color(self, t: f64) -> [u8; 3] {
-        let rgb = self.cmap().ramp.rgb(t.clamp(0.0, 1.0));
+        let rgb = self.definition().ramp.rgb(t.clamp(0.0, 1.0));
         // `as u8` turns nans into 0 making invalid values black
         rgb.map(|channel| (channel.clamp(0.0, 1.0) * 255.0).round() as u8)
     }
@@ -95,19 +95,19 @@ impl Colormap {
 
 /// A colormap sampled into a table
 pub(crate) enum ColorTable {
-    Gray,
+    Grayscale,
     Sampled(Vec<[u8; 3]>),
 }
 
 impl ColorTable {
-    const SIZE: usize = 1024;
+    const LENGTH: usize = 1024;
 
     pub(crate) fn new(colormap: Colormap) -> Self {
         match colormap {
-            Colormap::Grayscale => Self::Gray,
+            Colormap::Grayscale => Self::Grayscale,
             _ => Self::Sampled(
-                (0..Self::SIZE)
-                    .map(|i| colormap.color(i as f64 / (Self::SIZE - 1) as f64))
+                (0..Self::LENGTH)
+                    .map(|i| colormap.color(i as f64 / (Self::LENGTH - 1) as f64))
                     .collect(),
             ),
         }
@@ -115,9 +115,9 @@ impl ColorTable {
 
     pub(crate) fn color(&self, t: f64) -> [u8; 3] {
         match self {
-            Self::Gray => Colormap::Grayscale.color(t),
+            Self::Grayscale => Colormap::Grayscale.color(t),
             Self::Sampled(colors) => {
-                colors[(t.clamp(0.0, 1.0) * (Self::SIZE - 1) as f64).round() as usize]
+                colors[(t.clamp(0.0, 1.0) * (Self::LENGTH - 1) as f64).round() as usize]
             }
         }
     }
@@ -156,14 +156,14 @@ mod tests {
         assert_eq!(Colormap::Hot.color(f64::NAN), [0, 0, 0]);
         assert_eq!(Colormap::Red.color(1.0), [255, 0, 0]);
         assert_eq!(Colormap::Blue.color(0.5), [0, 0, 128]);
-        assert_eq!(Colormap::InvGrayscale.color(0.0), [255, 255, 255]);
-        assert_eq!(Colormap::InvGrayscale.color(1.0), [0, 0, 0]);
+        assert_eq!(Colormap::InverseGrayscale.color(0.0), [255, 255, 255]);
+        assert_eq!(Colormap::InverseGrayscale.color(1.0), [0, 0, 0]);
     }
 
     #[test]
     fn stops_rise_from_0_to_1() {
         for colormap in Colormap::ALL {
-            if let Ramp::Stops(stops) = colormap.cmap().ramp {
+            if let Ramp::Stops(stops) = colormap.definition().ramp {
                 let name = colormap.name();
                 assert_eq!(stops.first().map(|stop| stop.0), Some(0.0), "{name}");
                 assert_eq!(stops.last().map(|stop| stop.0), Some(1.0), "{name}");
@@ -182,7 +182,7 @@ mod tests {
 
     #[test]
     fn next_wraps_around() {
-        assert_eq!(Colormap::Grayscale.next(), Colormap::InvGrayscale);
+        assert_eq!(Colormap::Grayscale.next(), Colormap::InverseGrayscale);
         assert_eq!(Colormap::Vik.next(), Colormap::Grayscale);
     }
 

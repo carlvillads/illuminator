@@ -7,19 +7,19 @@ use gpui_kit::assets::{Assets, IconNamed};
 use gpui_kit::{AssetSource, Result, SharedString};
 use std::borrow::Cow;
 
-macro_rules! carbon_icons {
+macro_rules! application_ui_icons {
     ($($name:ident => $file:literal,)*) => {
         #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-        pub enum Carbon {
+        pub enum ApplicationUiIcon {
             $($name,)*
         }
 
-        impl Carbon {
+        impl ApplicationUiIcon {
             #[cfg(test)]
             const ALL: &[Self] = &[$(Self::$name,)*];
         }
 
-        impl IconNamed for Carbon {
+        impl IconNamed for ApplicationUiIcon {
             fn path(self) -> SharedString {
                 match self {
                     $(Self::$name => concat!("carbon/", $file),)*
@@ -28,7 +28,7 @@ macro_rules! carbon_icons {
             }
         }
 
-        const FILES: &[(&str, &[u8])] = &[
+        const ICON_FILES: &[(&str, &[u8])] = &[
             $((
                 concat!("carbon/", $file),
                 include_bytes!(concat!("../assets/icons/", $file)),
@@ -37,8 +37,8 @@ macro_rules! carbon_icons {
     };
 }
 
-carbon_icons! {
-    AutoWindow => "window--auto.svg",
+application_ui_icons! {
+    FitWindow => "window--auto.svg",
     Close => "close.svg",
     Compare => "hanging-protocol.svg",
     CornerText => "dicom--overlay.svg",
@@ -47,12 +47,12 @@ carbon_icons! {
     Grid => "grid.svg",
     Lightbox => "thumbnail--2.svg",
     Help => "help.svg",
-    Link => "sync-settings.svg",
-    Ortho => "3D-MPR-Toggle.svg",
+    CursorSynchronization => "sync-settings.svg",
+    Orthogonal => "3D-MPR-Toggle.svg",
     Pause => "pause.svg",
     Play => "play.svg",
     Radiological => "reflect--horizontal.svg",
-    Single => "array-users.svg",
+    SingleView => "array-users.svg",
     View => "view.svg",
     ViewOff => "view--off.svg",
     WindowPreset => "window--preset.svg",
@@ -63,7 +63,7 @@ carbon_icons! {
     Theme => "brightness-contrast.svg",
 }
 
-const OVERRIDES: &[(&str, &[u8])] = &[
+const LIBRARY_ICON_OVERRIDES: &[(&str, &[u8])] = &[
     (
         "icons/check.svg",
         include_bytes!("../assets/icons/checkmark.svg"),
@@ -74,15 +74,15 @@ const OVERRIDES: &[(&str, &[u8])] = &[
     ),
 ];
 
-pub struct AppAssets;
+pub struct ApplicationAssets;
 
-impl AssetSource for AppAssets {
+impl AssetSource for ApplicationAssets {
     fn load(&self, path: &str) -> Result<Option<Cow<'static, [u8]>>> {
-        let ours = FILES
+        let bundled = ICON_FILES
             .iter()
-            .chain(OVERRIDES)
+            .chain(LIBRARY_ICON_OVERRIDES)
             .find(|(name, _)| *name == path);
-        match ours {
+        match bundled {
             Some((_, bytes)) => Ok(Some(Cow::Borrowed(*bytes))),
             None => Assets.load(path),
         }
@@ -91,7 +91,7 @@ impl AssetSource for AppAssets {
     fn list(&self, path: &str) -> Result<Vec<SharedString>> {
         let mut paths = Assets.list(path)?;
         paths.extend(
-            FILES
+            ICON_FILES
                 .iter()
                 .map(|(name, _)| *name)
                 .filter(|name| name.starts_with(path))
@@ -109,9 +109,15 @@ mod tests {
 
     #[test]
     fn every_icon_is_an_svg() {
-        let paths = Carbon::ALL.iter().map(|icon| icon.path().to_string());
-        for path in paths.chain(OVERRIDES.iter().map(|(path, _)| path.to_string())) {
-            let bytes = AppAssets.load(&path).unwrap().unwrap();
+        let paths = ApplicationUiIcon::ALL
+            .iter()
+            .map(|icon| icon.path().to_string());
+        for path in paths.chain(
+            LIBRARY_ICON_OVERRIDES
+                .iter()
+                .map(|(path, _)| path.to_string()),
+        ) {
+            let bytes = ApplicationAssets.load(&path).unwrap().unwrap();
             assert!(bytes.starts_with(b"<svg"), "{path}");
         }
     }

@@ -1,17 +1,17 @@
 //! Grayscale colormap.
 
-use super::{Cmap, Ramp};
+use super::{ColormapDefinition, Ramp};
 
-pub(crate) const GRAYSCALE: Cmap = Cmap {
+pub(crate) const GRAYSCALE: ColormapDefinition = ColormapDefinition {
     name: "Grayscale",
     id: "grayscale",
-    desc: "Linear black to white",
+    description: "Linear black to white",
     ramp: Ramp::Stops(&[(0.0, [0.0; 3]), (1.0, [1.0; 3])]),
 };
 
-pub(crate) const INVERSE_GRAYSCALE: Cmap = Cmap {
+pub(crate) const INVERSE_GRAYSCALE: ColormapDefinition = ColormapDefinition {
     name: "Inverse grayscale",
     id: "gray-r",
-    desc: "Linear white to black",
+    description: "Linear white to black",
     ramp: Ramp::Stops(&[(0.0, [1.0; 3]), (1.0, [0.0; 3])]),
 };

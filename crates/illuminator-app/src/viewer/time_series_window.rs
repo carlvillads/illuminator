@@ -1,5 +1,5 @@
 //! Time series window.
-//! The values of an area in every frame of the visible 4D layers.
+//! The values of a region in every frame of the visible 4D layers.
 
 mod series;
 
@@ -13,57 +13,57 @@ use gpui_kit::{
 use illuminator_core::display::VolumeDisplay;
 use illuminator_core::geometry::VolumeGeometry;
 use illuminator_core::progress::Progress;
-use illuminator_core::stats::Summary;
-use illuminator_core::time_series::{Area, time_series, to_csv};
+use illuminator_core::statistics::ValueSummary;
+use illuminator_core::time_series::{RegionOfInterest, time_series, to_csv};
 use illuminator_core::volume::Volume;
 use std::sync::Arc;
 
-use crate::shortcuts::ShowTimeSeries;
-use crate::ui::{choice_items, format_value};
+use crate::shortcuts::ShowTimeSeriesWindow;
+use crate::ui::{add_choice_items, format_value};
 
-use self::series::{segments, value_range};
+use self::series::{curve_segments, padded_value_range};
 use super::Viewer;
 use super::plot_window::{
-    Axes, Chart, Job, LabelMap, Plot, PlotLayer, PlotWindow, Plotted, RegionKey, Snapshot, Texts,
-    ticks,
+    Axes, Chart, LabelMap, MeasurementJob, Plot, PlotLayer, PlotStrings, PlotWindow, PlottedValue,
+    RegionKey, ViewerSnapshot, tick_values,
 };
 
 const TIME_SERIES_X_TICKS: usize = 8;
 const TIME_SERIES_Y_TICKS: usize = 5;
-const CURSOR_CUBE_RADII: [usize; 4] = [0, 1, 2, 3];
+const CURSOR_CUBE_HALF_WIDTHS: [usize; 4] = [0, 1, 2, 3];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Statistic {
     Mean,
-    Min,
-    Max,
+    Minimum,
+    Maximum,
 }
 
 impl Statistic {
-    const ALL: [Self; 3] = [Self::Mean, Self::Min, Self::Max];
+    const ALL: [Self; 3] = [Self::Mean, Self::Minimum, Self::Maximum];
 
     fn name(self) -> &'static str {
         match self {
             Self::Mean => "Mean",
-            Self::Min => "Min",
-            Self::Max => "Max",
+            Self::Minimum => "Min",
+            Self::Maximum => "Max",
         }
     }
 
-    fn of(self, summary: &Summary) -> f64 {
+    fn value_of(self, summary: &ValueSummary) -> f64 {
         match self {
             Self::Mean => summary.mean,
-            Self::Min => summary.min,
-            Self::Max => summary.max,
+            Self::Minimum => summary.minimum,
+            Self::Maximum => summary.maximum,
         }
     }
 }
 
-fn cursor_name(radius: usize) -> String {
-    match radius {
+fn cursor_region_name(half_width: usize) -> String {
+    match half_width {
         0 => "Cursor voxel".into(),
         _ => {
-            let side = 2 * radius + 1;
+            let side = 2 * half_width + 1;
             format!("{side}\u{d7}{side}\u{d7}{side} at cursor")
         }
     }
@@ -71,29 +71,29 @@ fn cursor_name(radius: usize) -> String {
 
 /// What a series is measured from.
 #[derive(Clone, PartialEq)]
-pub(super) struct SeriesKey {
+pub(super) struct TimeSeriesKey {
     volume: u64,
     geometry: VolumeGeometry,
-    area: AreaKey,
+    region: RegionOfInterestKey,
 }
 
 #[derive(Clone, PartialEq)]
-enum AreaKey {
+enum RegionOfInterestKey {
     Cube { center: [usize; 3], radius: usize },
-    Labels(Box<RegionKey>),
+    LabelMask(Box<RegionKey>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(super) struct TimeSeriesPlot {
-    radius: usize, // Of the cube around the cursor
+    half_width: usize, // Of the cube around the cursor
     statistic: Statistic,
 }
 
 impl Plot for TimeSeriesPlot {
-    type Key = SeriesKey;
-    type Value = Vec<Option<Summary>>;
+    type Key = TimeSeriesKey;
+    type Value = Vec<Option<ValueSummary>>;
 
-    const TEXTS: Texts = Texts {
+    const STRINGS: PlotStrings = PlotStrings {
         title: "Time series",
         csv_name: "time_series",
         copy_tooltip: "Copy shown series as CSV",
@@ -104,51 +104,56 @@ impl Plot for TimeSeriesPlot {
         waiting_note: " (pause to measure)",
         nothing_to_measure: "The cursor is outside the layers",
         nothing_to_measure_note: " (cursor outside)",
-        no_values: "No values in this area",
+        no_values: "No values in this region",
     };
-    const ONLY_4D: bool = true;
+    const REQUIRES_4D: bool = true;
 
-    fn key(&self, display: &VolumeDisplay, region: Option<&RegionKey>) -> Option<SeriesKey> {
-        let area = match region {
-            Some(region) => AreaKey::Labels(Box::new(region.clone())),
+    fn key(&self, display: &VolumeDisplay, region: Option<&RegionKey>) -> Option<TimeSeriesKey> {
+        let region = match region {
+            Some(region) => RegionOfInterestKey::LabelMask(Box::new(region.clone())),
             None => {
-                let (center, _) = display.cursor_sample()?;
-                AreaKey::Cube {
+                let (center, _) = display.value_at_cursor()?;
+                RegionOfInterestKey::Cube {
                     center,
-                    radius: self.radius,
+                    radius: self.half_width,
                 }
             }
         };
-        Some(SeriesKey {
+        Some(TimeSeriesKey {
             volume: display.volume().id(),
             geometry: display.geometry().clone(),
-            area,
+            region,
         })
     }
 
-    fn job(
-        key: &SeriesKey,
+    fn measurement_job(
+        key: &TimeSeriesKey,
         volume: Arc<Volume>,
         label_maps: &[LabelMap],
-    ) -> Option<Job<Self::Value>> {
+    ) -> Option<MeasurementJob<Self::Value>> {
         let geometry = key.geometry.clone();
-        let job: Job<Self::Value> = match &key.area {
-            &AreaKey::Cube { center, radius } => Box::new(move |progress: &Progress| {
-                let area = Area::Cube { center, radius };
-                time_series(&volume, &geometry, area, progress).map(with_values)
-            }),
-            AreaKey::Labels(region) => {
+        let job: MeasurementJob<Self::Value> = match &key.region {
+            &RegionOfInterestKey::Cube { center, radius } => {
+                Box::new(move |progress: &Progress| {
+                    let region = RegionOfInterest::Cube {
+                        center,
+                        half_width: radius,
+                    };
+                    time_series(&volume, &geometry, region, progress).map(series_if_any_values)
+                })
+            }
+            RegionOfInterestKey::LabelMask(region) => {
                 let labels = region.resolve(label_maps)?;
                 Box::new(move |progress: &Progress| {
-                    let area = Area::Labels(labels.mask());
-                    time_series(&volume, &geometry, area, progress).map(with_values)
+                    let region = RegionOfInterest::LabelMask(labels.mask());
+                    time_series(&volume, &geometry, region, progress).map(series_if_any_values)
                 })
             }
         };
         Some(job)
     }
 
-    fn csv(exported: &[(&PlotLayer<SeriesKey>, &Self::Value)]) -> String {
+    fn csv(exported: &[(&PlotLayer<TimeSeriesKey>, &Self::Value)]) -> String {
         to_csv(
             exported
                 .iter()
@@ -159,18 +164,18 @@ impl Plot for TimeSeriesPlot {
     fn controls(
         window: &PlotWindow<Self>,
         controls: Div,
-        snapshot: &Snapshot<SeriesKey>,
+        snapshot: &ViewerSnapshot<TimeSeriesKey>,
         cx: &mut Context<PlotWindow<Self>>,
     ) -> Div {
         let this = cx.entity().downgrade();
         let plot = window.plot;
-        let cubes = CURSOR_CUBE_RADII.map(|radius| (cursor_name(radius), radius));
+        let cubes = CURSOR_CUBE_HALF_WIDTHS.map(|radius| (cursor_region_name(radius), radius));
         controls
             .child(window.region_button(
-                "Area",
-                cursor_name(plot.radius),
+                "Region",
+                cursor_region_name(plot.half_width),
                 cubes.to_vec(),
-                |plot: &mut Self, radius| plot.radius = radius,
+                |plot: &mut Self, radius| plot.half_width = radius,
                 snapshot,
                 cx,
             ))
@@ -182,7 +187,7 @@ impl Plot for TimeSeriesPlot {
                     .dropdown_caret(true)
                     .dropdown_menu(move |menu, _, _| {
                         let choices = Statistic::ALL.map(|statistic| (statistic.name(), statistic));
-                        choice_items(menu, &this, choices, |this, statistic, _, cx| {
+                        add_choice_items(menu, &this, choices, |this, statistic, _, cx| {
                             this.plot.statistic = statistic;
                             cx.notify();
                         })
@@ -190,33 +195,37 @@ impl Plot for TimeSeriesPlot {
             )
     }
 
-    fn chart(&self, plotted: &[Plotted<Self>], snapshot: &Snapshot<SeriesKey>) -> Chart {
+    fn chart(
+        &self,
+        plotted: &[PlottedValue<Self>],
+        snapshot: &ViewerSnapshot<TimeSeriesKey>,
+    ) -> Chart {
         let values: Vec<Vec<Option<f64>>> = plotted
             .iter()
             .map(|plotted| self.values(plotted.value))
             .collect();
-        let (low, high) = value_range(values.iter().flatten()).unwrap_or((0.0, 1.0));
-        let frames = frames(snapshot);
+        let (low, high) = padded_value_range(values.iter().flatten()).unwrap_or((0.0, 1.0));
+        let frames = maximum_frame_count(snapshot);
         let axes = Axes {
             x: (0.0, (frames - 1) as f64),
             y: (low, high),
-            log: false,
+            logarithmic: false,
         };
         // whole frame numbers only
-        let (numbers, _) = ticks(1.0, frames as f64, TIME_SERIES_X_TICKS);
+        let (numbers, _) = tick_values(1.0, frames as f64, TIME_SERIES_X_TICKS);
         let x_ticks = numbers
             .into_iter()
             .filter(|number| number.fract() == 0.0)
-            .map(|number| (axes.x(number - 1.0), format!("{number:.0}")))
+            .map(|number| (axes.x_fraction(number - 1.0), format!("{number:.0}")))
             .collect();
-        let (heights, decimals) = ticks(low, high, TIME_SERIES_Y_TICKS);
+        let (heights, decimals) = tick_values(low, high, TIME_SERIES_Y_TICKS);
         let y_ticks = heights
             .into_iter()
-            .map(|height| (axes.y(height), format!("{height:.decimals$}")))
+            .map(|height| (axes.y_fraction(height), format!("{height:.decimals$}")))
             .collect();
         let curves = values
             .iter()
-            .map(|values| segments(&axes, values))
+            .map(|values| curve_segments(&axes, values))
             .collect();
         Chart {
             axes,
@@ -230,14 +239,14 @@ impl Plot for TimeSeriesPlot {
         &self,
         plot: Stateful<Div>,
         axes: &Axes,
-        _: &[Plotted<Self>],
-        snapshot: &Snapshot<SeriesKey>,
+        _: &[PlottedValue<Self>],
+        snapshot: &ViewerSnapshot<TimeSeriesKey>,
         cx: &mut Context<PlotWindow<Self>>,
     ) -> Stateful<Div> {
         let info = cx.theme().info;
         let x = axes.x;
         let frame_at = move |this: &PlotWindow<Self>, position: Pixels| {
-            Some(this.x_at(position, x)?.round() as usize)
+            Some(this.value_at_position(position, x)?.round() as usize)
         };
         plot.cursor_pointer()
             // the viewer's current frame
@@ -246,7 +255,7 @@ impl Plot for TimeSeriesPlot {
                     .absolute()
                     .top_0()
                     .bottom_0()
-                    .left(relative(axes.x(snapshot.frame as f64)))
+                    .left(relative(axes.x_fraction(snapshot.frame as f64)))
                     .w(px(1.0))
                     .bg(info),
             )
@@ -267,7 +276,7 @@ impl Plot for TimeSeriesPlot {
             }))
     }
 
-    fn snap_x(x: f64) -> f64 {
+    fn quantize_x(x: f64) -> f64 {
         x.round()
     }
 
@@ -280,17 +289,21 @@ impl Plot for TimeSeriesPlot {
             .get(x as usize)
             .and_then(Option::as_ref)
             .map_or("\u{2013}".into(), |summary| {
-                format_value(self.statistic.of(summary))
+                format_value(self.statistic.value_of(summary))
             })
     }
 }
 
 impl TimeSeriesPlot {
     /// The chosen statistic of each frame
-    fn values(&self, frames: &[Option<Summary>]) -> Vec<Option<f64>> {
+    fn values(&self, frames: &[Option<ValueSummary>]) -> Vec<Option<f64>> {
         frames
             .iter()
-            .map(|frame| frame.as_ref().map(|summary| self.statistic.of(summary)))
+            .map(|frame| {
+                frame
+                    .as_ref()
+                    .map(|summary| self.statistic.value_of(summary))
+            })
             .collect()
     }
 }
@@ -298,12 +311,12 @@ impl TimeSeriesPlot {
 impl Viewer {
     pub(super) fn show_time_series(
         &mut self,
-        _: &ShowTimeSeries,
+        _: &ShowTimeSeriesWindow,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let plot = TimeSeriesPlot {
-            radius: 0,
+            half_width: 0,
             statistic: Statistic::Mean,
         };
         self.show_plot_window(plot, window, cx);
@@ -316,15 +329,15 @@ fn go_to_frame(window: &PlotWindow<TimeSeriesPlot>, frame: usize, cx: &mut App) 
     });
 }
 
-/// The most frames of any layer (min. 2)
-fn frames(snapshot: &Snapshot<SeriesKey>) -> usize {
+/// The most frames of any layer (at least 2)
+fn maximum_frame_count(snapshot: &ViewerSnapshot<TimeSeriesKey>) -> usize {
     snapshot
         .layers
         .iter()
-        .map(|layer| layer.volume.meta().timepoints())
+        .map(|layer| layer.volume.metadata().timepoints())
         .fold(2, usize::max)
 }
 
-fn with_values(frames: Vec<Option<Summary>>) -> Option<Vec<Option<Summary>>> {
+fn series_if_any_values(frames: Vec<Option<ValueSummary>>) -> Option<Vec<Option<ValueSummary>>> {
     frames.iter().any(Option::is_some).then_some(frames)
 }

@@ -3,10 +3,10 @@
 //! The histogram and time series windows are kinds of [`Plot`].
 //!
 //! Each visible intensity layer is a [`PlotLayer`]. Its value is measured in the background
-//! for a key, and a [`Chart`] draws each [`Plotted`] value as a [`Curve`].
+//! for a key, and a [`Chart`] draws each [`PlottedValue`] as a [`Curve`].
 //!
 //! - `measuring`: measuring layers and keeping track of which values are current
-//! - `regions`: measuring inside a label map instead of the plots own area
+//! - `regions`: measuring inside a label map instead of the plot's own region
 //! - `export`: copying and saving the values as CSV
 //! - `render`: the controls, the plot and the legend
 //! - `axes`: where values land in the plot
@@ -17,7 +17,7 @@ mod measuring;
 mod regions;
 mod render;
 #[cfg(test)]
-pub(super) mod test_util;
+pub(super) mod test_fixtures;
 
 use gpui_kit::{
     AnyWindowHandle, App, AppContext, Bounds, Context, Div, Entity, FocusHandle, Hsla, Pixels,
@@ -39,9 +39,9 @@ use self::measuring::Measurements;
 use self::regions::LabelRegion;
 use super::Viewer;
 
-pub(super) use self::axes::{Axes, ticks, value_at};
-pub(super) use self::measuring::Job;
-pub(super) use self::regions::{LabelArea, LabelMap, RegionKey};
+pub(super) use self::axes::{Axes, tick_values, value_at};
+pub(super) use self::measuring::MeasurementJob;
+pub(super) use self::regions::{LabelMap, RegionKey, ResolvedLabelRegion};
 
 const PLOT_WINDOW_SIZE: (f32, f32) = (760.0, 480.0);
 
@@ -52,7 +52,7 @@ pub(super) type Polyline = Vec<(f32, f32)>;
 pub(super) type Curve = Vec<Polyline>;
 
 /// The words a plot window uses
-pub(super) struct Texts {
+pub(super) struct PlotStrings {
     pub(super) title: &'static str,
     /// Ends the names of saved CSV files
     pub(super) csv_name: &'static str,
@@ -76,8 +76,8 @@ pub(super) trait Plot: Sized + 'static {
     type Key: Clone + PartialEq + 'static;
     type Value: Send + 'static;
 
-    const TEXTS: Texts;
-    const ONLY_4D: bool = false;
+    const STRINGS: PlotStrings;
+    const REQUIRES_4D: bool = false;
     const WAITS_FOR_PAUSE: bool = false;
 
     /// What to measure of a layer, inside `region` when there is one.
@@ -85,11 +85,11 @@ pub(super) trait Plot: Sized + 'static {
     fn key(&self, display: &VolumeDisplay, region: Option<&RegionKey>) -> Option<Self::Key>;
 
     /// None if `key` can't be measured
-    fn job(
+    fn measurement_job(
         key: &Self::Key,
         volume: Arc<Volume>,
         label_maps: &[LabelMap],
-    ) -> Option<Job<Self::Value>>;
+    ) -> Option<MeasurementJob<Self::Value>>;
 
     fn shows_stale(_old: &Self::Key, _new: &Self::Key) -> bool {
         true
@@ -101,23 +101,23 @@ pub(super) trait Plot: Sized + 'static {
     fn controls(
         window: &PlotWindow<Self>,
         controls: Div,
-        snapshot: &Snapshot<Self::Key>,
+        snapshot: &ViewerSnapshot<Self::Key>,
         cx: &mut Context<PlotWindow<Self>>,
     ) -> Div;
 
-    fn chart(&self, plotted: &[Plotted<Self>], snapshot: &Snapshot<Self::Key>) -> Chart;
+    fn chart(&self, plotted: &[PlottedValue<Self>], snapshot: &ViewerSnapshot<Self::Key>) -> Chart;
 
     /// Adds the plots marks and mouse handling on top of curves
     fn overlay(
         &self,
         plot: Stateful<Div>,
         axes: &Axes,
-        plotted: &[Plotted<Self>],
-        snapshot: &Snapshot<Self::Key>,
+        plotted: &[PlottedValue<Self>],
+        snapshot: &ViewerSnapshot<Self::Key>,
         cx: &mut Context<PlotWindow<Self>>,
     ) -> Stateful<Div>;
 
-    fn snap_x(x: f64) -> f64 {
+    fn quantize_x(x: f64) -> f64 {
         x
     }
 
@@ -148,7 +148,7 @@ pub(super) struct PlotLayer<K> {
 }
 
 /// A layers value in the plot
-pub(super) struct Plotted<'a, P: Plot> {
+pub(super) struct PlottedValue<'a, P: Plot> {
     pub(super) layer: &'a PlotLayer<P::Key>,
     pub(super) value: &'a P::Value,
     /// Measured for an out of date key
@@ -156,16 +156,16 @@ pub(super) struct Plotted<'a, P: Plot> {
 }
 
 /// The viewers layers as the window needs them
-pub(super) struct Snapshot<K> {
+pub(super) struct ViewerSnapshot<K> {
     pub(super) layers: Vec<PlotLayer<K>>,
     label_maps: Vec<LabelMap>,
-    pub(super) playing: bool,
+    pub(super) playback_active: bool,
     pub(super) frame: usize,
 }
 
-impl<K: PartialEq> Snapshot<K> {
+impl<K: PartialEq> ViewerSnapshot<K> {
     /// Whether the layer `load_id` still wants a value for `key`
-    fn wants(&self, load_id: u64, key: &K) -> bool {
+    fn requires_value(&self, load_id: u64, key: &K) -> bool {
         self.layers
             .iter()
             .any(|layer| layer.load_id == load_id && layer.key.as_ref() == Some(key))
@@ -174,15 +174,15 @@ impl<K: PartialEq> Snapshot<K> {
 
 /// What the window shows of the viewer. Only redraws when this changes
 #[derive(PartialEq)]
-struct Watched {
-    layers: Vec<WatchedLayer>,
+struct ObservedViewerState {
+    layers: Vec<ObservedLayerState>,
     selected: Option<usize>,
-    playing: bool,
+    playback_active: bool,
     frame: usize,
 }
 
 #[derive(PartialEq)]
-struct WatchedLayer {
+struct ObservedLayerState {
     load_id: u64,
     visible: bool,
     label_mode: bool,
@@ -193,9 +193,9 @@ struct WatchedLayer {
     cursor: Option<[usize; 3]>,
 }
 
-impl Watched {
+impl ObservedViewerState {
     fn of(viewer: &Viewer) -> Self {
-        let layers = viewer.layers.iter().map(|layer| WatchedLayer {
+        let layers = viewer.layers.iter().map(|layer| ObservedLayerState {
             load_id: layer.load_id,
             visible: layer.visible,
             label_mode: layer.display.label_mode(),
@@ -203,12 +203,12 @@ impl Watched {
             frame: layer.display.frame(),
             options: layer.display.options(),
             limits: layer.display.window_limits(),
-            cursor: layer.display.cursor_sample().map(|(voxel, _)| voxel),
+            cursor: layer.display.value_at_cursor().map(|(voxel, _)| voxel),
         });
         Self {
             layers: layers.collect(),
-            selected: viewer.selected(),
-            playing: viewer.time_playing.is_some(),
+            selected: viewer.selected_layer(),
+            playback_active: viewer.playback_task.is_some(),
             frame: viewer.frame,
         }
     }
@@ -221,11 +221,11 @@ pub(super) struct PlotWindow<P: Plot> {
     region: Option<LabelRegion>,
     measurements: Measurements<P::Key, P::Value>,
     hidden: HashSet<u64>,
-    hover: Option<f64>,
+    hovered_x: Option<f64>,
     plot_bounds: Rc<Cell<Bounds<Pixels>>>,
     notice: Option<SharedString>,
     notice_timer: Task<()>,
-    watched: Option<Watched>,
+    observed_state: Option<ObservedViewerState>,
     focus_handle: FocusHandle,
     _viewer_changes: Subscription,
     _viewer_closed: Subscription,
@@ -248,16 +248,16 @@ impl<P: Plot> PlotWindow<P> {
             region: None,
             measurements: Measurements::default(),
             hidden: HashSet::new(),
-            hover: None,
+            hovered_x: None,
             plot_bounds: Rc::default(),
             notice: None,
             notice_timer: Task::ready(()),
-            watched: None,
+            observed_state: None,
             focus_handle,
             _viewer_changes: cx.observe(viewer, |this, viewer, cx| {
-                let watched = Watched::of(viewer.read(cx));
-                if this.watched.as_ref() != Some(&watched) {
-                    this.watched = Some(watched);
+                let observed_state = ObservedViewerState::of(viewer.read(cx));
+                if this.observed_state.as_ref() != Some(&observed_state) {
+                    this.observed_state = Some(observed_state);
                     cx.notify();
                 }
             }),
@@ -267,7 +267,7 @@ impl<P: Plot> PlotWindow<P> {
         }
     }
 
-    fn snapshot(&self, cx: &App) -> Option<Snapshot<P::Key>> {
+    fn snapshot(&self, cx: &App) -> Option<ViewerSnapshot<P::Key>> {
         let viewer = self.viewer.upgrade()?;
         let viewer = viewer.read(cx);
         let label_maps: Vec<LabelMap> = viewer
@@ -285,7 +285,7 @@ impl<P: Plot> PlotWindow<P> {
                 let display = &layer.display;
                 layer.visible
                     && !display.label_mode()
-                    && (!P::ONLY_4D || display.volume().meta().timepoints() > 1)
+                    && (!P::REQUIRES_4D || display.volume().metadata().timepoints() > 1)
             })
             .map(|(index, layer)| {
                 let display = &layer.display;
@@ -297,22 +297,22 @@ impl<P: Plot> PlotWindow<P> {
                     volume: display.shared_volume(),
                     key: self.plot.key(display, region.as_ref()),
                     limits: display.window_limits(),
-                    selected: viewer.selected() == Some(index),
+                    selected: viewer.selected_layer() == Some(index),
                 }
             })
             .collect();
-        Some(Snapshot {
+        Some(ViewerSnapshot {
             layers,
             label_maps,
-            playing: viewer.time_playing.is_some(),
+            playback_active: viewer.playback_task.is_some(),
             frame: viewer.frame,
         })
     }
 
     /// Layers not hidden in the legend
-    fn unhidden<'s>(
+    fn legend_visible_layers<'s>(
         &self,
-        snapshot: &'s Snapshot<P::Key>,
+        snapshot: &'s ViewerSnapshot<P::Key>,
     ) -> impl Iterator<Item = &'s PlotLayer<P::Key>> {
         snapshot
             .layers
@@ -321,8 +321,8 @@ impl<P: Plot> PlotWindow<P> {
     }
 
     /// Whether measuring waits for the movie to pause
-    fn waiting(&self, snapshot: &Snapshot<P::Key>) -> bool {
-        P::WAITS_FOR_PAUSE && snapshot.playing
+    fn is_waiting_for_pause(&self, snapshot: &ViewerSnapshot<P::Key>) -> bool {
+        P::WAITS_FOR_PAUSE && snapshot.playback_active
     }
 
     /// Changes the viewer in its own window
@@ -340,7 +340,7 @@ impl<P: Plot> PlotWindow<P> {
     }
 
     /// The value at `x` on the plot along an axis from `low` to `high`
-    pub(super) fn x_at(&self, x: Pixels, (low, high): (f64, f64)) -> Option<f64> {
+    pub(super) fn value_at_position(&self, x: Pixels, (low, high): (f64, f64)) -> Option<f64> {
         let bounds = self.plot_bounds.get();
         let width = f32::from(bounds.size.width);
         if width <= 0.0 {
@@ -359,8 +359,8 @@ impl Viewer {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let kind = TypeId::of::<P>();
-        if let Some(handle) = self.plot_windows.get(&kind).copied()
+        let plot_type = TypeId::of::<P>();
+        if let Some(handle) = self.plot_windows.get(&plot_type).copied()
             && handle
                 .update(cx, |_, window, _| window.activate_window())
                 .is_ok()
@@ -378,7 +378,7 @@ impl Viewer {
                     cx,
                 ))),
                 titlebar: Some(TitlebarOptions {
-                    title: Some(P::TEXTS.title.into()),
+                    title: Some(P::STRINGS.title.into()),
                     ..Default::default()
                 }),
                 app_id: Some("illuminator".into()),
@@ -389,11 +389,11 @@ impl Viewer {
             });
             match opened {
                 Ok((handle, _)) => viewer.update(cx, |viewer, _| {
-                    viewer.plot_windows.insert(kind, handle);
+                    viewer.plot_windows.insert(plot_type, handle);
                 }),
                 Err(error) => eprintln!(
                     "Illuminator: cannot open the {} window: {error}",
-                    P::TEXTS.title.to_lowercase()
+                    P::STRINGS.title.to_lowercase()
                 ),
             }
         });

@@ -21,42 +21,49 @@ use illuminator_core::histogram::Histogram;
 use illuminator_core::slicer::Coloring;
 use std::rc::Rc;
 
-use crate::assets::Carbon;
-use crate::shortcuts::{self, AutoContrast, NextColormap, ShowHistogram, ShowTimeSeries};
+use crate::assets::ApplicationUiIcon;
+use crate::shortcuts::{self, FitWindow, NextColormap, ShowHistogramWindow, ShowTimeSeriesWindow};
 use crate::ui::{
-    self, colormap_strip, format_editable, format_value, parse_value, rgb_to_rgba, section_title,
+    self, colormap_strip, format_editable_value, format_value, parse_value, rgb_to_rgba,
+    section_title,
 };
 
-use super::{CORNER_TEXT, DragEdge, Preset, STALE_OPACITY, SyncMode, Viewer, WindowEdge};
+use super::{
+    CORNER_TEXT_FONT_SIZE, STALE_OPACITY, SynchronizationMode, Viewer, WindowEdge, WindowEdgeDrag,
+    WindowPreset,
+};
 
 const HISTOGRAM_HEIGHT: f32 = 56.0;
-const CHART_CURVE_HEIGHT: f32 = 64.0;
+const TIME_CURVE_HEIGHT: f32 = 64.0;
 const TRANSFER_STRIP_HEIGHT: f32 = 6.0;
-const PRESETS: &[PresetGroup] = &[
-    PresetGroup {
+const WINDOW_PRESETS: &[WindowPresetGroup] = &[
+    WindowPresetGroup {
         title: "CT (HU)",
         presets: &[
-            ("Brain  W 80 L 40", Preset::Limits(0.0, 80.0)),
-            ("Subdural  W 200 L 75", Preset::Limits(-25.0, 175.0)),
-            ("Stroke  W 40 L 40", Preset::Limits(20.0, 60.0)),
-            ("Soft tissue  W 400 L 50", Preset::Limits(-150.0, 250.0)),
-            ("Lung  W 1500 L -600", Preset::Limits(-1350.0, 150.0)),
-            ("Bone  W 1800 L 400", Preset::Limits(-500.0, 1300.0)),
+            ("Brain  W 80 L 40", WindowPreset::Limits(0.0, 80.0)),
+            ("Subdural  W 200 L 75", WindowPreset::Limits(-25.0, 175.0)),
+            ("Stroke  W 40 L 40", WindowPreset::Limits(20.0, 60.0)),
+            (
+                "Soft tissue  W 400 L 50",
+                WindowPreset::Limits(-150.0, 250.0),
+            ),
+            ("Lung  W 1500 L -600", WindowPreset::Limits(-1350.0, 150.0)),
+            ("Bone  W 1800 L 400", WindowPreset::Limits(-500.0, 1300.0)),
         ],
     },
-    PresetGroup {
+    WindowPresetGroup {
         title: "PET (SUV)",
         presets: &[
-            ("0 to 5", Preset::Limits(0.0, 5.0)),
-            ("0 to 10", Preset::Limits(0.0, 10.0)),
+            ("0 to 5", WindowPreset::Limits(0.0, 5.0)),
+            ("0 to 10", WindowPreset::Limits(0.0, 10.0)),
         ],
     },
-    PresetGroup {
+    WindowPresetGroup {
         title: "Histogram",
         presets: &[
-            ("Full range", Preset::Percentiles(0.0, 1.0)),
-            ("1 to 99 %", Preset::Percentiles(0.01, 0.99)),
-            ("5 to 95 %", Preset::Percentiles(0.05, 0.95)),
+            ("Full range", WindowPreset::Percentiles(0.0, 1.0)),
+            ("1 to 99 %", WindowPreset::Percentiles(0.01, 0.99)),
+            ("5 to 95 %", WindowPreset::Percentiles(0.05, 0.95)),
         ],
     },
 ];
@@ -64,7 +71,7 @@ const PRESETS: &[PresetGroup] = &[
 impl Viewer {
     /// Settings of the selected layer
     pub(super) fn render_layer_settings(&self, cx: &mut Context<Self>) -> AnyElement {
-        let Some(index) = self.selected() else {
+        let Some(index) = self.selected_layer() else {
             return div().into_any_element();
         };
         let theme = cx.theme();
@@ -72,23 +79,29 @@ impl Viewer {
         let layer = &self.layers[index];
         let display = &layer.display;
         let anatomical = display.geometry().anatomical;
-        let overlaid = self.layout.overlaid();
-        let bottom_visible = self.layers.iter().position(|layer| layer.visible);
-        let link_world = !overlaid && self.sync && self.sync_mode == SyncMode::World && anatomical;
+        let overlaid = self.layout.is_overlaid();
+        let lowest_visible_layer = self.layers.iter().position(|layer| layer.visible);
+        let show_world_link = !overlaid
+            && self.cursor_synchronization
+            && self.sync_mode == SynchronizationMode::World
+            && anatomical;
 
         ui::panel(format!("Layer {}", index + 1), cx)
-            .when(overlaid && bottom_visible != Some(index), |settings| {
-                settings.child(
-                    ui::setting_row("Opacity", muted)
-                        .child(div().flex_1().child(Slider::new(&layer.opacity_slider)))
-                        .child(
-                            div()
-                                .w(px(32.0))
-                                .text_xs()
-                                .child(format!("{:.0}%", layer.opacity * 100.0)),
-                        ),
-                )
-            })
+            .when(
+                overlaid && lowest_visible_layer != Some(index),
+                |settings| {
+                    settings.child(
+                        ui::setting_row("Opacity", muted)
+                            .child(div().flex_1().child(Slider::new(&layer.opacity_slider)))
+                            .child(
+                                div()
+                                    .w(px(32.0))
+                                    .text_xs()
+                                    .child(format!("{:.0}%", layer.opacity * 100.0)),
+                            ),
+                    )
+                },
+            )
             .child(if display.label_mode() {
                 self.render_label_settings(index, cx)
             } else {
@@ -103,7 +116,7 @@ impl Viewer {
                 VolumeDisplay::set_label_mode,
                 cx,
             ))
-            .when(display.can_be_anatomical(), |settings| {
+            .when(display.has_anatomical_transform(), |settings| {
                 settings.child(display_checkbox(
                     index,
                     "native",
@@ -116,21 +129,21 @@ impl Viewer {
             .when(display.units_unknown(), |settings| {
                 settings.child(display_checkbox(
                     index,
-                    "assume-mm",
+                    "assume-millimeters",
                     "Assume mm",
-                    display.options().assume_mm,
-                    VolumeDisplay::set_assume_mm,
+                    display.options().assume_millimeters,
+                    VolumeDisplay::set_assume_millimeters,
                     cx,
                 ))
             })
-            .when(link_world, |settings| {
+            .when(show_world_link, |settings| {
                 settings.child(display_checkbox(
                     index,
                     "link",
                     "Link in world",
-                    display.link_world,
+                    display.world_link_enabled,
                     |display, link| {
-                        display.link_world = link;
+                        display.world_link_enabled = link;
                         Ok(())
                     },
                     cx,
@@ -193,33 +206,33 @@ impl Viewer {
             .child(
                 ui::setting_row("Window", muted)
                     .child(div().flex_1())
-                    .child(self.presets_button(index, cx))
+                    .child(self.window_presets_button(index, cx))
                     .child(
                         Button::new(id("auto"))
                             .ghost()
                             .xsmall()
-                            .icon(Carbon::AutoWindow)
+                            .icon(ApplicationUiIcon::FitWindow)
                             .tooltip_with_action(
                                 "Fit to the current frame",
-                                &AutoContrast,
-                                Some(shortcuts::CONTEXT),
+                                &FitWindow,
+                                Some(shortcuts::VIEWER_CONTEXT),
                             )
                             .on_click(cx.listener(move |viewer, _, _, cx| {
-                                viewer.auto_window(index, cx);
+                                viewer.fit_window(index, cx);
                             })),
                     )
                     .child(
                         Button::new(id("histogram-window"))
                             .ghost()
                             .xsmall()
-                            .icon(Carbon::Expand)
+                            .icon(ApplicationUiIcon::Expand)
                             .tooltip_with_action(
                                 "Histogram window",
-                                &ShowHistogram,
-                                Some(shortcuts::CONTEXT),
+                                &ShowHistogramWindow,
+                                Some(shortcuts::VIEWER_CONTEXT),
                             )
                             .on_click(cx.listener(|viewer, _, window, cx| {
-                                viewer.show_histogram(&ShowHistogram, window, cx);
+                                viewer.show_histogram(&ShowHistogramWindow, window, cx);
                             })),
                     ),
             )
@@ -233,11 +246,11 @@ impl Viewer {
             .child(self.render_histogram(index, cx))
             .child(self.render_colormaps(index, cx))
             .child(
-                Checkbox::new(id("clip-low"))
+                Checkbox::new(id("transparent-below-window"))
                     .label("Transparent below window")
-                    .checked(display.clip_low)
+                    .checked(display.transparent_below_window)
                     .on_click(cx.listener(move |viewer, checked: &bool, _, cx| {
-                        viewer.layers[index].display.clip_low = *checked;
+                        viewer.layers[index].display.transparent_below_window = *checked;
                         cx.notify();
                     })),
             )
@@ -254,7 +267,7 @@ impl Viewer {
                             .checked(display.scale() != 1.0)
                             .disabled(layer.suv.is_none())
                             .on_click(cx.listener(move |viewer, checked: &bool, _, cx| {
-                                viewer.set_suv(index, *checked, cx);
+                                viewer.set_suv_enabled(index, *checked, cx);
                             })),
                     )
                     .child(
@@ -271,7 +284,7 @@ impl Viewer {
                             .label("Edit\u{2026}")
                             .tooltip("Edit SUV calculation")
                             .on_click(cx.listener(move |viewer, _, window, cx| {
-                                viewer.edit_suv(index, window, cx);
+                                viewer.open_suv_form(index, window, cx);
                             })),
                     ),
             )
@@ -286,8 +299,12 @@ impl Viewer {
     }
 
     /// Shows the selected layers window limits in text fields.
-    pub(super) fn show_limits(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(index) = self.selected() else {
+    pub(super) fn refresh_window_limit_inputs(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(index) = self.selected_layer() else {
             return;
         };
         let layer = &self.layers[index];
@@ -297,7 +314,7 @@ impl Viewer {
             (&self.limit_inputs.low, low),
             (&self.limit_inputs.high, high),
         ] {
-            let text = format_editable(limit);
+            let text = format_editable_value(limit);
             let state = input.read(cx);
             if !state.focus_handle(cx).is_focused(window) && state.value().as_ref() != text {
                 input.update(cx, |state, cx| state.set_value(text, window, cx));
@@ -307,7 +324,7 @@ impl Viewer {
 
     /// Applies the typed limits and gives the keyboard back to the views.
     /// Works by leaving the field or hitting enter.
-    fn limit_input_event(
+    fn handle_window_limit_input(
         &mut self,
         _: &Entity<InputState>,
         event: &InputEvent,
@@ -336,14 +353,16 @@ impl Viewer {
         };
         let (low, high) = layer.display.window_limits();
         // a field that still shows its limit keeps the exact value, not the rounded text
-        let typed = |text: &str, limit: f64| {
-            if text == format_editable(limit) {
+        let parsed_limit = |text: &str, limit: f64| {
+            if text == format_editable_value(limit) {
                 Some(limit)
             } else {
                 parse_value(text)
             }
         };
-        if let (Some(low), Some(high)) = (typed(&low_text, low), typed(&high_text, high)) {
+        if let (Some(low), Some(high)) =
+            (parsed_limit(&low_text, low), parsed_limit(&high_text, high))
+        {
             layer.display.set_window_limits(low, high);
         }
         cx.notify();
@@ -366,7 +385,7 @@ impl Viewer {
                         .tooltip_with_action(
                             "Next colormap",
                             &NextColormap,
-                            Some(shortcuts::CONTEXT),
+                            Some(shortcuts::VIEWER_CONTEXT),
                         )
                         .on_click(cx.listener(move |viewer, _, _, cx| {
                             let display = &mut viewer.layers[index].display;
@@ -418,15 +437,15 @@ impl Viewer {
             .rounded_sm()
             .overflow_hidden()
             .bg(background)
-            .on_drag_move(
-                cx.listener(move |viewer, event: &DragMoveEvent<DragEdge>, _, cx| {
+            .on_drag_move(cx.listener(
+                move |viewer, event: &DragMoveEvent<WindowEdgeDrag>, _, cx| {
                     let drag = *event.drag(cx);
                     if drag.load_id == load_id {
-                        viewer.drag_edge(drag, event.event.position, event.bounds, cx);
+                        viewer.drag_window_edge(drag, event.event.position, event.bounds, cx);
                     }
-                }),
-            );
-        let counting: SharedString = if self.time_playing.is_some() {
+                },
+            ));
+        let counting_message: SharedString = if self.playback_task.is_some() {
             "Counting paused during playback".into()
         } else {
             "Counting values\u{2026}".into()
@@ -438,7 +457,7 @@ impl Viewer {
                     None => "No values to count".into(),
                 }
             } else {
-                counting
+                counting_message
             };
             return v_flex()
                 .gap_0p5()
@@ -454,15 +473,15 @@ impl Viewer {
                         .child(message),
                 )
                 .child(div().h(px(TRANSFER_STRIP_HEIGHT)))
-                .child(value_range("0", "0", muted).invisible()); // holds the height while counting
+                .child(histogram_range_labels("0", "0", muted).invisible()); // holds the height while counting
         };
 
         let stale = layer.current_histogram().is_none();
-        let fade = if stale { STALE_OPACITY } else { 1.0 };
-        let span = histogram.max - histogram.min;
-        let at = |value: f64| {
+        let opacity = if stale { STALE_OPACITY } else { 1.0 };
+        let span = histogram.maximum - histogram.minimum;
+        let position_of = |value: f64| {
             if span > 0.0 {
-                ((value - histogram.min) / span) as f32
+                ((value - histogram.minimum) / span) as f32
             } else {
                 0.5
             }
@@ -471,7 +490,7 @@ impl Viewer {
         let peak = histogram.counts.iter().copied().max().unwrap_or(0).max(1);
         let bins = histogram.counts.len() as f32;
         let bars = histogram.counts.iter().enumerate().map(|(bin, &count)| {
-            let center = histogram.min + (bin as f64 + 0.5) * histogram.bin_width();
+            let center = histogram.minimum + (bin as f64 + 0.5) * histogram.bin_width();
             let inside = (low..=high).contains(&center);
             let height = ((count as f64).ln_1p() / (peak as f64).ln_1p()) as f32;
             div()
@@ -481,13 +500,13 @@ impl Viewer {
                 .w(relative(1.0 / bins))
                 .h(relative(height))
                 .bg(if inside {
-                    foreground.opacity(fade)
+                    foreground.opacity(opacity)
                 } else {
-                    muted.opacity(0.5 * fade)
+                    muted.opacity(0.5 * opacity)
                 })
         });
-        let edge = |edge: WindowEdge, value: f64| {
-            let id = match edge {
+        let window_edge_handle = |window_edge_handle: WindowEdge, value: f64| {
+            let id = match window_edge_handle {
                 WindowEdge::Low => "window-low",
                 WindowEdge::High => "window-high",
             };
@@ -496,19 +515,23 @@ impl Viewer {
                 .absolute()
                 .top_0()
                 .bottom_0()
-                .left(relative(at(value).clamp(0.0, 1.0)))
+                .left(relative(position_of(value).clamp(0.0, 1.0)))
                 .ml(px(-4.0))
                 .w(px(8.0))
                 .flex()
                 .justify_center()
                 .cursor_ew_resize()
                 .child(div().w(px(2.0)).h_full().bg(info))
-                .on_drag(DragEdge { load_id, edge }, |drag, _, _, cx| {
-                    cx.new(|_| *drag)
-                })
+                .on_drag(
+                    WindowEdgeDrag {
+                        load_id,
+                        edge: window_edge_handle,
+                    },
+                    |drag, _, _, cx| cx.new(|_| *drag),
+                )
         };
-        let shaded_left = at(low).clamp(0.0, 1.0);
-        let shaded_right = at(high).clamp(0.0, 1.0);
+        let shaded_left = position_of(low).clamp(0.0, 1.0);
+        let shaded_right = position_of(high).clamp(0.0, 1.0);
 
         v_flex()
             .gap_0p5()
@@ -535,25 +558,25 @@ impl Viewer {
                                 .border_1()
                                 .border_color(border)
                                 .bg(background)
-                                .text_size(px(CORNER_TEXT))
+                                .text_size(px(CORNER_TEXT_FONT_SIZE))
                                 .text_color(muted)
-                                .child(counting),
+                                .child(counting_message),
                         )
                     })
-                    .child(edge(WindowEdge::Low, low))
-                    .child(edge(WindowEdge::High, high)),
+                    .child(window_edge_handle(WindowEdge::Low, low))
+                    .child(window_edge_handle(WindowEdge::High, high)),
             )
-            .child(transfer_strip(histogram, layer.display.coloring()).opacity(fade))
-            .child(value_range(
-                format_value(histogram.min),
-                format_value(histogram.max),
-                muted.opacity(fade),
+            .child(transfer_strip(histogram, layer.display.coloring()).opacity(opacity))
+            .child(histogram_range_labels(
+                format_value(histogram.minimum),
+                format_value(histogram.maximum),
+                muted.opacity(opacity),
             ))
     }
 
     fn render_time_curve(&self, index: usize, cx: &mut Context<Self>) -> Option<AnyElement> {
         let layer = &self.layers[index];
-        let frames = layer.display.volume().meta().timepoints();
+        let frames = layer.display.volume().metadata().timepoints();
         if frames < 2 {
             return None;
         }
@@ -568,18 +591,18 @@ impl Viewer {
             Button::new(("time-series-window", index))
                 .ghost()
                 .xsmall()
-                .icon(Carbon::Expand)
+                .icon(ApplicationUiIcon::Expand)
                 .tooltip_with_action(
                     "Time series window",
-                    &ShowTimeSeries,
-                    Some(shortcuts::CONTEXT),
+                    &ShowTimeSeriesWindow,
+                    Some(shortcuts::VIEWER_CONTEXT),
                 )
                 .on_click(cx.listener(|viewer, _, window, cx| {
-                    viewer.show_time_series(&ShowTimeSeries, window, cx);
+                    viewer.show_time_series(&ShowTimeSeriesWindow, window, cx);
                 })),
         );
-        let Some(curve) = &layer.curve else {
-            let message = if layer.curve_pending {
+        let Some(curve) = &layer.time_curve else {
+            let message = if layer.time_curve_pending {
                 "Reading the curve\u{2026}"
             } else {
                 "Cursor is outside the volume"
@@ -591,7 +614,7 @@ impl Viewer {
                     .child(
                         div()
                             .w_full()
-                            .h(px(CHART_CURVE_HEIGHT))
+                            .h(px(TIME_CURVE_HEIGHT))
                             .rounded_sm()
                             .bg(background)
                             .flex()
@@ -601,7 +624,7 @@ impl Viewer {
                             .text_color(muted)
                             .child(message),
                     )
-                    .child(curve_footer("0", "0", muted).invisible())
+                    .child(time_curve_footer("0", "0", muted).invisible())
                     .into_any_element(),
             );
         };
@@ -639,7 +662,7 @@ impl Viewer {
             .id(("time-curve", index))
             .relative()
             .w_full()
-            .h(px(CHART_CURVE_HEIGHT))
+            .h(px(TIME_CURVE_HEIGHT))
             .rounded_sm()
             .bg(background)
             .cursor_pointer()
@@ -661,12 +684,12 @@ impl Viewer {
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|viewer, event: &MouseDownEvent, window, cx| {
-                    viewer.pick_frame(event.position.x, window, cx);
+                    viewer.select_frame_at(event.position.x, window, cx);
                 }),
             )
             .on_mouse_move(cx.listener(|viewer, event: &MouseMoveEvent, window, cx| {
                 if event.pressed_button == Some(MouseButton::Left) {
-                    viewer.pick_frame(event.position.x, window, cx);
+                    viewer.select_frame_at(event.position.x, window, cx);
                 }
             }));
         Some(
@@ -674,7 +697,7 @@ impl Viewer {
                 .gap_1()
                 .child(title)
                 .child(plot)
-                .child(curve_footer(
+                .child(time_curve_footer(
                     format!("{} \u{2013} {}", format_value(low), format_value(high)),
                     format!("frame {}: {}", frame + 1, format_value(value)),
                     muted,
@@ -684,26 +707,26 @@ impl Viewer {
     }
 
     /// Menu of window presets for the layer currently at index.
-    fn presets_button(&self, index: usize, cx: &mut Context<Self>) -> impl IntoElement {
+    fn window_presets_button(&self, index: usize, cx: &mut Context<Self>) -> impl IntoElement {
         let viewer = cx.entity().downgrade();
         let load_id = self.layers[index].load_id;
         Button::new(("presets", index))
             .ghost()
             .xsmall()
-            .icon(Carbon::WindowPreset)
+            .icon(ApplicationUiIcon::WindowPreset)
             .tooltip("Window presets")
             .dropdown_menu(move |mut menu, _, _| {
-                for (n, group) in PRESETS.iter().enumerate() {
+                for (n, group) in WINDOW_PRESETS.iter().enumerate() {
                     if n > 0 {
                         menu = menu.separator();
                     }
                     let choices = group.presets.iter().copied();
-                    menu = ui::choice_items(
+                    menu = ui::add_choice_items(
                         menu.label(group.title),
                         &viewer,
                         choices,
                         move |viewer, preset, _, cx| {
-                            viewer.apply_preset(load_id, preset, cx);
+                            viewer.apply_window_preset(load_id, preset, cx);
                         },
                     );
                 }
@@ -713,7 +736,7 @@ impl Viewer {
 }
 
 /// Text fields for the low and high limit of the window of the selected layer.
-pub(super) struct LimitInputs {
+pub(super) struct WindowLimitInputs {
     low: Entity<InputState>,
     high: Entity<InputState>,
     /// The layer whose limits the fields show
@@ -721,12 +744,12 @@ pub(super) struct LimitInputs {
     _events: [Subscription; 2],
 }
 
-impl LimitInputs {
+impl WindowLimitInputs {
     pub(super) fn new(window: &mut Window, cx: &mut Context<Viewer>) -> Self {
         let low = cx.new(|cx| InputState::new(window, cx));
         let high = cx.new(|cx| InputState::new(window, cx));
-        let events =
-            [&low, &high].map(|input| cx.subscribe_in(input, window, Viewer::limit_input_event));
+        let events = [&low, &high]
+            .map(|input| cx.subscribe_in(input, window, Viewer::handle_window_limit_input));
         Self {
             low,
             high,
@@ -742,7 +765,7 @@ fn display_checkbox(
     id: &'static str,
     label: &'static str,
     checked: bool,
-    set: fn(&mut VolumeDisplay, bool) -> illuminator_core::Result<()>,
+    apply_setting: fn(&mut VolumeDisplay, bool) -> illuminator_core::Result<()>,
     cx: &mut Context<Viewer>,
 ) -> Checkbox {
     Checkbox::new((id, index as u64))
@@ -750,22 +773,26 @@ fn display_checkbox(
         .checked(checked)
         .on_click(cx.listener(move |viewer, checked: &bool, _, cx| {
             let checked = *checked;
-            viewer.change(index, |display| set(display, checked), cx);
+            viewer.modify_display(index, |display| apply_setting(display, checked), cx);
         }))
 }
 
 /// Lowest and highest values under a histogram.
-fn value_range(low: impl Into<SharedString>, high: impl Into<SharedString>, color: Hsla) -> Div {
+fn histogram_range_labels(
+    low: impl Into<SharedString>,
+    high: impl Into<SharedString>,
+    color: Hsla,
+) -> Div {
     h_flex()
         .justify_between()
-        .text_size(px(CORNER_TEXT))
+        .text_size(px(CORNER_TEXT_FONT_SIZE))
         .text_color(color)
         .child(low.into())
         .child(high.into())
 }
 
 /// The value range of a time curve and the value at the shown frame.
-fn curve_footer(
+fn time_curve_footer(
     range: impl Into<SharedString>,
     at_frame: impl Into<SharedString>,
     color: Hsla,
@@ -791,7 +818,7 @@ fn transfer_strip(histogram: &Histogram, coloring: Coloring) -> Div {
         .overflow_hidden()
         .children((0..BLOCKS).map(|block| {
             let fraction = (block as f64 + 0.5) / BLOCKS as f64;
-            let value = histogram.min + fraction * (histogram.max - histogram.min);
+            let value = histogram.minimum + fraction * (histogram.maximum - histogram.minimum);
             let block = div().flex_1().h_full();
             match coloring.window_position(value) {
                 Some(t) => block.bg(rgb_to_rgba(colormap.color(t))),
@@ -810,22 +837,22 @@ fn colormap_preview(colormap: Colormap) -> Div {
 }
 
 /// Window presets under one heading in the presets menu
-struct PresetGroup {
+struct WindowPresetGroup {
     title: &'static str,
-    presets: &'static [(&'static str, Preset)],
+    presets: &'static [(&'static str, WindowPreset)],
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{PRESETS, Preset};
+    use super::{WINDOW_PRESETS, WindowPreset};
 
     #[test]
     fn presets_go_from_low_to_high() {
-        for group in PRESETS {
+        for group in WINDOW_PRESETS {
             for (name, preset) in group.presets {
                 match *preset {
-                    Preset::Limits(low, high) => assert!(low < high, "{name}"),
-                    Preset::Percentiles(low, high) => {
+                    WindowPreset::Limits(low, high) => assert!(low < high, "{name}"),
+                    WindowPreset::Percentiles(low, high) => {
                         assert!((0.0..high).contains(&low) && high <= 1.0, "{name}");
                     }
                 }

@@ -2,12 +2,12 @@
 //! Polynomial approximation by Matt Zucker: <https://www.shadertoy.com/view/WlfXRN>
 //! of <https://github.com/BIDS/colormap/blob/master/colormaps.py>
 
-use super::{Cmap, Ramp};
+use super::{ColormapDefinition, Ramp};
 
-pub(crate) const VIRIDIS: Cmap = Cmap {
+pub(crate) const VIRIDIS: ColormapDefinition = ColormapDefinition {
     name: "Viridis",
     id: "viridis",
-    desc: "Perceptually uniform. Dark purple through teal to yellow",
+    description: "Perceptually uniform. Dark purple through teal to yellow",
     ramp: Ramp::Polynomial(&[
         [0.2777273272234177, 0.005407344544966578, 0.3340998053353061],
         [0.1050930431085774, 1.404613529898575, 1.384590162594685],

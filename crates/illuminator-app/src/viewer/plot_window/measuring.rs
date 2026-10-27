@@ -7,56 +7,56 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use super::{Plot, PlotLayer, PlotWindow, Plotted, Snapshot};
+use super::{Plot, PlotLayer, PlotWindow, PlottedValue, ViewerSnapshot};
 
 /// Measures one layer on a background thread.
-pub(in crate::viewer) type Job<V> =
+pub(in crate::viewer) type MeasurementJob<V> =
     Box<dyn FnOnce(&Progress) -> illuminator_core::Result<Option<V>> + Send>;
 
 /// A layer's value and the key it was measured for.
-pub(super) struct Measured<K, V> {
+pub(super) struct Measurement<K, V> {
     pub(super) key: K,
     pub(super) value: Option<V>,
 }
 
 /// The values measured of each layer by load id, and the measurements still running.
 pub(super) struct Measurements<K, V> {
-    done: HashMap<u64, Measured<K, V>>,
-    running: HashMap<u64, (K, Arc<AtomicBool>)>,
+    completed: HashMap<u64, Measurement<K, V>>,
+    in_progress: HashMap<u64, (K, Arc<AtomicBool>)>,
 }
 
 impl<K, V> Default for Measurements<K, V> {
     fn default() -> Self {
         Self {
-            done: HashMap::new(),
-            running: HashMap::new(),
+            completed: HashMap::new(),
+            in_progress: HashMap::new(),
         }
     }
 }
 
 impl<K: PartialEq, V> Measurements<K, V> {
     /// The value of `layer` if it was measured for the key the layer wants now
-    pub(super) fn current(&self, layer: &PlotLayer<K>) -> Option<&Measured<K, V>> {
-        self.done
+    pub(super) fn current(&self, layer: &PlotLayer<K>) -> Option<&Measurement<K, V>> {
+        self.completed
             .get(&layer.load_id)
             .filter(|measured| layer.key.as_ref() == Some(&measured.key))
     }
 
     /// The last value measured of a layer, current or not
-    fn latest(&self, load_id: u64) -> Option<&Measured<K, V>> {
-        self.done.get(&load_id)
+    fn latest(&self, load_id: u64) -> Option<&Measurement<K, V>> {
+        self.completed.get(&load_id)
     }
 
     fn is_running(&self, load_id: u64) -> bool {
-        self.running.contains_key(&load_id)
+        self.in_progress.contains_key(&load_id)
     }
 
     /// Forgets the layers that are gone, and stops the measurements that are out of date
-    fn prune(&mut self, layers: &[PlotLayer<K>], wanted: &[&PlotLayer<K>]) {
-        self.done
+    fn prune(&mut self, layers: &[PlotLayer<K>], required_layers: &[&PlotLayer<K>]) {
+        self.completed
             .retain(|load_id, _| layers.iter().any(|layer| layer.load_id == *load_id));
-        for (load_id, (key, cancelled)) in &self.running {
-            if !wanted
+        for (load_id, (key, cancelled)) in &self.in_progress {
+            if !required_layers
                 .iter()
                 .any(|layer| layer.load_id == *load_id && layer.key.as_ref() == Some(key))
             {
@@ -66,22 +66,23 @@ impl<K: PartialEq, V> Measurements<K, V> {
     }
 
     /// Starts measuring a layer for `key`.
-    fn start(&mut self, load_id: u64, key: K) -> Arc<AtomicBool> {
+    fn mark_started(&mut self, load_id: u64, key: K) -> Arc<AtomicBool> {
         let cancelled = Arc::new(AtomicBool::new(false));
-        self.running.insert(load_id, (key, Arc::clone(&cancelled)));
+        self.in_progress
+            .insert(load_id, (key, Arc::clone(&cancelled)));
         cancelled
     }
 
-    fn stop(&mut self, load_id: u64) {
-        self.running.remove(&load_id);
+    fn mark_finished(&mut self, load_id: u64) {
+        self.in_progress.remove(&load_id);
     }
 
-    fn keep(&mut self, load_id: u64, key: K, value: Option<V>) {
-        self.done.insert(load_id, Measured { key, value });
+    fn record(&mut self, load_id: u64, key: K, value: Option<V>) {
+        self.completed.insert(load_id, Measurement { key, value });
     }
 
     /// Whether every unhidden layer with something to measure has a current value
-    pub(super) fn export_ready(&self, layers: &[PlotLayer<K>], hidden: &HashSet<u64>) -> bool {
+    pub(super) fn is_export_ready(&self, layers: &[PlotLayer<K>], hidden: &HashSet<u64>) -> bool {
         let mut has_values = false;
         for layer in layers
             .iter()
@@ -98,17 +99,21 @@ impl<K: PartialEq, V> Measurements<K, V> {
 
 impl<P: Plot> PlotWindow<P> {
     /// Measures the layers whose values are missing or out of date in the background
-    pub(super) fn schedule(&mut self, snapshot: &Snapshot<P::Key>, cx: &mut Context<Self>) {
+    pub(super) fn schedule_measurements(
+        &mut self,
+        snapshot: &ViewerSnapshot<P::Key>,
+        cx: &mut Context<Self>,
+    ) {
         // layers hidden in the legend are measured when they are shown again
-        let wanted: Vec<&PlotLayer<P::Key>> = self
-            .unhidden(snapshot)
+        let required_layers: Vec<&PlotLayer<P::Key>> = self
+            .legend_visible_layers(snapshot)
             .filter(|layer| layer.key.is_some())
             .collect();
-        self.measurements.prune(&snapshot.layers, &wanted);
-        if self.waiting(snapshot) {
+        self.measurements.prune(&snapshot.layers, &required_layers);
+        if self.is_waiting_for_pause(snapshot) {
             return;
         }
-        for layer in wanted {
+        for layer in required_layers {
             if self.measurements.current(layer).is_none()
                 && !self.measurements.is_running(layer.load_id)
             {
@@ -120,34 +125,36 @@ impl<P: Plot> PlotWindow<P> {
     fn measure(
         &mut self,
         layer: &PlotLayer<P::Key>,
-        snapshot: &Snapshot<P::Key>,
+        snapshot: &ViewerSnapshot<P::Key>,
         cx: &mut Context<Self>,
     ) {
         let Some(key) = layer.key.clone() else {
             return;
         };
-        let Some(job) = P::job(&key, Arc::clone(&layer.volume), &snapshot.label_maps) else {
+        let Some(measurement_job) =
+            P::measurement_job(&key, Arc::clone(&layer.volume), &snapshot.label_maps)
+        else {
             return;
         };
         let load_id = layer.load_id;
-        let cancelled = self.measurements.start(load_id, key.clone());
+        let cancelled = self.measurements.mark_started(load_id, key.clone());
         cx.spawn(async move |this, cx| {
             let value = cx
-                .background_spawn(async move { job(&Progress::cancellable(cancelled)) })
+                .background_spawn(async move { measurement_job(&Progress::cancellable(cancelled)) })
                 .await;
             let _ = this.update(cx, |this, cx| {
-                this.measurements.stop(load_id);
-                let wanted = this
+                this.measurements.mark_finished(load_id);
+                let required_layers = this
                     .snapshot(cx)
-                    .is_some_and(|snapshot| snapshot.wants(load_id, &key));
+                    .is_some_and(|snapshot| snapshot.requires_value(load_id, &key));
                 match value {
                     Err(Error::Cancelled) => {}
-                    value if wanted => {
+                    value if required_layers => {
                         let value = value.unwrap_or_else(|error| {
-                            eprintln!("Illuminator: {}: {error}", P::TEXTS.title);
+                            eprintln!("Illuminator: {}: {error}", P::STRINGS.title);
                             None
                         });
-                        this.measurements.keep(load_id, key, value);
+                        this.measurements.record(load_id, key, value);
                     }
                     _ => {}
                 }
@@ -159,8 +166,11 @@ impl<P: Plot> PlotWindow<P> {
     }
 
     /// The values to plot of the unhidden layers in layer order
-    pub(super) fn plotted<'a>(&'a self, snapshot: &'a Snapshot<P::Key>) -> Vec<Plotted<'a, P>> {
-        self.unhidden(snapshot)
+    pub(super) fn plotted<'a>(
+        &'a self,
+        snapshot: &'a ViewerSnapshot<P::Key>,
+    ) -> Vec<PlottedValue<'a, P>> {
+        self.legend_visible_layers(snapshot)
             .filter_map(|layer| {
                 let key = layer.key.as_ref()?;
                 let measured = self.measurements.latest(layer.load_id)?;
@@ -168,7 +178,7 @@ impl<P: Plot> PlotWindow<P> {
                 if stale && !P::shows_stale(&measured.key, key) {
                     return None;
                 }
-                Some(Plotted {
+                Some(PlottedValue {
                     layer,
                     value: measured.value.as_ref()?,
                     stale,
@@ -181,7 +191,7 @@ impl<P: Plot> PlotWindow<P> {
 #[cfg(test)]
 mod tests {
     use super::super::PlotLayer;
-    use super::super::test_util::loaded_display;
+    use super::super::test_fixtures::loaded_display;
     use super::Measurements;
     use gpui_kit::rgb;
     use illuminator_core::display::VolumeDisplay;
@@ -205,7 +215,7 @@ mod tests {
         let (_directory, display) = loaded_display();
         let mut layer = layer(1, Some(1), &display);
         let mut measurements = Measurements::default();
-        measurements.keep(1, 1, Some("values"));
+        measurements.record(1, 1, Some("values"));
         assert!(measurements.current(&layer).is_some());
         layer.key = Some(2);
         assert!(measurements.current(&layer).is_none());
@@ -215,7 +225,7 @@ mod tests {
         layer.load_id = 2;
         assert!(measurements.current(&layer).is_none());
         layer.load_id = 1;
-        measurements.keep(1, 2, None);
+        measurements.record(1, 2, None);
         assert!(measurements.current(&layer).is_none());
         layer.key = Some(2);
         assert!(measurements.current(&layer).unwrap().value.is_none());
@@ -226,25 +236,25 @@ mod tests {
         let (_directory, display) = loaded_display();
         let layers = [layer(1, Some(1), &display), layer(2, Some(1), &display)];
         let mut measurements = Measurements::default();
-        measurements.keep(1, 1, Some("values"));
+        measurements.record(1, 1, Some("values"));
         let mut hidden = HashSet::new();
-        assert!(!measurements.export_ready(&layers, &hidden));
+        assert!(!measurements.is_export_ready(&layers, &hidden));
         hidden.insert(2);
-        assert!(measurements.export_ready(&layers, &hidden));
+        assert!(measurements.is_export_ready(&layers, &hidden));
         hidden.clear();
-        measurements.keep(2, 2, None);
-        assert!(!measurements.export_ready(&layers, &hidden));
-        measurements.keep(2, 2, Some("values"));
-        assert!(!measurements.export_ready(&layers, &hidden));
-        measurements.keep(2, 1, None);
-        assert!(measurements.export_ready(&layers, &hidden));
-        measurements.keep(1, 1, None);
-        assert!(!measurements.export_ready(&layers, &hidden));
+        measurements.record(2, 2, None);
+        assert!(!measurements.is_export_ready(&layers, &hidden));
+        measurements.record(2, 2, Some("values"));
+        assert!(!measurements.is_export_ready(&layers, &hidden));
+        measurements.record(2, 1, None);
+        assert!(measurements.is_export_ready(&layers, &hidden));
+        measurements.record(1, 1, None);
+        assert!(!measurements.is_export_ready(&layers, &hidden));
         hidden.extend([1, 2]);
-        assert!(!measurements.export_ready(&layers, &hidden));
-        assert!(!Measurements::<u32, &str>::default().export_ready(&[], &HashSet::new()));
+        assert!(!measurements.is_export_ready(&layers, &hidden));
+        assert!(!Measurements::<u32, &str>::default().is_export_ready(&[], &HashSet::new()));
         let layers = [layer(1, Some(1), &display), layer(2, None, &display)];
-        measurements.keep(1, 1, Some("values"));
-        assert!(measurements.export_ready(&layers, &HashSet::new()));
+        measurements.record(1, 1, Some("values"));
+        assert!(measurements.is_export_ready(&layers, &HashSet::new()));
     }
 }

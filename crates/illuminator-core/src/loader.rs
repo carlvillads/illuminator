@@ -9,14 +9,14 @@ use std::thread::JoinHandle;
 use crate::cache::VolumeCache;
 use crate::error::{Error, Result};
 use crate::progress::Progress;
-use crate::volume::{Range, Volume};
+use crate::volume::{ValueRange, Volume};
 
-const MAX_WORKERS: usize = 4;
+const MAXIMUM_WORKERS: usize = 4;
 
 pub struct LoadedVolume {
     pub load_id: u64,
     pub(crate) volume: Volume,
-    pub(crate) range: Option<Range>,
+    pub(crate) range: Option<ValueRange>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -45,69 +45,72 @@ pub struct LoadStatus {
 
 struct Job {
     status: LoadStatus,
-    cancel: Arc<AtomicBool>,
+    cancel_requested: Arc<AtomicBool>,
 }
 
 #[derive(Default)]
-struct Shared {
+struct QueueState {
     queue: VecDeque<u64>,
     jobs: Vec<Job>,
     completed: Vec<LoadedVolume>,
-    stop: bool,
+    shutdown_requested: bool,
     next_id: u64,
 }
 
-impl Shared {
-    fn job_mut(&mut self, id: u64) -> Option<&mut Job> {
+impl QueueState {
+    fn find_job_mut(&mut self, id: u64) -> Option<&mut Job> {
         self.jobs.iter_mut().find(|job| job.status.load_id == id)
     }
 }
 
-struct Inner {
-    shared: Mutex<Shared>,
-    wake: Condvar,
+struct LoaderContext {
+    shared: Mutex<QueueState>,
+    work_available: Condvar,
     cache: Arc<VolumeCache>,
-    on_change: Box<dyn Fn() + Send + Sync>,
+    on_status_change: Box<dyn Fn() + Send + Sync>,
 }
 
-impl Inner {
-    fn lock(&self) -> MutexGuard<'_, Shared> {
+impl LoaderContext {
+    fn lock(&self) -> MutexGuard<'_, QueueState> {
         self.shared.lock().expect("loader lock poisoned")
     }
 
-    fn update(&self, id: u64, change: impl FnOnce(&mut LoadStatus)) {
-        if let Some(job) = self.lock().job_mut(id) {
+    fn update_status(&self, id: u64, change: impl FnOnce(&mut LoadStatus)) {
+        if let Some(job) = self.lock().find_job_mut(id) {
             change(&mut job.status);
         }
-        (self.on_change)();
+        (self.on_status_change)();
     }
 }
 
 pub struct VolumeLoader {
-    inner: Arc<Inner>,
+    inner: Arc<LoaderContext>,
     workers: Vec<JoinHandle<()>>,
 }
 
 impl VolumeLoader {
-    pub fn new(cache: Arc<VolumeCache>, on_change: impl Fn() + Send + Sync + 'static) -> Self {
-        let inner = Arc::new(Inner {
-            shared: Mutex::new(Shared {
+    pub fn new(
+        cache: Arc<VolumeCache>,
+        on_status_change: impl Fn() + Send + Sync + 'static,
+    ) -> Self {
+        let inner = Arc::new(LoaderContext {
+            shared: Mutex::new(QueueState {
                 next_id: 1,
-                ..Shared::default()
+                ..QueueState::default()
             }),
-            wake: Condvar::new(),
+            work_available: Condvar::new(),
             cache,
-            on_change: Box::new(on_change),
+            on_status_change: Box::new(on_status_change),
         });
         let count = std::thread::available_parallelism()
             .map_or(2, |n| n.get())
-            .clamp(1, MAX_WORKERS);
+            .clamp(1, MAXIMUM_WORKERS);
         let workers = (0..count)
             .map(|n| {
                 let inner = Arc::clone(&inner);
                 std::thread::Builder::new()
                     .name(format!("volume-loader-{n}"))
-                    .spawn(move || run(&inner))
+                    .spawn(move || run_worker(&inner))
                     .expect("cannot start a volume loader thread")
             })
             .collect();
@@ -128,19 +131,19 @@ impl VolumeLoader {
                     stage: "Queued".into(),
                     progress: 0.0,
                 },
-                cancel: Arc::new(AtomicBool::new(false)),
+                cancel_requested: Arc::new(AtomicBool::new(false)),
             });
             shared.queue.push_back(id);
             id
         };
-        self.inner.wake.notify_one();
-        (self.inner.on_change)();
+        self.inner.work_available.notify_one();
+        (self.inner.on_status_change)();
         id
     }
 
     pub fn cancel(&self, id: u64) {
-        if let Some(job) = self.inner.lock().job_mut(id) {
-            job.cancel.store(true, Ordering::Relaxed);
+        if let Some(job) = self.inner.lock().find_job_mut(id) {
+            job.cancel_requested.store(true, Ordering::Relaxed);
         }
     }
 
@@ -167,12 +170,12 @@ impl Drop for VolumeLoader {
     fn drop(&mut self) {
         {
             let mut shared = self.inner.lock();
-            shared.stop = true;
+            shared.shutdown_requested = true;
             for job in &shared.jobs {
-                job.cancel.store(true, Ordering::Relaxed);
+                job.cancel_requested.store(true, Ordering::Relaxed);
             }
         }
-        self.inner.wake.notify_all();
+        self.inner.work_available.notify_all();
         for worker in self.workers.drain(..) {
             let _ = worker.join();
         }
@@ -180,35 +183,41 @@ impl Drop for VolumeLoader {
 }
 
 /// Worker thread
-fn run(inner: &Arc<Inner>) {
+fn run_worker(inner: &Arc<LoaderContext>) {
     loop {
         let (id, path, cancel) = {
             let shared = inner.lock();
             let mut shared = inner
-                .wake
-                .wait_while(shared, |shared| !shared.stop && shared.queue.is_empty())
+                .work_available
+                .wait_while(shared, |shared| {
+                    !shared.shutdown_requested && shared.queue.is_empty()
+                })
                 .expect("loader lock poisoned");
-            if shared.stop {
+            if shared.shutdown_requested {
                 return;
             }
             let id = shared.queue.pop_front().expect("queue is not empty");
-            let Some(job) = shared.job_mut(id) else {
+            let Some(job) = shared.find_job_mut(id) else {
                 continue;
             };
             job.status.state = LoadState::Loading;
             job.status.stage = "Reading header".into();
-            (id, job.status.path.clone(), Arc::clone(&job.cancel))
+            (
+                id,
+                job.status.path.clone(),
+                Arc::clone(&job.cancel_requested),
+            )
         };
-        (inner.on_change)();
+        (inner.on_status_change)();
 
         let reporter = Arc::clone(inner);
         let progress = Progress::new(Arc::clone(&cancel), move |fraction, stage| {
-            reporter.update(id, |status| {
+            reporter.update_status(id, |status| {
                 status.progress = fraction;
                 status.stage = stage.to_string();
             });
         });
-        let result = load(&path, &inner.cache, &progress);
+        let result = load_and_measure(&path, &inner.cache, &progress);
 
         {
             let mut shared = inner.lock();
@@ -228,7 +237,7 @@ fn run(inner: &Arc<Inner>) {
                 Err(Error::Cancelled) => (LoadState::Cancelled, "Cancelled"),
                 Err(error) => (LoadState::Failed(error.to_string()), "Failed"),
             };
-            if let Some(job) = shared.job_mut(id) {
+            if let Some(job) = shared.find_job_mut(id) {
                 if state == LoadState::Ready {
                     job.status.progress = 1.0;
                 }
@@ -236,13 +245,17 @@ fn run(inner: &Arc<Inner>) {
                 job.status.stage = stage.into();
             }
         }
-        (inner.on_change)();
+        (inner.on_status_change)();
     }
 }
 
-fn load(path: &Path, cache: &VolumeCache, progress: &Progress) -> Result<(Volume, Option<Range>)> {
-    let volume = Volume::load(path, cache, &progress.part(0.0, 0.8))?;
-    let range = volume.frame_range(0, &progress.part(0.8, 0.2))?;
+fn load_and_measure(
+    path: &Path,
+    cache: &VolumeCache,
+    progress: &Progress,
+) -> Result<(Volume, Option<ValueRange>)> {
+    let volume = Volume::load(path, cache, &progress.subrange(0.0, 0.8))?;
+    let range = volume.frame_value_range(0, &progress.subrange(0.8, 0.2))?;
     Ok((volume, range))
 }
 
@@ -252,7 +265,7 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use super::*;
-    use crate::test_util::Fixture;
+    use crate::test_fixtures::Fixture;
 
     fn wait_until_idle(loader: &VolumeLoader, changed: &mpsc::Receiver<()>) {
         let deadline = Instant::now() + Duration::from_secs(10);
@@ -271,16 +284,16 @@ mod tests {
 
     #[test]
     fn isolates_failures_and_cancellation() {
-        let dir = tempfile::tempdir().unwrap();
-        let good = dir.path().join("worker.nii.gz");
+        let directory = tempfile::tempdir().unwrap();
+        let good = directory.path().join("worker.nii.gz");
         Fixture::default().write(&good);
-        let cache = Arc::new(VolumeCache::new(dir.path().join("cache"), 1 << 24).unwrap());
+        let cache = Arc::new(VolumeCache::new(directory.path().join("cache"), 1 << 24).unwrap());
         let (sender, changed) = mpsc::channel();
         let loader = VolumeLoader::new(cache, move || {
             let _ = sender.send(());
         });
 
-        loader.enqueue(dir.path().join("does-not-exist.nii"));
+        loader.enqueue(directory.path().join("does-not-exist.nii"));
         let ok = loader.enqueue(&good);
         let cancelled = loader.enqueue(&good);
         loader.cancel(cancelled);
@@ -292,9 +305,9 @@ mod tests {
         assert_eq!(completed[0].volume.sample_value([3, 2, 3], 0), Some(47.0));
         assert_eq!(
             completed[0].range,
-            Some(Range {
-                min: 0.0,
-                max: 47.0
+            Some(ValueRange {
+                minimum: 0.0,
+                maximum: 47.0
             })
         );
         assert!(loader.take_completed().is_empty());
@@ -311,10 +324,10 @@ mod tests {
 
     #[test]
     fn dropping_stops_the_worker() {
-        let dir = tempfile::tempdir().unwrap();
-        let good = dir.path().join("a.nii.gz");
+        let directory = tempfile::tempdir().unwrap();
+        let good = directory.path().join("a.nii.gz");
         Fixture::default().write(&good);
-        let cache = Arc::new(VolumeCache::new(dir.path().join("cache"), 1 << 24).unwrap());
+        let cache = Arc::new(VolumeCache::new(directory.path().join("cache"), 1 << 24).unwrap());
         let loader = VolumeLoader::new(cache, || {});
         for _ in 0..20 {
             loader.enqueue(&good);

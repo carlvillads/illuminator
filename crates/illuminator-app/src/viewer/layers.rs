@@ -6,20 +6,24 @@ use illuminator_core::display::VolumeDisplay;
 use illuminator_core::suv::SuvInputs;
 use std::cmp::Ordering;
 
-use crate::label_statistics::{LayerSnapshot, StatisticsView};
+use crate::label_statistics::{LabelStatisticsView, LayerSnapshot};
 use crate::suv_form::SuvForm;
 
-use super::{DragEdge, FrameHistogram, Layer, Layout, Panel, Preset, Suv, Viewer, WindowEdge};
+use super::{
+    FrameHistogram, Layer, Layout, Panel, SuvSettings, Viewer, WindowEdge, WindowEdgeDrag,
+    WindowPreset,
+};
 
 impl Viewer {
-    pub(super) fn reindex(&mut self, new_index: impl Fn(usize) -> Option<usize>) {
+    pub(super) fn remap_layer_indices(&mut self, new_index: impl Fn(usize) -> Option<usize>) {
         let count = self.layers.len();
-        if self.selected < count {
+        if self.selected_layer < count {
             // a removed selected layer passes the selection to the one before it
-            self.selected = new_index(self.selected).unwrap_or(self.selected.saturating_sub(1));
+            self.selected_layer =
+                new_index(self.selected_layer).unwrap_or(self.selected_layer.saturating_sub(1));
         }
-        if !self.layout.overlaid() && self.active_panel.0 < count {
-            self.active_panel.0 = new_index(self.active_panel.0).unwrap_or(self.selected);
+        if !self.layout.is_overlaid() && self.active_panel.0 < count {
+            self.active_panel.0 = new_index(self.active_panel.0).unwrap_or(self.selected_layer);
         }
         if let Layout::Single {
             axis,
@@ -41,15 +45,15 @@ impl Viewer {
         if index >= self.layers.len() {
             return;
         }
-        self.reindex(|other| match other.cmp(&index) {
+        self.remap_layer_indices(|other| match other.cmp(&index) {
             Ordering::Less => Some(other),
             Ordering::Equal => None,
             Ordering::Greater => Some(other - 1),
         });
         let layer = self.layers.remove(index);
-        self.retire(layer.panels);
+        self.release_panels(layer.panels);
         self.update_frame_slider(cx);
-        self.sync_from_first();
+        self.synchronize_cursors_from_first();
         cx.notify();
     }
 
@@ -58,10 +62,10 @@ impl Viewer {
         if from >= count || to >= count || from == to {
             return;
         }
-        self.reindex(|index| Some(moved(index, from, to)));
+        self.remap_layer_indices(|index| Some(index_after_move(index, from, to)));
         let layer = self.layers.remove(from);
         self.layers.insert(to, layer);
-        self.sync_from_first();
+        self.synchronize_cursors_from_first();
         cx.notify();
     }
 
@@ -71,7 +75,7 @@ impl Viewer {
         };
         let path = layer.display.volume().path().to_path_buf();
         let load_id = self.loader.enqueue(path);
-        self.reloads.insert(load_id, layer.load_id);
+        self.pending_reloads.insert(load_id, layer.load_id);
     }
 
     pub(super) fn add_layer(
@@ -83,41 +87,47 @@ impl Viewer {
         if let Err(error) = display.set_frame(self.frame) {
             eprintln!("Illuminator: {}: {error}", display.name());
         }
-        if let Some(colormap) = self.load_colormaps.remove(&load_id) {
+        if let Some(colormap) = self.requested_colormaps.remove(&load_id) {
             display.colormap = colormap;
         }
-        if self.label_loads.remove(&load_id)
+        if self.label_map_loads.remove(&load_id)
             && let Err(error) = display.set_label_mode(true)
         {
             eprintln!("Illuminator: {}: {error}", display.name());
         }
-        let at = self
+        let insertion_index = self
             .layers
             .iter()
             .rposition(|layer| layer.load_id < load_id)
             .map_or(0, |index| index + 1);
-        self.reindex(|index| Some(if index >= at { index + 1 } else { index }));
+        self.remap_layer_indices(|index| {
+            Some(if index >= insertion_index {
+                index + 1
+            } else {
+                index
+            })
+        });
         let layer = Layer::new(load_id, display, cx);
-        self.layers.insert(at, layer);
+        self.layers.insert(insertion_index, layer);
     }
 
     pub(super) fn replace_layer(&mut self, load_id: u64, mut display: VolumeDisplay) {
         let Some(layer) = self.layer_by_id(load_id) else {
             return;
         };
-        let kept = display.keep_settings_of(&layer.display);
+        let settings_copied = display.copy_settings_from(&layer.display);
         let name = display.name();
         layer.display = display;
         layer.histogram = FrameHistogram::default();
         let panels = std::mem::take(&mut layer.panels);
-        self.retire(panels);
-        if let Err(error) = kept {
+        self.release_panels(panels);
+        if let Err(error) = settings_copied {
             eprintln!("Illuminator: {name}: {error}");
         }
     }
 
-    pub(super) fn retire(&mut self, panels: Vec<Panel>) {
-        self.retired.extend(
+    pub(super) fn release_panels(&mut self, panels: Vec<Panel>) {
+        self.released_images.extend(
             panels
                 .into_iter()
                 .filter_map(|panel| panel.image)
@@ -125,25 +135,25 @@ impl Viewer {
         );
     }
 
-    pub(super) fn auto_window(&mut self, index: usize, cx: &mut Context<Self>) {
+    pub(super) fn fit_window(&mut self, index: usize, cx: &mut Context<Self>) {
         let layer = &mut self.layers[index];
-        let counted = layer
+        let current_histogram = layer
             .current_histogram()
-            .filter(|histogram| histogram.max > histogram.min);
-        match counted {
+            .filter(|histogram| histogram.maximum > histogram.minimum);
+        match current_histogram {
             Some(histogram) => {
-                let (low, high) = (histogram.min, histogram.max);
+                let (low, high) = (histogram.minimum, histogram.maximum);
                 layer.display.set_window_limits(low, high);
                 cx.notify();
             }
-            None => self.change(index, VolumeDisplay::auto_window, cx),
+            None => self.modify_display(index, VolumeDisplay::fit_window_to_range, cx),
         }
     }
 
     /// Moves one window edge to the value under the mouse in the histogram
-    pub(super) fn drag_edge(
+    pub(super) fn drag_window_edge(
         &mut self,
-        drag: DragEdge,
+        drag: WindowEdgeDrag,
         position: Point<Pixels>,
         bounds: Bounds<Pixels>,
         cx: &mut Context<Self>,
@@ -159,12 +169,17 @@ impl Viewer {
         }
         let fraction =
             f64::from(f32::from(position.x - bounds.left()) / f32::from(bounds.size.width));
-        let value = histogram.min + fraction * (histogram.max - histogram.min);
+        let value = histogram.minimum + fraction * (histogram.maximum - histogram.minimum);
         self.move_window_edge(drag, value, cx);
     }
 
     /// Moves the window of a layer to `value`.
-    pub(super) fn move_window_edge(&mut self, drag: DragEdge, value: f64, cx: &mut Context<Self>) {
+    pub(super) fn move_window_edge(
+        &mut self,
+        drag: WindowEdgeDrag,
+        value: f64,
+        cx: &mut Context<Self>,
+    ) {
         let Some(layer) = self.layer_by_id(drag.load_id) else {
             return;
         };
@@ -176,13 +191,18 @@ impl Viewer {
         cx.notify();
     }
 
-    pub(super) fn apply_preset(&mut self, load_id: u64, preset: Preset, cx: &mut Context<Self>) {
+    pub(super) fn apply_window_preset(
+        &mut self,
+        load_id: u64,
+        preset: WindowPreset,
+        cx: &mut Context<Self>,
+    ) {
         let Some(layer) = self.layer_by_id(load_id) else {
             return;
         };
         let limits = match preset {
-            Preset::Limits(low, high) => Some((low, high)),
-            Preset::Percentiles(low, high) => layer
+            WindowPreset::Limits(low, high) => Some((low, high)),
+            WindowPreset::Percentiles(low, high) => layer
                 .current_histogram()
                 .map(|histogram| (histogram.percentile(low), histogram.percentile(high))),
         };
@@ -192,11 +212,11 @@ impl Viewer {
         }
     }
 
-    pub(super) fn set_suv(&mut self, index: usize, on: bool, cx: &mut Context<Self>) {
+    pub(super) fn set_suv_enabled(&mut self, index: usize, enabled: bool, cx: &mut Context<Self>) {
         let layer = &mut self.layers[index];
-        let scale = match (on, layer.suv) {
+        let scale = match (enabled, layer.suv) {
             (false, _) => 1.0,
-            (true, Some(suv)) => match suv.inputs.factor() {
+            (true, Some(suv)) => match suv.inputs.conversion_factor() {
                 Ok(factor) => factor,
                 Err(error) => {
                     eprintln!("Illuminator: {error}");
@@ -217,19 +237,24 @@ impl Viewer {
             .iter()
             .position(|layer| layer.load_id == load_id)
         {
-            self.layers[index].suv = Some(Suv {
+            self.layers[index].suv = Some(SuvSettings {
                 inputs,
                 source: "manual entry",
             });
-            self.set_suv(index, true, cx);
+            self.set_suv_enabled(index, true, cx);
         }
     }
 
-    pub(super) fn edit_suv(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn open_suv_form(
+        &mut self,
+        index: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let layer = &self.layers[index];
-        let (load_id, known) = (layer.load_id, layer.suv.map(|suv| suv.inputs));
+        let (load_id, existing_inputs) = (layer.load_id, layer.suv.map(|suv| suv.inputs));
         let viewer = cx.entity().downgrade();
-        let form = cx.new(|cx| SuvForm::new(load_id, known, viewer, window, cx));
+        let form = cx.new(|cx| SuvForm::new(load_id, existing_inputs, viewer, window, cx));
         window.open_dialog(cx, move |dialog, _, _| {
             dialog.title("SUV").width(px(420.0)).child(form.clone())
         });
@@ -255,7 +280,7 @@ impl Viewer {
             .filter(|&(other, layer)| other != index && !layer.display.label_mode())
             .map(|(_, layer)| snapshot(layer))
             .collect();
-        let view = cx.new(|cx| StatisticsView::new(labels, candidates, cx));
+        let view = cx.new(|cx| LabelStatisticsView::new(labels, candidates, cx));
         window.open_dialog(cx, move |dialog, _, _| {
             dialog
                 .title("Label statistics")
@@ -266,7 +291,7 @@ impl Viewer {
 }
 
 /// Where the item at `index` ends up when the item at `from` is moved to `to`
-fn moved(index: usize, from: usize, to: usize) -> usize {
+fn index_after_move(index: usize, from: usize, to: usize) -> usize {
     if index == from {
         to
     } else if from < index && index <= to {
@@ -280,13 +305,13 @@ fn moved(index: usize, from: usize, to: usize) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use super::moved;
+    use super::index_after_move;
 
     #[test]
     fn moving_shifts_the_items_between() {
         let after = |from, to| {
             (0..4)
-                .map(|index| moved(index, from, to))
+                .map(|index| index_after_move(index, from, to))
                 .collect::<Vec<_>>()
         };
         assert_eq!(after(0, 2), [2, 0, 1, 3]);

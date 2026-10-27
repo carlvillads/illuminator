@@ -6,10 +6,10 @@ use serde_json::Value;
 use std::path::{Path, PathBuf};
 
 use crate::error::{Error, Result};
-use crate::meta::strip_extension;
+use crate::metadata::strip_extension;
 
 /// Tracer half-life in minutes from <https://www.nndc.bnl.gov/nudat3/indx_dec.jsp>
-pub const TRACERS: [(&str, f64); 9] = [
+pub const TRACER_HALF_LIVES: [(&str, f64); 9] = [
     ("F-18", 109.77),
     ("C-11", 20.3634),
     ("Ga-68", 67.71),
@@ -85,7 +85,7 @@ pub struct SuvInputs {
 }
 
 impl SuvInputs {
-    pub fn factor(&self) -> Result<f64> {
+    pub fn conversion_factor(&self) -> Result<f64> {
         let positive = [
             self.weight_kg,
             self.dose_mbq,
@@ -103,13 +103,13 @@ impl SuvInputs {
         }
         let decay = 0.5f64.powf(self.minutes_after_injection / self.half_life_minutes);
         let dose_bq = self.dose_mbq * 1e6 * decay;
-        Ok(self.bq_ml_per_unit * self.mass_kg()? * 1000.0 / dose_bq)
+        Ok(self.bq_ml_per_unit * self.normalization_mass_kg()? * 1000.0 / dose_bq)
     }
 
     /// BW or LBM depending on normalization.
-    pub fn mass_kg(&self) -> Result<f64> {
+    pub fn normalization_mass_kg(&self) -> Result<f64> {
         let weight = self.weight_kg;
-        let body = || match (self.height_cm, self.biological_sex) {
+        let height_and_sex = || match (self.height_cm, self.biological_sex) {
             (Some(height), Some(biological_sex)) if height.is_finite() && height > 0.0 => {
                 Ok((height, biological_sex))
             }
@@ -117,10 +117,10 @@ impl SuvInputs {
                 "Lean body mass needs a height and biological sex",
             )),
         };
-        let lbm = match self.normalization {
+        let lean_body_mass = match self.normalization {
             Normalization::BodyWeight => return Ok(weight),
             Normalization::LbmJames => {
-                let (height, biological_sex) = body()?;
+                let (height, biological_sex) = height_and_sex()?;
                 let (a, b) = match biological_sex {
                     BiologicalSex::Female => (1.07, 148.0),
                     BiologicalSex::Male => (1.1, 128.0),
@@ -128,7 +128,7 @@ impl SuvInputs {
                 a * weight - b * (weight / height).powi(2)
             }
             Normalization::LbmJanma => {
-                let (height, biological_sex) = body()?;
+                let (height, biological_sex) = height_and_sex()?;
                 let bmi = weight / (height / 100.0).powi(2);
                 let (a, b) = match biological_sex {
                     BiologicalSex::Female => (8.78e3, 244.0),
@@ -138,8 +138,8 @@ impl SuvInputs {
             }
         };
         // the LBMJames parabola goes negative at a very high BMI
-        if lbm > 0.0 {
-            Ok(lbm)
+        if lean_body_mass > 0.0 {
+            Ok(lean_body_mass)
         } else {
             Err(Error::invalid(
                 "Lean body mass isn't positive at this weight and height",
@@ -169,7 +169,9 @@ impl SuvInputs {
             .ok_or_else(|| missing("body weight"))?;
         let dose_mbq = match sidecar.number("InjectedRadioactivity") {
             Some(dose) => {
-                dose * mbq_per(sidecar.text("InjectedRadioactivityUnits").unwrap_or("MBq"))?
+                dose * megabecquerels_factor(
+                    sidecar.text("InjectedRadioactivityUnits").unwrap_or("MBq"),
+                )?
             }
             None => sidecar
                 .number("RadionuclideTotalDose")
@@ -184,7 +186,7 @@ impl SuvInputs {
                 .ok_or_else(|| missing("known tracer or half-life"))?,
         };
         let bq_ml_per_unit = match sidecar.text("Units") {
-            Some(unit) => bq_ml_per(unit)?,
+            Some(unit) => becquerels_per_ml_factor(unit)?,
             None => 1.0,
         };
         let height_cm = sidecar
@@ -199,14 +201,14 @@ impl SuvInputs {
             biological_sex,
             normalization: Normalization::BodyWeight,
             dose_mbq,
-            minutes_after_injection: decay_minutes(&sidecar)?,
+            minutes_after_injection: minutes_since_injection(&sidecar)?,
             half_life_minutes,
             bq_ml_per_unit,
         })
     }
 }
 
-fn decay_minutes(sidecar: &Sidecar) -> Result<f64> {
+fn minutes_since_injection(sidecar: &Sidecar) -> Result<f64> {
     let uncorrected =
         || Error::invalid("The image isn't decay corrected, so SUV depends on the frame time");
     if sidecar.flag("ImageDecayCorrected") == Some(false) {
@@ -225,10 +227,10 @@ fn decay_minutes(sidecar: &Sidecar) -> Result<f64> {
             let start = sidecar
                 .text("AcquisitionTime")
                 .or(sidecar.text("SeriesTime"))
-                .and_then(clock_seconds);
+                .and_then(seconds_since_midnight);
             let injection = sidecar
                 .text("RadiopharmaceuticalStartTime")
-                .and_then(clock_seconds);
+                .and_then(seconds_since_midnight);
             if let (Some(start), Some(injection)) = (start, injection) {
                 // a scan after midnight
                 let seconds = (start - injection).rem_euclid(24.0 * 3600.0);
@@ -259,7 +261,7 @@ impl Sidecar {
     }
 }
 
-fn clock_seconds(text: &str) -> Option<f64> {
+fn seconds_since_midnight(text: &str) -> Option<f64> {
     let digits: String = text.chars().filter(|c| *c != ':').collect();
     let (whole, fraction) = digits.split_once('.').unwrap_or((&digits, ""));
     if whole.len() != 6 || !whole.bytes().all(|b| b.is_ascii_digit()) {
@@ -271,7 +273,7 @@ fn clock_seconds(text: &str) -> Option<f64> {
 }
 
 /// How many Bq/mL one unit of the image is
-fn bq_ml_per(unit: &str) -> Result<f64> {
+fn becquerels_per_ml_factor(unit: &str) -> Result<f64> {
     match unit.to_ascii_lowercase().replace('/', "").as_str() {
         "bqml" => Ok(1.0),
         "kbqml" => Ok(1e3),
@@ -282,7 +284,7 @@ fn bq_ml_per(unit: &str) -> Result<f64> {
     }
 }
 
-fn mbq_per(unit: &str) -> Result<f64> {
+fn megabecquerels_factor(unit: &str) -> Result<f64> {
     match unit.to_ascii_lowercase().as_str() {
         "bq" => Ok(1e-6),
         "kbq" => Ok(1e-3),
@@ -305,7 +307,7 @@ pub(crate) fn half_life_of(name: &str) -> Option<f64> {
         (letters, digits)
     };
     let wanted = key(name);
-    TRACERS
+    TRACER_HALF_LIVES
         .iter()
         .find(|(tracer, _)| key(tracer) == wanted)
         .map(|&(_, minutes)| minutes)
@@ -339,20 +341,20 @@ mod tests {
             half_life_minutes: 109.77,
             bq_ml_per_unit: 1.0,
         };
-        assert!(close(inputs.factor().unwrap() * 5000.0, 1.0));
+        assert!(close(inputs.conversion_factor().unwrap() * 5000.0, 1.0));
         let later = SuvInputs {
             minutes_after_injection: 109.77,
             ..inputs
         };
         assert!(close(
-            later.factor().unwrap(),
-            2.0 * inputs.factor().unwrap()
+            later.conversion_factor().unwrap(),
+            2.0 * inputs.conversion_factor().unwrap()
         ));
         let weightless = SuvInputs {
             weight_kg: 0.0,
             ..inputs
         };
-        assert!(weightless.factor().is_err());
+        assert!(weightless.conversion_factor().is_err());
     }
 
     #[test]

@@ -2,12 +2,12 @@
 //! Polynomial approximation by Matt Zucker: <https://www.shadertoy.com/view/WlfXRN>
 //! of <https://github.com/BIDS/colormap/blob/master/colormaps.py>
 
-use super::{Cmap, Ramp};
+use super::{ColormapDefinition, Ramp};
 
-pub(crate) const PLASMA: Cmap = Cmap {
+pub(crate) const PLASMA: ColormapDefinition = ColormapDefinition {
     name: "Plasma",
     id: "plasma",
-    desc: "Perceptually uniform. Dark blue through magenta to yellow",
+    description: "Perceptually uniform. Dark blue through magenta to yellow",
     ramp: Ramp::Polynomial(&[
         [0.05873234392399702, 0.02333670892565664, 0.5433401826748754],
         [2.176514634195958, 0.2383834171260182, 0.7539604599784036],

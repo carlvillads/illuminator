@@ -1,12 +1,12 @@
 //! Bone colormap.
 //! Based on the colormap of the same name from matplotlib <https://github.com/matplotlib/matplotlib>.
 
-use super::{Cmap, Ramp};
+use super::{ColormapDefinition, Ramp};
 
-pub(crate) const BONE: Cmap = Cmap {
+pub(crate) const BONE: ColormapDefinition = ColormapDefinition {
     name: "Bone",
     id: "bone",
-    desc: "Grayscale with blue tint",
+    description: "Grayscale with blue tint",
     ramp: Ramp::Stops(&[
         (0.0, [0.0, 0.0, 0.0]),
         (0.365079, [0.319444, 0.319444, 0.444444]),

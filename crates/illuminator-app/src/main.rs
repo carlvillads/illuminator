@@ -6,9 +6,9 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod assets;
-mod cli;
+mod command_line;
 mod label_statistics;
-mod picture;
+mod screenshot;
 mod shortcuts;
 mod single_instance;
 mod suv_form;
@@ -23,25 +23,30 @@ use illuminator_core::cache::VolumeCache;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use crate::cli::Cli;
-use crate::single_instance::Instance;
+use crate::command_line::CommandLine;
+use crate::single_instance::InstanceRole;
 use crate::viewer::Viewer;
 
 fn main() {
     attach_console();
-    let cli = Cli::read();
-    let (opened, opened_files) = mpsc::unbounded::<Vec<PathBuf>>();
-    if cli.only_files() {
+    let command_line = CommandLine::read();
+    let (open_request_sender, open_request_reciever) = mpsc::unbounded::<Vec<PathBuf>>();
+    if command_line.has_only_files() {
         // if only plain files are passed, add them to the current open instance of Illuminator
-        match single_instance::claim(&single_instance::socket_name(), &cli.files) {
-            Ok(Instance::Forwarded) => return,
-            Ok(Instance::First(listener)) => single_instance::listen(listener, opened.clone()),
+        match single_instance::claim_primary_instance(
+            &single_instance::socket_name(),
+            &command_line.files,
+        ) {
+            Ok(InstanceRole::Forwarded) => return,
+            Ok(InstanceRole::Primary(listener)) => {
+                single_instance::listen_for_open_requests(listener, open_request_sender.clone())
+            }
             Err(error) => eprintln!("Illuminator: cannot listen for other instances: {error}"),
         }
     }
-    let (width, height) = cli.size.unwrap_or((1440.0, 900.0));
+    let (width, height) = command_line.size.unwrap_or((1440.0, 900.0));
 
-    let cache = match VolumeCache::from_env() {
+    let cache = match VolumeCache::from_environment() {
         Ok(cache) => Arc::new(cache),
         Err(error) => {
             eprintln!("Illuminator: {error}");
@@ -49,7 +54,7 @@ fn main() {
         }
     };
 
-    let app = gpui_kit::application().with_assets(assets::AppAssets);
+    let app = gpui_kit::application().with_assets(assets::ApplicationAssets);
     app.on_open_urls(move |urls| {
         let mut paths = Vec::new();
         for url in urls {
@@ -61,12 +66,12 @@ fn main() {
                 None => eprintln!("Illuminator: cannot open {url}"),
             }
         }
-        let _ = opened.unbounded_send(paths);
+        let _ = open_request_sender.unbounded_send(paths);
     });
     app.run(move |cx| {
         gpui_kit::init(cx);
-        theme::init(cx);
-        shortcuts::bind(cx);
+        theme::initialize(cx);
+        shortcuts::bind_keys(cx);
         // quit when the last window closes
         cx.on_window_closed(|cx, _| {
             if cx.windows().is_empty() {
@@ -89,7 +94,7 @@ fn main() {
             ..Default::default()
         };
         gpui_kit::open_window(options, cx, |window, cx| {
-            cx.new(|cx| Viewer::new(cache, cli, opened_files, window, cx))
+            cx.new(|cx| Viewer::new(cache, command_line, open_request_reciever, window, cx))
         })
         .expect("cannot open main window");
         cx.activate(true);

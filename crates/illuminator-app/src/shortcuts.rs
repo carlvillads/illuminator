@@ -16,50 +16,50 @@ actions!(
         /// Moves the active panel one slice back
         PreviousSlice,
         /// Moves the active panel 10 slices forward
-        NextSlices,
+        NextSlicePage,
         /// Moves the active panel 10 slices back
-        PreviousSlices,
+        PreviousSlicePage,
         /// Shows the next frame of 4D volumes
         NextFrame,
         /// Shows the previous frame of 4D volumes
         PreviousFrame,
         /// Plays the frames of 4D volumes
-        TogglePlay,
+        TogglePlayback,
         /// Puts the active volume's cursor back on its center voxel
         CenterCursor,
         /// Fits the active volume's contrast to its current frame
-        AutoContrast,
+        FitWindow,
         /// Switches the active volume to the next colormap
         NextColormap,
         /// Turns segmentation display on or off for the active volume
-        ToggleSegmentation,
+        ToggleLabelMode,
         /// Draws the selected label map as outlines, or filled
         ToggleOutline,
         /// Switches between overlaid layers and side by side columns
         ToggleOverlay,
         /// Shows or hides the selected layer
-        ToggleLayer,
+        ToggleLayerVisibility,
         /// Selects the next layer
         NextLayer,
         /// Selects the previous layer
         PreviousLayer,
         /// Turns crosshair sync on or off
-        ToggleSync,
+        ToggleCursorSynchronization,
         /// Switches between radiological and neurological orientation
         ToggleRadiological,
         /// Shows or hides the crosshairs
         ToggleCrosshair,
         /// Shows or hides the text in the view corners
-        ToggleInfo,
+        CycleCornerText,
         /// Shows MIPs
         ToggleMip,
         ShowHelp,
-        /// Copies a picture of the views to the clipboard
-        CopyImage,
-        /// Saves a picture of the views as an image
-        SaveImage,
+        /// Copies a screenshot of the views to the clipboard
+        CopyScreenshot,
+        /// Saves a screenshot of the views as an image
+        SaveScreenshot,
         /// All layers overlaid in three planes
-        LayoutOrtho,
+        LayoutOrthogonal,
         /// One column per layer three planes each
         LayoutCompare,
         /// One plane one cell per layer
@@ -81,89 +81,92 @@ actions!(
         /// Zooms the active view's plane out
         ZoomOut,
         /// Shows every plane whole again
-        ZoomReset,
+        ResetZoom,
         /// Opens histogram window
-        ShowHistogram,
+        ShowHistogramWindow,
         /// Opens time series window
-        ShowTimeSeries,
+        ShowTimeSeriesWindow,
         /// Switches between the dark and the Platinum theme
         ToggleTheme,
     ]
 );
 
-pub const CONTEXT: &str = "Viewer";
-pub const PLOT_CONTEXT: &str = "Plot";
-const NOT_TYPING: &str = "Viewer && !Input";
-pub const SECONDARY: &str = if cfg!(target_os = "macos") {
+pub const VIEWER_CONTEXT: &str = "Viewer";
+pub const PLOT_WINDOW_CONTEXT: &str = "Plot";
+const VIEWER_OUTSIDE_TEXT_INPUT: &str = "Viewer && !Input";
+pub const SECONDARY_MODIFIER: &str = if cfg!(target_os = "macos") {
     "\u{2318}"
 } else {
     "Ctrl+"
 };
-const ALT: &str = if cfg!(target_os = "macos") {
+const ALT_MODIFIER: &str = if cfg!(target_os = "macos") {
     "\u{2325}"
 } else {
     "Alt+"
 };
 
-pub fn bind(cx: &mut App) {
-    let viewer = Some(CONTEXT);
-    let keys = Some(NOT_TYPING);
+pub fn bind_keys(cx: &mut App) {
+    let viewer_context = Some(VIEWER_CONTEXT);
+    let outside_text_input = Some(VIEWER_OUTSIDE_TEXT_INPUT);
     cx.bind_keys([
         KeyBinding::new("secondary-q", Quit, None),
-        KeyBinding::new("secondary-w", CloseWindow, viewer),
-        KeyBinding::new("secondary-w", CloseWindow, Some(PLOT_CONTEXT)),
-        KeyBinding::new("secondary-o", OpenFiles, viewer),
-        KeyBinding::new("secondary-c", CopyImage, viewer),
-        KeyBinding::new("secondary-e", SaveImage, viewer),
-        KeyBinding::new("up", NextSlice, keys),
-        KeyBinding::new("down", PreviousSlice, keys),
-        KeyBinding::new("shift-up", NextSlices, keys),
-        KeyBinding::new("shift-down", PreviousSlices, keys),
-        KeyBinding::new("right", NextFrame, keys),
-        KeyBinding::new("left", PreviousFrame, keys),
-        KeyBinding::new("space", TogglePlay, keys),
-        KeyBinding::new("h", CenterCursor, keys),
-        KeyBinding::new("a", AutoContrast, keys),
-        KeyBinding::new("m", NextColormap, keys),
-        KeyBinding::new("l", ToggleSegmentation, keys),
-        KeyBinding::new("s", ToggleSync, keys),
-        KeyBinding::new("r", ToggleRadiological, keys),
-        KeyBinding::new("c", ToggleCrosshair, keys),
-        KeyBinding::new("i", ToggleInfo, keys),
-        KeyBinding::new("p", ToggleMip, keys),
-        KeyBinding::new("?", ShowHelp, keys),
-        KeyBinding::new("g", ShowHistogram, keys),
-        KeyBinding::new("shift-g", ShowTimeSeries, keys),
-        KeyBinding::new("t", ToggleTheme, keys),
-        KeyBinding::new("o", ToggleOverlay, keys),
-        KeyBinding::new("shift-l", ToggleOutline, keys),
-        KeyBinding::new("v", ToggleLayer, keys),
-        KeyBinding::new("j", NextLayer, keys),
-        KeyBinding::new("k", PreviousLayer, keys),
-        KeyBinding::new("1", LayoutOrtho, keys),
-        KeyBinding::new("2", LayoutCompare, keys),
-        KeyBinding::new("3", LayoutGrid, keys),
-        KeyBinding::new("4", LayoutSingle, keys),
-        KeyBinding::new("5", LayoutLightbox, keys),
-        KeyBinding::new("secondary-backspace", CloseLayer, viewer),
-        KeyBinding::new("secondary-r", ReloadLayer, viewer),
-        KeyBinding::new("alt-k", MoveLayerUp, viewer),
-        KeyBinding::new("alt-j", MoveLayerDown, viewer),
-        KeyBinding::new("=", ZoomIn, keys),
-        KeyBinding::new("-", ZoomOut, keys),
-        KeyBinding::new("0", ZoomReset, keys),
+        KeyBinding::new("secondary-w", CloseWindow, viewer_context),
+        KeyBinding::new("secondary-w", CloseWindow, Some(PLOT_WINDOW_CONTEXT)),
+        KeyBinding::new("secondary-o", OpenFiles, viewer_context),
+        KeyBinding::new("secondary-c", CopyScreenshot, viewer_context),
+        KeyBinding::new("secondary-e", SaveScreenshot, viewer_context),
+        KeyBinding::new("up", NextSlice, outside_text_input),
+        KeyBinding::new("down", PreviousSlice, outside_text_input),
+        KeyBinding::new("shift-up", NextSlicePage, outside_text_input),
+        KeyBinding::new("shift-down", PreviousSlicePage, outside_text_input),
+        KeyBinding::new("right", NextFrame, outside_text_input),
+        KeyBinding::new("left", PreviousFrame, outside_text_input),
+        KeyBinding::new("space", TogglePlayback, outside_text_input),
+        KeyBinding::new("h", CenterCursor, outside_text_input),
+        KeyBinding::new("a", FitWindow, outside_text_input),
+        KeyBinding::new("m", NextColormap, outside_text_input),
+        KeyBinding::new("l", ToggleLabelMode, outside_text_input),
+        KeyBinding::new("s", ToggleCursorSynchronization, outside_text_input),
+        KeyBinding::new("r", ToggleRadiological, outside_text_input),
+        KeyBinding::new("c", ToggleCrosshair, outside_text_input),
+        KeyBinding::new("i", CycleCornerText, outside_text_input),
+        KeyBinding::new("p", ToggleMip, outside_text_input),
+        KeyBinding::new("?", ShowHelp, outside_text_input),
+        KeyBinding::new("g", ShowHistogramWindow, outside_text_input),
+        KeyBinding::new("shift-g", ShowTimeSeriesWindow, outside_text_input),
+        KeyBinding::new("t", ToggleTheme, outside_text_input),
+        KeyBinding::new("o", ToggleOverlay, outside_text_input),
+        KeyBinding::new("shift-l", ToggleOutline, outside_text_input),
+        KeyBinding::new("v", ToggleLayerVisibility, outside_text_input),
+        KeyBinding::new("j", NextLayer, outside_text_input),
+        KeyBinding::new("k", PreviousLayer, outside_text_input),
+        KeyBinding::new("1", LayoutOrthogonal, outside_text_input),
+        KeyBinding::new("2", LayoutCompare, outside_text_input),
+        KeyBinding::new("3", LayoutGrid, outside_text_input),
+        KeyBinding::new("4", LayoutSingle, outside_text_input),
+        KeyBinding::new("5", LayoutLightbox, outside_text_input),
+        KeyBinding::new("secondary-backspace", CloseLayer, viewer_context),
+        KeyBinding::new("secondary-r", ReloadLayer, viewer_context),
+        KeyBinding::new("alt-k", MoveLayerUp, viewer_context),
+        KeyBinding::new("alt-j", MoveLayerDown, viewer_context),
+        KeyBinding::new("=", ZoomIn, outside_text_input),
+        KeyBinding::new("-", ZoomOut, outside_text_input),
+        KeyBinding::new("0", ResetZoom, outside_text_input),
     ]);
     cx.on_action(|_: &Quit, cx| cx.quit());
-    cx.on_action(|_: &ToggleTheme, cx| crate::theme::toggle(cx));
+    cx.on_action(|_: &ToggleTheme, cx| crate::theme::toggle_theme_mode(cx));
 }
 
-pub fn help() -> Vec<(String, &'static str)> {
+pub fn help_entries() -> Vec<(String, &'static str)> {
     vec![
         ("Click+drag".into(), "Move cursor"),
         ("Right+drag".into(), "Layer Window/level"),
         ("Scroll".into(), "Change slice"),
-        (format!("{SECONDARY}scroll"), "Zoom at the mouse"),
-        (format!("Middle+drag/{ALT}drag"), "Pan a zoomed view"),
+        (format!("{SECONDARY_MODIFIER}scroll"), "Zoom at the mouse"),
+        (
+            format!("Middle+drag/{ALT_MODIFIER}drag"),
+            "Pan a zoomed view",
+        ),
         ("=/-/0".into(), "Zoom in/out/reset"),
         ("Doubleclick".into(), "Focus/unfocus view"),
         ("Hover".into(), "Values in the status bar"),
@@ -186,15 +189,18 @@ pub fn help() -> Vec<(String, &'static str)> {
         ("Shift+G".into(), "Time series window"),
         ("T".into(), "Switch theme"),
         ("?".into(), "This list"),
-        (format!("{ALT}J/K"), "Move layer down/up"),
-        (format!("{SECONDARY}R"), "Reload layer from disk"),
-        (format!("{SECONDARY}\u{232b}"), "Close layer"),
+        (format!("{ALT_MODIFIER}J/K"), "Move layer down/up"),
+        (format!("{SECONDARY_MODIFIER}R"), "Reload layer from disk"),
+        (format!("{SECONDARY_MODIFIER}\u{232b}"), "Close layer"),
         ("Drag layer".into(), "Reorder layers"),
-        (format!("{SECONDARY}O"), "Open volumes"),
+        (format!("{SECONDARY_MODIFIER}O"), "Open volumes"),
         (
-            format!("{SECONDARY}C/{SECONDARY}E"),
+            format!("{SECONDARY_MODIFIER}C/{SECONDARY_MODIFIER}E"),
             "Copy/save the view as an image",
         ),
-        (format!("{SECONDARY}W/{SECONDARY}Q"), "Close window/quit"),
+        (
+            format!("{SECONDARY_MODIFIER}W/{SECONDARY_MODIFIER}Q"),
+            "Close window/quit",
+        ),
     ]
 }

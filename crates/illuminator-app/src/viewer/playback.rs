@@ -22,15 +22,15 @@ impl Viewer {
         self.go_to_frame(self.frame.saturating_add_signed(delta), window, cx);
     }
 
-    pub(super) fn play(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn start_playback(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.frame_slider.is_none() {
             return;
         }
-        let interval = Duration::from_secs_f64(1.0 / f64::from(self.time_fps));
-        self.time_playing = Some(cx.spawn_in(window, async move |this, cx| {
+        let interval = Duration::from_secs_f64(1.0 / f64::from(self.playback_frames_per_second));
+        self.playback_task = Some(cx.spawn_in(window, async move |this, cx| {
             loop {
                 let Ok((next, volumes)) =
-                    this.update_in(cx, |viewer, window, _| viewer.next_movie_frame(window))
+                    this.update_in(cx, |viewer, window, _| viewer.next_playback_frame(window))
                 else {
                     break; // viewer is gone here
                 };
@@ -62,19 +62,24 @@ impl Viewer {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.time_fps = rate;
-        if self.time_playing.is_some() {
-            self.play(window, cx);
+        self.playback_frames_per_second = rate;
+        if self.playback_task.is_some() {
+            self.start_playback(window, cx);
         }
         cx.notify();
     }
 
-    pub(super) fn pick_frame(&mut self, x: Pixels, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(index) = self.selected() else {
+    pub(super) fn select_frame_at(
+        &mut self,
+        x: Pixels,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(index) = self.selected_layer() else {
             return;
         };
         let bounds = self.time_curve_bounds.get();
-        let frames = self.layers[index].display.volume().meta().timepoints();
+        let frames = self.layers[index].display.volume().metadata().timepoints();
         if bounds.size.width <= px(0.0) || frames < 2 {
             return;
         }
@@ -87,7 +92,7 @@ impl Viewer {
         let frames = self
             .layers
             .iter()
-            .map(|layer| layer.display.volume().meta().timepoints())
+            .map(|layer| layer.display.volume().metadata().timepoints())
             .max()
             .unwrap_or(1);
         let last_frame = frames - 1;
@@ -95,7 +100,7 @@ impl Viewer {
         if last_frame == 0 {
             // no 4d layers left
             self.frame_slider = None;
-            self.time_playing = None;
+            self.playback_task = None;
             return;
         }
         if self
@@ -142,39 +147,39 @@ impl Viewer {
         }
     }
 
-    fn next_movie_frame(&self, window: &Window) -> (usize, Vec<Arc<Volume>>) {
+    fn next_playback_frame(&self, window: &Window) -> (usize, Vec<Arc<Volume>>) {
         let last = self.frame_slider.as_ref().map_or(0, |s| s.last_frame);
         let next = if self.frame >= last {
             0
         } else {
             self.frame + 1
         };
-        let mut shown_sagittally: Vec<usize> = self
+        let mut sagittal_layer_indices: Vec<usize> = self
             .views(window)
             .iter()
             .filter(|view| view.axis == ViewPlane::Sagittal)
             .flat_map(|view| view.layers.clone())
             .collect();
-        shown_sagittally.sort_unstable();
-        shown_sagittally.dedup();
-        let volumes = shown_sagittally
+        sagittal_layer_indices.sort_unstable();
+        sagittal_layer_indices.dedup();
+        let volumes = sagittal_layer_indices
             .into_iter()
             .map(|index| &self.layers[index])
-            .filter(|layer| layer.visible && layer.display.volume().meta().timepoints() > 1)
+            .filter(|layer| layer.visible && layer.display.volume().metadata().timepoints() > 1)
             .map(|layer| layer.display.shared_volume())
             .collect();
         (next, volumes)
     }
 
-    fn frame_drawn(&self, window: &Window) -> bool {
+    fn is_frame_drawn(&self, window: &Window) -> bool {
         self.views(window).iter().all(|view| {
             view.layers.clone().all(|index| {
                 let layer = &self.layers[index];
                 !layer.visible
                     || layer.panel(view.slot).is_some_and(|panel| {
-                        !panel.rendering
+                        !panel.render_pending
                             && panel.image.as_ref().is_some_and(|image| {
-                                image.key.sample.frame == layer.display.frame()
+                                image.key.sample_key.frame == layer.display.frame()
                             })
                     })
             })
@@ -199,7 +204,7 @@ async fn wait_until_drawn(viewer: &WeakEntity<Viewer>, cx: &mut AsyncWindowConte
         cx.background_executor()
             .timer(Duration::from_millis(5))
             .await;
-        match viewer.update_in(cx, |viewer, window, _| viewer.frame_drawn(window)) {
+        match viewer.update_in(cx, |viewer, window, _| viewer.is_frame_drawn(window)) {
             Ok(true) => return true,
             Ok(false) => continue,
             Err(_) => return false,

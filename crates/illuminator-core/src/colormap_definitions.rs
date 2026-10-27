@@ -34,10 +34,10 @@ pub(crate) use turbo::TURBO;
 pub(crate) use vik::VIK;
 pub(crate) use viridis::VIRIDIS;
 
-pub(crate) struct Cmap {
+pub(crate) struct ColormapDefinition {
     pub(crate) name: &'static str,
     pub(crate) id: &'static str,
-    pub(crate) desc: &'static str,
+    pub(crate) description: &'static str,
     pub(crate) ramp: Ramp,
 }
 
@@ -60,18 +60,18 @@ impl Ramp {
                     .partition_point(|&(at, _)| at < t)
                     .min(stops.len() - 2);
                 let ((from, low), (to, high)) = (stops[i], stops[i + 1]);
-                mix(low, high, (t - from) / (to - from))
+                interpolate(low, high, (t - from) / (to - from))
             }
             Self::Table(colors) => {
                 let x = t * (colors.len() - 1) as f64;
                 let i = (x as usize).min(colors.len() - 2);
-                mix(colors[i], colors[i + 1], x - i as f64)
+                interpolate(colors[i], colors[i + 1], x - i as f64)
             }
         }
     }
 }
 
 // The color `f` of the way from `low` to `high`
-fn mix(low: [f64; 3], high: [f64; 3], f: f64) -> [f64; 3] {
+fn interpolate(low: [f64; 3], high: [f64; 3], f: f64) -> [f64; 3] {
     std::array::from_fn(|channel| low[channel] + f * (high[channel] - low[channel]))
 }

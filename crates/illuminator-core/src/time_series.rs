@@ -1,4 +1,4 @@
-//! Values of an area in every frame of a 4D volume.
+//! Values of a region in every frame of a 4D volume.
 
 use rayon::prelude::*;
 use std::fmt::Write;
@@ -6,39 +6,44 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::error::Result;
 use crate::geometry::VolumeGeometry;
-use crate::histogram::{LabelMask, quoted};
+use crate::histogram::{LabelMask, quote_csv_field};
 use crate::progress::Progress;
-use crate::stats::{RunningStats, Summary};
+use crate::statistics::{RunningStatistics, ValueSummary};
 use crate::volume::Volume;
 use crate::voxel;
 
-pub enum Area<'a> {
-    Cube { center: [usize; 3], radius: usize },
-    Labels(LabelMask<'a>),
+pub enum RegionOfInterest<'a> {
+    Cube {
+        center: [usize; 3],
+        half_width: usize,
+    },
+    LabelMask(LabelMask<'a>),
 }
 
-/// Summary of the values inside `area` in each frame of `volume`
+/// Summary of the values inside `region` in each frame of `volume`
 pub fn time_series(
     volume: &Volume,
     geometry: &VolumeGeometry,
-    area: Area,
+    region: RegionOfInterest,
     progress: &Progress,
-) -> Result<Vec<Option<Summary>>> {
-    let voxels = area_voxels(volume, geometry, area, &progress.part(0.0, 0.2))?;
-    let meta = volume.meta();
-    let frames = meta.timepoints();
-    let passes = progress.part(0.2, 0.8);
+) -> Result<Vec<Option<ValueSummary>>> {
+    let voxels = region_voxel_indices(volume, geometry, region, &progress.subrange(0.0, 0.2))?;
+    let metadata = volume.metadata();
+    let frames = metadata.timepoints();
+    let passes = progress.subrange(0.2, 0.8);
     let done = AtomicUsize::new(0);
     (0..frames)
         .into_par_iter()
-        .map(|t| {
-            let bytes = volume.frame(t);
-            let mut values = RunningStats::default();
+        .map(|frame| {
+            let bytes = volume.frame_bytes(frame);
+            let mut values = RunningStatistics::default();
             for &index in &voxels {
-                let Some(raw) = voxel::read_value(bytes, index, meta.datatype, meta.endian) else {
+                let Some(raw) =
+                    voxel::read_value(bytes, index, metadata.data_type, metadata.endian)
+                else {
                     continue;
                 };
-                let value = meta.scaling.apply(raw);
+                let value = metadata.scaling.apply(raw);
                 if value.is_finite() {
                     values.push(value);
                 }
@@ -50,20 +55,20 @@ pub fn time_series(
         .collect()
 }
 
-/// Indices of voxels of `volume` inside `area`
-fn area_voxels(
+/// Indices of voxels of `volume` inside `region`
+fn region_voxel_indices(
     volume: &Volume,
     geometry: &VolumeGeometry,
-    area: Area,
+    region: RegionOfInterest,
     progress: &Progress,
 ) -> Result<Vec<usize>> {
-    let meta = volume.meta();
-    let (width, height, depth) = (meta.width(), meta.height(), meta.depth());
+    let metadata = volume.metadata();
+    let (width, height, depth) = (metadata.width(), metadata.height(), metadata.depth());
     let index = |x: usize, y: usize, z: usize| x + width * (y + height * z);
-    match area {
-        Area::Cube {
+    match region {
+        RegionOfInterest::Cube {
             center: [x, y, z],
-            radius,
+            half_width: radius,
         } => {
             // cut off at the edges of the volume
             let span = |center: usize, size: usize| {
@@ -77,7 +82,7 @@ fn area_voxels(
             }
             Ok(voxels)
         }
-        Area::Labels(mask) => {
+        RegionOfInterest::LabelMask(mask) => {
             let done = AtomicUsize::new(0);
             let slices: Vec<Vec<usize>> = (0..depth)
                 .into_par_iter()
@@ -91,7 +96,7 @@ fn area_voxels(
                         }
                     }
                     let done = done.fetch_add(1, Ordering::Relaxed) + 1;
-                    progress.report(done as f64 / depth as f64, "Finding area")?;
+                    progress.report(done as f64 / depth as f64, "Finding region")?;
                     Ok(inside)
                 })
                 .collect::<Result<_>>()?;
@@ -101,16 +106,20 @@ fn area_voxels(
 }
 
 pub fn to_csv<'a>(
-    series: impl IntoIterator<Item = (usize, &'a str, &'a [Option<Summary>])>,
+    series: impl IntoIterator<Item = (usize, &'a str, &'a [Option<ValueSummary>])>,
 ) -> String {
     let mut csv = String::from("layer,name,frame,voxels,mean,std,min,max\n");
     for (layer, name, frames) in series {
-        let name = quoted(name);
+        let name = quote_csv_field(name);
         for (frame, summary) in frames.iter().enumerate() {
             let _ = write!(csv, "{layer},{name},{}", frame + 1);
             match summary {
                 Some(v) => {
-                    let _ = writeln!(csv, ",{},{},{},{},{}", v.count, v.mean, v.std, v.min, v.max);
+                    let _ = writeln!(
+                        csv,
+                        ",{},{},{},{},{}",
+                        v.count, v.mean, v.standard_deviation, v.minimum, v.maximum
+                    );
                 }
                 None => csv.push_str(",0,,,,\n"),
             }
@@ -123,10 +132,10 @@ pub fn to_csv<'a>(
 mod tests {
     use super::*;
     use crate::geometry::GeometryOptions;
-    use crate::stats::Source;
-    use crate::test_util::{Fixture, load};
+    use crate::statistics::VolumeFrame;
+    use crate::test_fixtures::{Fixture, write_and_load};
 
-    fn assert_means(series: &[Option<Summary>], expected: &[f64]) {
+    fn assert_means(series: &[Option<ValueSummary>], expected: &[f64]) {
         assert_eq!(series.len(), expected.len());
         for (summary, expected) in series.iter().zip(expected) {
             assert!((summary.unwrap().mean - expected).abs() < 1e-9);
@@ -134,24 +143,25 @@ mod tests {
     }
 
     #[test]
-    fn measures_an_area_in_every_frame() {
-        let dir = tempfile::tempdir().unwrap();
+    fn measures_a_region_in_every_frame() {
+        let directory = tempfile::tempdir().unwrap();
         let movie = Fixture {
-            dims: vec![4, 3, 4, 2],
+            dimensions: vec![4, 3, 4, 2],
             ..Fixture::default()
         };
-        let volume = load(&dir, &movie, "movie.nii");
+        let volume = write_and_load(&directory, &movie, "movie.nii");
         let geometry = volume.geometry(GeometryOptions::default()).unwrap();
-        let measure = |area| time_series(&volume, &geometry, area, &Progress::default()).unwrap();
+        let measure =
+            |region| time_series(&volume, &geometry, region, &Progress::default()).unwrap();
 
-        let voxel = measure(Area::Cube {
+        let voxel = measure(RegionOfInterest::Cube {
             center: [1, 0, 0],
-            radius: 0,
+            half_width: 0,
         });
         assert_means(&voxel, &volume.time_curve([1, 0, 0]).unwrap());
-        let corner = measure(Area::Cube {
+        let corner = measure(RegionOfInterest::Cube {
             center: [0, 0, 0],
-            radius: 1,
+            half_width: 1,
         });
         assert_means(&corner, &[8.5, 56.5]);
         assert_eq!(corner[0].unwrap().count, 8);
@@ -161,11 +171,11 @@ mod tests {
             value: |i| (i % 3) as f64,
             ..Fixture::default()
         };
-        let label_volume = load(&dir, &labels, "labels.nii");
+        let label_volume = write_and_load(&directory, &labels, "labels.nii");
         let label_geometry = label_volume.geometry(GeometryOptions::default()).unwrap();
         let on = |label| {
-            Area::Labels(LabelMask {
-                labels: Source {
+            RegionOfInterest::LabelMask(LabelMask {
+                label_volume: VolumeFrame {
                     volume: &label_volume,
                     geometry: &label_geometry,
                     frame: 0,

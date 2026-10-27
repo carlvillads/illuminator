@@ -6,15 +6,15 @@ use gpui_kit::component::menu::DropdownMenu;
 use gpui_kit::{Context, IntoElement, SharedString, px};
 use illuminator_core::geometry::VolumeGeometry;
 use illuminator_core::histogram::LabelMask;
-use illuminator_core::stats::Source;
+use illuminator_core::statistics::VolumeFrame;
 use illuminator_core::volume::Volume;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use crate::ui::choice_items;
+use crate::ui::add_choice_items;
 
 use super::super::Layer;
-use super::{Plot, PlotWindow, Snapshot};
+use super::{Plot, PlotWindow, ViewerSnapshot};
 
 /// The labels of a label map layer to measure inside of or one of them
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -33,12 +33,15 @@ pub(in crate::viewer) struct RegionKey {
 }
 
 impl RegionKey {
-    /// The area of this region in its label map to measure
-    pub(in crate::viewer) fn resolve(&self, label_maps: &[LabelMap]) -> Option<LabelArea> {
+    /// The voxels of this region in its label map to measure
+    pub(in crate::viewer) fn resolve(
+        &self,
+        label_maps: &[LabelMap],
+    ) -> Option<ResolvedLabelRegion> {
         let map = label_maps
             .iter()
             .find(|map| map.volume.id() == self.volume)?;
-        Some(LabelArea {
+        Some(ResolvedLabelRegion {
             volume: Arc::clone(&map.volume),
             geometry: self.geometry.clone(),
             frame: self.frame,
@@ -48,17 +51,17 @@ impl RegionKey {
 }
 
 /// A label region together with the label map volume it is in
-pub(in crate::viewer) struct LabelArea {
+pub(in crate::viewer) struct ResolvedLabelRegion {
     volume: Arc<Volume>,
     geometry: VolumeGeometry,
     frame: usize,
     label: Option<i64>,
 }
 
-impl LabelArea {
+impl ResolvedLabelRegion {
     pub(in crate::viewer) fn mask(&self) -> LabelMask<'_> {
         LabelMask {
-            labels: Source {
+            label_volume: VolumeFrame {
                 volume: &self.volume,
                 geometry: &self.geometry,
                 frame: self.frame,
@@ -107,10 +110,10 @@ impl<P: Plot> PlotWindow<P> {
         })
     }
 
-    /// Goes back to the plots own area when the regions label map was closed or isn't a label map anymore
-    pub(super) fn forget_closed_region(
+    /// Goes back to the plot's own region when the region's label map was closed or isn't a label map anymore
+    pub(super) fn clear_closed_region(
         &mut self,
-        snapshot: &Snapshot<P::Key>,
+        snapshot: &ViewerSnapshot<P::Key>,
         cx: &mut Context<Self>,
     ) {
         if let Some(region) = self.region
@@ -124,14 +127,14 @@ impl<P: Plot> PlotWindow<P> {
         }
     }
 
-    /// A menu button choosing between the plot's own `areas` and the labels of the label maps.
+    /// A menu button choosing between the plot's `own_regions` and the labels of the label maps.
     pub(in crate::viewer) fn region_button<T: Copy + 'static>(
         &self,
         caption: &str,
-        own: String,
-        areas: Vec<(String, T)>,
-        choose: impl Fn(&mut P, T) + 'static,
-        snapshot: &Snapshot<P::Key>,
+        own_region_label: String,
+        own_regions: Vec<(String, T)>,
+        on_choose: impl Fn(&mut P, T) + 'static,
+        snapshot: &ViewerSnapshot<P::Key>,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let this = cx.entity().downgrade();
@@ -141,7 +144,7 @@ impl<P: Plot> PlotWindow<P> {
             .map(|map| (map.name.clone(), map.load_id, map.labels.clone()))
             .collect();
         let chosen = match self.region {
-            None => own,
+            None => own_region_label,
             Some(region) => {
                 let name = maps
                     .iter()
@@ -153,7 +156,7 @@ impl<P: Plot> PlotWindow<P> {
                 }
             }
         };
-        let choose = Rc::new(choose);
+        let choose = Rc::new(on_choose);
         Button::new("region")
             .xsmall()
             .outline()
@@ -161,12 +164,12 @@ impl<P: Plot> PlotWindow<P> {
             .dropdown_caret(true)
             .dropdown_menu(move |menu, _, _| {
                 let choose = Rc::clone(&choose);
-                let mut menu = choice_items(
+                let mut menu = add_choice_items(
                     menu.max_h(px(360.0)).scrollable(true),
                     &this,
-                    areas.clone(),
-                    move |this: &mut Self, area, _, cx| {
-                        choose(&mut this.plot, area);
+                    own_regions.clone(),
+                    move |this: &mut Self, region, _, cx| {
+                        choose(&mut this.plot, region);
                         this.region = None;
                         cx.notify();
                     },
@@ -180,7 +183,7 @@ impl<P: Plot> PlotWindow<P> {
                     let choices = all
                         .chain(each)
                         .map(|(text, label)| (text, LabelRegion { load_id, label }));
-                    menu = choice_items(
+                    menu = add_choice_items(
                         menu.separator().label(name.clone()),
                         &this,
                         choices,

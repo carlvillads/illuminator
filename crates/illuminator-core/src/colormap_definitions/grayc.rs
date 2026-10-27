@@ -2,12 +2,12 @@
 //! From Scientific colour maps 8 by Fabio Crameri <https://www.fabiocrameri.ch/colourmaps>.
 //! Copyright (c) 2023 Fabio Crameri, MIT License. doi:10.5281/zenodo.1243862
 
-use super::{Cmap, Ramp};
+use super::{ColormapDefinition, Ramp};
 
-pub(crate) const GRAYC: Cmap = Cmap {
+pub(crate) const GRAYC: ColormapDefinition = ColormapDefinition {
     name: "grayC",
     id: "grayc",
-    desc: "Grayscale but linear in perceived lightness",
+    description: "Grayscale but linear in perceived lightness",
     ramp: Ramp::Table(&[
         [0.000000, 0.000000, 0.000000],
         [0.006724, 0.006725, 0.006725],

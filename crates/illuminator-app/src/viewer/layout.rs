@@ -4,9 +4,9 @@ use gpui_kit::{Context, Pixels, Point, Size, Window, point, size};
 use illuminator_core::geometry::ViewPlane;
 use illuminator_core::slicer::fit_size;
 
-use super::{Hit, Layout, Panel, View, Viewer, view_area};
+use super::{Layout, Panel, View, ViewHit, Viewer, view_area};
 
-const LIGHTBOX_SLOTS: usize = 6;
+const LIGHTBOX_SLOT_OFFSET: usize = 6;
 
 impl Viewer {
     /// Every view on screen in reading order
@@ -16,8 +16,8 @@ impl Viewer {
             return Vec::new();
         }
         let area = view_area(window).size;
-        let mut ortho: Vec<Cell> = ViewPlane::ALL
-            .map(|axis| Cell {
+        let mut orthogonal_cells: Vec<ViewCell> = ViewPlane::ALL
+            .map(|axis| ViewCell {
                 base: 0,
                 axis,
                 mip: false,
@@ -25,7 +25,7 @@ impl Viewer {
             })
             .to_vec();
         if self.show_mip {
-            ortho.push(Cell {
+            orthogonal_cells.push(ViewCell {
                 base: 0,
                 axis: ViewPlane::Coronal,
                 mip: true,
@@ -33,19 +33,19 @@ impl Viewer {
             });
         }
         let mip = self.show_mip;
-        let cells: Vec<Cell> = match self.layout {
-            Layout::Ortho => ortho,
-            Layout::Compare => ortho
+        let cells: Vec<ViewCell> = match self.layout {
+            Layout::Orthogonal => orthogonal_cells,
+            Layout::Compare => orthogonal_cells
                 .iter()
                 .flat_map(|&cell| {
-                    (0..count).map(move |index| Cell {
+                    (0..count).map(move |index| ViewCell {
                         base: index,
                         ..cell
                     })
                 })
                 .collect(),
             Layout::Grid(axis) => (0..count)
-                .map(|index| Cell {
+                .map(|index| ViewCell {
                     base: index,
                     axis,
                     mip,
@@ -54,7 +54,7 @@ impl Viewer {
                 .collect(),
             Layout::Single { axis, layer } => {
                 let base = layer.filter(|&index| index < count).unwrap_or(0);
-                vec![Cell {
+                vec![ViewCell {
                     base,
                     axis,
                     mip,
@@ -66,7 +66,7 @@ impl Viewer {
                 let (columns, rows) = self.lightbox_grid;
                 lightbox_slices(current, slices, self.lightbox_step, columns * rows)
                     .into_iter()
-                    .map(|slice| Cell {
+                    .map(|slice| ViewCell {
                         base: 0,
                         axis,
                         mip: false,
@@ -80,18 +80,18 @@ impl Viewer {
             Layout::Lightbox(_) => self.lightbox_grid,
             Layout::Compare => (count, cells.len().div_ceil(count)),
             _ => {
-                let columns = grid_columns(cells.len(), area);
+                let columns = optimal_grid_columns(cells.len(), area);
                 (columns, cells.len().div_ceil(columns))
             }
         };
         let cell_size = size(area.width / columns as f32, area.height / rows as f32);
         let scale = window.scale_factor();
-        let overlaid = self.layout.overlaid();
+        let overlaid = self.layout.is_overlaid();
         cells
             .into_iter()
             .enumerate()
             .map(|(n, cell)| {
-                let Cell {
+                let ViewCell {
                     base,
                     axis,
                     mip,
@@ -106,10 +106,10 @@ impl Viewer {
                     (cell_size.width * scale) as usize,
                     (cell_size.height * scale) as usize,
                 );
-                let whole = fit_size(&plane, width, height);
+                let full_size = fit_size(&plane, width, height);
                 let fit = (
-                    whole.0 as f64 / width.max(1) as f64,
-                    whole.1 as f64 / height.max(1) as f64,
+                    full_size.0 as f64 / width.max(1) as f64,
+                    full_size.1 as f64 / height.max(1) as f64,
                 );
                 let zoom = self.zoom[axis.index()];
                 let visible = zoom.visible(fit);
@@ -122,27 +122,28 @@ impl Viewer {
                     ),
                     size: cell_size,
                     axis,
-                    base,
+                    base_layer: base,
                     layers: if overlaid { 0..count } else { base..base + 1 },
                     image_pixels,
                     image_size: size(image_pixels.0 as f32 / scale, image_pixels.1 as f32 / scale),
                     zoom,
-                    fit,
-                    visible,
+                    fit_scale: fit,
+                    visible_region: visible,
                     mip,
                     slot: match slice {
-                        Some(_) => LIGHTBOX_SLOTS + n,
+                        Some(_) => LIGHTBOX_SLOT_OFFSET + n,
                         None => axis.index() + if mip { 3 } else { 0 },
                     },
                     plane,
-                    slice,
-                    current: slice.is_none_or(|slice| slice == display.slice_position(axis).0),
+                    lightbox_slice: slice,
+                    shows_cursor_slice: slice
+                        .is_none_or(|slice| slice == display.slice_position(axis).0),
                 }
             })
             .collect()
     }
 
-    pub(super) fn hit(&self, position: Point<Pixels>, window: &Window) -> Option<Hit> {
+    pub(super) fn hit(&self, position: Point<Pixels>, window: &Window) -> Option<ViewHit> {
         let origin = view_area(window).origin;
         let (x, y) = (
             f32::from(position.x) - origin.x,
@@ -162,16 +163,16 @@ impl Viewer {
                 f64::from((local_x - offset.x) / view.image_size.width),
                 f64::from(1.0 - (local_y - offset.y) / view.image_size.height),
             );
-            let (s, t) = view.visible.to_plane(in_view);
-            Some(Hit {
-                base: view.base,
+            let (s, t) = view.visible_region.view_to_plane(in_view);
+            Some(ViewHit {
+                base: view.base_layer,
                 axis: view.axis,
                 mip: view.mip,
                 s,
                 t,
-                in_view,
+                view_position: in_view,
                 image_size: view.image_size,
-                fit: view.fit,
+                fit: view.fit_scale,
                 plane: view.plane,
             })
         })
@@ -180,13 +181,13 @@ impl Viewer {
     pub(super) fn set_lightbox_grid(&mut self, grid: (usize, usize), cx: &mut Context<Self>) {
         self.lightbox_grid = grid;
         // images of views that are gone
-        let keep = LIGHTBOX_SLOTS + grid.0 * grid.1;
+        let keep = LIGHTBOX_SLOT_OFFSET + grid.0 * grid.1;
         let unused: Vec<Panel> = self
             .layers
             .iter_mut()
             .flat_map(|layer| layer.panels.split_off(keep.min(layer.panels.len())))
             .collect();
-        self.retire(unused);
+        self.release_panels(unused);
         cx.notify();
     }
 
@@ -198,7 +199,7 @@ impl Viewer {
     }
 
     /// Steps per Shift+arrow
-    pub(super) fn page_steps(&self) -> f64 {
+    pub(super) fn slice_page_length(&self) -> f64 {
         match self.layout {
             Layout::Lightbox(_) => (self.lightbox_grid.0 * self.lightbox_grid.1) as f64,
             _ => 10.0,
@@ -208,7 +209,7 @@ impl Viewer {
 
 /// What one view on screen shows before it gets a place and a size.
 #[derive(Clone, Copy)]
-struct Cell {
+struct ViewCell {
     /// The layer whose plane the view shows
     base: usize,
     axis: ViewPlane,
@@ -228,19 +229,19 @@ fn lightbox_slices(current: usize, count: usize, step: usize, cells: usize) -> V
         .collect()
 }
 
-fn grid_columns(count: usize, area: Size<f32>) -> usize {
-    let side = |columns: usize| {
+fn optimal_grid_columns(count: usize, area: Size<f32>) -> usize {
+    let cell_side_length = |columns: usize| {
         let rows = count.div_ceil(columns);
         (area.width / columns as f32).min(area.height / rows as f32)
     };
     (1..=count.max(1))
-        .max_by(|&a, &b| side(a).total_cmp(&side(b)))
+        .max_by(|&a, &b| cell_side_length(a).total_cmp(&cell_side_length(b)))
         .unwrap_or(1)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{grid_columns, lightbox_slices, size};
+    use super::{lightbox_slices, optimal_grid_columns, size};
 
     #[test]
     fn lightbox_pages_hold_the_cursor() {
@@ -255,9 +256,9 @@ mod tests {
     #[test]
     fn grids_make_cells_as_large_as_possible() {
         let laptop = size(1120.0, 840.0);
-        assert_eq!(grid_columns(1, laptop), 1);
-        assert_eq!(grid_columns(3, laptop), 2);
-        assert_eq!(grid_columns(4, laptop), 2);
-        assert_eq!(grid_columns(3, size(1600.0, 500.0)), 3);
+        assert_eq!(optimal_grid_columns(1, laptop), 1);
+        assert_eq!(optimal_grid_columns(3, laptop), 2);
+        assert_eq!(optimal_grid_columns(4, laptop), 2);
+        assert_eq!(optimal_grid_columns(3, size(1600.0, 500.0)), 3);
     }
 }

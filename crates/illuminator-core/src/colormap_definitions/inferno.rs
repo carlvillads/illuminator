@@ -2,12 +2,12 @@
 //! Polynomial approximation by Matt Zucker: <https://www.shadertoy.com/view/WlfXRN>
 //! of <https://github.com/BIDS/colormap/blob/master/colormaps.py>
 
-use super::{Cmap, Ramp};
+use super::{ColormapDefinition, Ramp};
 
-pub(crate) const INFERNO: Cmap = Cmap {
+pub(crate) const INFERNO: ColormapDefinition = ColormapDefinition {
     name: "Inferno",
     id: "inferno",
-    desc: "Perceptually uniform. Black through purple and orange to yellow",
+    description: "Perceptually uniform. Black through purple and orange to yellow",
     ramp: Ramp::Polynomial(&[
         [
             0.0002189403691192265,

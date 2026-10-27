@@ -20,17 +20,17 @@ impl Drop for TestDirectory {
 
 /// A 2x1x1 volume with 2 frames
 pub(in crate::viewer) fn loaded_display() -> (TestDirectory, VolumeDisplay) {
-    static NEXT: AtomicU64 = AtomicU64::new(0);
+    static NEXT_DIRECTORY_ID: AtomicU64 = AtomicU64::new(0);
     let directory = TestDirectory(std::env::temp_dir().join(format!(
         "illuminator-plot-test-{}-{}",
         std::process::id(),
-        NEXT.fetch_add(1, Ordering::Relaxed)
+        NEXT_DIRECTORY_ID.fetch_add(1, Ordering::Relaxed)
     )));
     std::fs::create_dir(&directory.0).unwrap();
     let path = directory.0.join("values.nrrd");
-    let mut data = b"NRRD0004\ntype: uchar\ndimension: 4\nsizes: 2 1 1 2\nencoding: raw\nspace: RAS\nspace directions: (1,0,0) (0,1,0) (0,0,1) none\n\n".to_vec();
-    data.extend_from_slice(&[1, 2, 3, 4]);
-    std::fs::write(&path, data).unwrap();
+    let mut file_bytes = b"NRRD0004\ntype: uchar\ndimension: 4\nsizes: 2 1 1 2\nencoding: raw\nspace: RAS\nspace directions: (1,0,0) (0,1,0) (0,0,1) none\n\n".to_vec();
+    file_bytes.extend_from_slice(&[1, 2, 3, 4]);
+    std::fs::write(&path, file_bytes).unwrap();
     let (sender, receiver) = mpsc::channel();
     let cache = VolumeCache::new(directory.0.join("cache"), 1 << 20).unwrap();
     let loader = VolumeLoader::new(Arc::new(cache), move || {

@@ -2,12 +2,12 @@
 //! From Scientific colour maps 8 by Fabio Crameri <https://www.fabiocrameri.ch/colourmaps>.
 //! Copyright (c) 2023 Fabio Crameri, MIT License. doi:10.5281/zenodo.1243862
 
-use super::{Cmap, Ramp};
+use super::{ColormapDefinition, Ramp};
 
-pub(crate) const LIPARI: Cmap = Cmap {
+pub(crate) const LIPARI: ColormapDefinition = ColormapDefinition {
     name: "Lipari",
     id: "lipari",
-    desc: "Perceptually uniform. Dark navy through purple and red to beige",
+    description: "Perceptually uniform. Dark navy through purple and red to beige",
     ramp: Ramp::Table(&[
         [0.011370, 0.073240, 0.148284],
         [0.013965, 0.079062, 0.155370],

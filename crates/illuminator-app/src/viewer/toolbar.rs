@@ -10,15 +10,15 @@ use gpui_kit::{
 };
 use illuminator_core::geometry::ViewPlane;
 
-use crate::assets::Carbon;
+use crate::assets::ApplicationUiIcon;
 use crate::shortcuts::{
-    self, CopyImage, LayoutCompare, LayoutGrid, LayoutLightbox, LayoutOrtho, LayoutSingle,
-    SECONDARY, SaveImage, ShowHelp, ToggleCrosshair, ToggleInfo, ToggleMip, ToggleRadiological,
-    ToggleSync, ToggleTheme,
+    self, CopyScreenshot, CycleCornerText, LayoutCompare, LayoutGrid, LayoutLightbox,
+    LayoutOrthogonal, LayoutSingle, SECONDARY_MODIFIER, SaveScreenshot, ShowHelp, ToggleCrosshair,
+    ToggleCursorSynchronization, ToggleMip, ToggleRadiological, ToggleTheme,
 };
 use crate::theme;
 
-use super::{InfoLevel, Layout, TOOLBAR_HEIGHT, Viewer, window_frame};
+use super::{CornerTextLevel, Layout, TOOLBAR_HEIGHT, Viewer, window_insets};
 
 const BUTTON_PADDING: f32 = 0.5;
 const TOOLBAR_GAP: f32 = 0.25;
@@ -28,75 +28,75 @@ const SEPARATOR_WIDTH: f32 = 1.0;
 
 /// A toolbar button that shows its text or its icon
 #[derive(Clone, Copy)]
-struct Tool {
+struct ToolbarButton {
     id: &'static str,
-    icon: Carbon,
+    icon: ApplicationUiIcon,
     text: &'static str,
 }
 
-const ORTHO: Tool = Tool {
+const ORTHOGONAL: ToolbarButton = ToolbarButton {
     id: "layout-ortho",
-    icon: Carbon::Ortho,
+    icon: ApplicationUiIcon::Orthogonal,
     text: "Ortho",
 };
-const COMPARE: Tool = Tool {
+const COMPARE: ToolbarButton = ToolbarButton {
     id: "layout-compare",
-    icon: Carbon::Compare,
+    icon: ApplicationUiIcon::Compare,
     text: "Compare",
 };
-const GRID: Tool = Tool {
+const GRID: ToolbarButton = ToolbarButton {
     id: "layout-grid",
-    icon: Carbon::Grid,
+    icon: ApplicationUiIcon::Grid,
     text: "Grid",
 };
-const SINGLE: Tool = Tool {
+const SINGLE: ToolbarButton = ToolbarButton {
     id: "layout-single",
-    icon: Carbon::Single,
+    icon: ApplicationUiIcon::SingleView,
     text: "Single",
 };
-const LIGHTBOX: Tool = Tool {
+const LIGHTBOX: ToolbarButton = ToolbarButton {
     id: "layout-lightbox",
-    icon: Carbon::Lightbox,
+    icon: ApplicationUiIcon::Lightbox,
     text: "Lightbox",
 };
-const CROSSHAIR: Tool = Tool {
+const CROSSHAIR: ToolbarButton = ToolbarButton {
     id: "crosshair",
-    icon: Carbon::Crosshair,
+    icon: ApplicationUiIcon::Crosshair,
     text: "Crosshair",
 };
-const MIP: Tool = Tool {
+const MIP: ToolbarButton = ToolbarButton {
     id: "mip",
-    icon: Carbon::Mip,
+    icon: ApplicationUiIcon::Mip,
     text: "MIP",
 };
-const RADIOLOGICAL: Tool = Tool {
+const RADIOLOGICAL: ToolbarButton = ToolbarButton {
     id: "radiological",
-    icon: Carbon::Radiological,
+    icon: ApplicationUiIcon::Radiological,
     text: "Radiological",
 };
-const OVERLAY: Tool = Tool {
-    id: "info",
-    icon: Carbon::CornerText,
+const CORNER_TEXT: ToolbarButton = ToolbarButton {
+    id: "corner-text",
+    icon: ApplicationUiIcon::CornerText,
     text: "Overlay",
 };
-const SYNC: Tool = Tool {
+const CURSOR_SYNCHRONIZATION: ToolbarButton = ToolbarButton {
     id: "sync",
-    icon: Carbon::Link,
+    icon: ApplicationUiIcon::CursorSynchronization,
     text: "Sync",
 };
-const IMAGE: Tool = Tool {
+const SCREENSHOT: ToolbarButton = ToolbarButton {
     id: "image",
-    icon: Carbon::Camera,
+    icon: ApplicationUiIcon::Camera,
     text: "Screenshot",
 };
-const THEME: Tool = Tool {
+const THEME: ToolbarButton = ToolbarButton {
     id: "theme",
-    icon: Carbon::Theme,
+    icon: ApplicationUiIcon::Theme,
     text: "Theme",
 };
-const HELP: Tool = Tool {
+const HELP: ToolbarButton = ToolbarButton {
     id: "help",
-    icon: Carbon::Help,
+    icon: ApplicationUiIcon::Help,
     text: "Help",
 };
 
@@ -114,25 +114,27 @@ impl Viewer {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let theme = cx.theme();
-        let (border, background, edge) = (theme.border, theme.title_bar, theme.title_bar_border);
-        let planes = self.layout.axis().is_some();
-        let sync = !self.layout.overlaid();
-        let text = toolbar_fits_text(planes, sync, window, cx);
-        let context = Some(shortcuts::CONTEXT);
+        let (border, background, bottom_border) =
+            (theme.border, theme.title_bar, theme.title_bar_border);
+        let show_plane_buttons = self.layout.axis().is_some();
+        let show_synchronization_button = !self.layout.is_overlaid();
+        let show_labels =
+            toolbar_fits_text(show_plane_buttons, show_synchronization_button, window, cx);
+        let context = Some(shortcuts::VIEWER_CONTEXT);
         let axis = self.current_axis();
         let viewer = cx.entity().downgrade();
-        let tool_button = |tool: Tool| {
+        let toolbar_button = |tool: ToolbarButton| {
             let button = Button::new(tool.id).ghost().small();
-            if text {
+            if show_labels {
                 button.label(tool.text)
             } else {
                 button.icon(tool.icon)
             }
         };
         let layout_button =
-            |tool: Tool, tooltip: &'static str, action: &dyn Action, layout: Layout| {
-                tool_button(tool)
-                    .selected(self.layout.same_kind(layout))
+            |tool: ToolbarButton, tooltip: &'static str, action: &dyn Action, layout: Layout| {
+                toolbar_button(tool)
+                    .selected(self.layout.same_variant(layout))
                     .tooltip_with_action(tooltip, action, context)
                     .on_click(cx.listener(move |viewer, _, _, cx| viewer.set_layout(layout, cx)))
             };
@@ -156,12 +158,12 @@ impl Viewer {
             .gap_1()
             .bg(background)
             .border_b_1()
-            .border_color(edge)
+            .border_color(bottom_border)
             .child(layout_button(
-                ORTHO,
+                ORTHOGONAL,
                 "All layers three planes",
-                &LayoutOrtho,
-                Layout::Ortho,
+                &LayoutOrthogonal,
+                Layout::Orthogonal,
             ))
             .child(layout_button(
                 COMPARE,
@@ -187,12 +189,12 @@ impl Viewer {
                 &LayoutLightbox,
                 Layout::Lightbox(axis),
             ))
-            .when(planes, |bar| {
+            .when(show_plane_buttons, |bar| {
                 bar.child(separator()).children(PLANES.map(plane_button))
             })
             .child(separator())
             .child(
-                tool_button(CROSSHAIR)
+                toolbar_button(CROSSHAIR)
                     .selected(self.show_crosshair)
                     .tooltip_with_action("Crosshair", &ToggleCrosshair, context)
                     .on_click(cx.listener(|viewer, _, window, cx| {
@@ -200,7 +202,7 @@ impl Viewer {
                     })),
             )
             .child(
-                tool_button(MIP)
+                toolbar_button(MIP)
                     .selected(self.show_mip)
                     .tooltip_with_action("Maximum Intensity Projection (MIP)", &ToggleMip, context)
                     .on_click(cx.listener(|viewer, _, window, cx| {
@@ -208,7 +210,7 @@ impl Viewer {
                     })),
             )
             .child(
-                tool_button(RADIOLOGICAL)
+                toolbar_button(RADIOLOGICAL)
                     .selected(self.radiological)
                     .tooltip_with_action("Radiological convention", &ToggleRadiological, context)
                     .on_click(cx.listener(|viewer, _, window, cx| {
@@ -216,39 +218,39 @@ impl Viewer {
                     })),
             )
             .child(
-                tool_button(OVERLAY)
-                    .selected(self.info != InfoLevel::Off)
+                toolbar_button(CORNER_TEXT)
+                    .selected(self.corner_text != CornerTextLevel::Off)
                     .tooltip_with_action(
-                        format!("Text overlay: {}", self.info.name()),
-                        &ToggleInfo,
+                        format!("Text overlay: {}", self.corner_text.name()),
+                        &CycleCornerText,
                         context,
                     )
                     .on_click(cx.listener(|viewer, _, window, cx| {
-                        viewer.toggle_info(&ToggleInfo, window, cx);
+                        viewer.cycle_corner_text(&CycleCornerText, window, cx);
                     })),
             )
-            .when(sync, |bar| {
+            .when(show_synchronization_button, |bar| {
                 bar.child(
-                    tool_button(SYNC)
-                        .selected(self.sync)
-                        .tooltip_with_action("Sync cursors", &ToggleSync, context)
+                    toolbar_button(CURSOR_SYNCHRONIZATION)
+                        .selected(self.cursor_synchronization)
+                        .tooltip_with_action("Sync cursors", &ToggleCursorSynchronization, context)
                         .on_click(cx.listener(|viewer, _, window, cx| {
-                            viewer.toggle_sync(&ToggleSync, window, cx);
+                            viewer.toggle_curson_synchronization(&ToggleCursorSynchronization, window, cx);
                         })),
                 )
             })
             .child(div().flex_1())
             .child(
-                tool_button(IMAGE)
+                toolbar_button(SCREENSHOT)
                     .tooltip(format!(
-                        "Copy ({SECONDARY}C) or save ({SECONDARY}E) view as an image"
+                        "Copy ({SECONDARY_MODIFIER}C) or save ({SECONDARY_MODIFIER}E) view as an image"
                     ))
                     .dropdown_menu(move |menu, _, _| {
                         let (copy, save) = (viewer.clone(), viewer.clone());
                         menu.item(PopupMenuItem::new("Copy image").on_click(
                             move |_, window, cx| {
                                 let _ = copy.update(cx, |viewer, cx| {
-                                    viewer.copy_image(&CopyImage, window, cx);
+                                    viewer.copy_screenshot(&CopyScreenshot, window, cx);
                                 });
                             },
                         ))
@@ -256,7 +258,7 @@ impl Viewer {
                             PopupMenuItem::new("Save image\u{2026}").on_click(
                                 move |_, window, cx| {
                                     let _ = save.update(cx, |viewer, cx| {
-                                        viewer.save_image(&SaveImage, window, cx);
+                                        viewer.save_screenshot(&SaveScreenshot, window, cx);
                                     });
                                 },
                             ),
@@ -264,13 +266,13 @@ impl Viewer {
                     }),
             )
             .child(
-                tool_button(THEME)
+                toolbar_button(THEME)
                     .selected(!cx.theme().is_dark())
                     .tooltip_with_action("Switch theme", &ToggleTheme, context)
-                    .on_click(|_, _, cx| theme::toggle(cx)),
+                    .on_click(|_, _, cx| theme::toggle_theme_mode(cx)),
             )
             .child(
-                tool_button(HELP)
+                toolbar_button(HELP)
                     .tooltip_with_action("Shortcuts", &ShowHelp, context)
                     .on_click(cx.listener(|viewer, _, window, cx| {
                         viewer.show_help(&ShowHelp, window, cx);
@@ -280,9 +282,14 @@ impl Viewer {
 }
 
 /// Whether the window is wide enough for the text of every toolbar button
-fn toolbar_fits_text(planes: bool, sync: bool, window: &Window, cx: &App) -> bool {
-    let mut texts = [
-        ORTHO,
+fn toolbar_fits_text(
+    show_plane_buttons: bool,
+    show_synchronization_button: bool,
+    window: &Window,
+    cx: &App,
+) -> bool {
+    let mut labels = [
+        ORTHOGONAL,
         COMPARE,
         GRID,
         SINGLE,
@@ -290,24 +297,24 @@ fn toolbar_fits_text(planes: bool, sync: bool, window: &Window, cx: &App) -> boo
         CROSSHAIR,
         MIP,
         RADIOLOGICAL,
-        OVERLAY,
-        IMAGE,
+        CORNER_TEXT,
+        SCREENSHOT,
         THEME,
         HELP,
     ]
     .map(|tool| tool.text)
     .to_vec();
-    if sync {
-        texts.push(SYNC.text);
+    if show_synchronization_button {
+        labels.push(CURSOR_SYNCHRONIZATION.text);
     }
-    if planes {
-        texts.extend(PLANES.map(|(_, text, _)| text));
+    if show_plane_buttons {
+        labels.extend(PLANES.map(|(_, text, _)| text));
     }
-    let separators = 1 + usize::from(planes);
-    let children = texts.len() + separators + 1;
+    let separators = 1 + usize::from(show_plane_buttons);
+    let children = labels.len() + separators + 1;
     let font_size = rems(0.875).to_pixels(window.rem_size());
-    let font = theme::ui_font(cx);
-    let text_width: f32 = texts
+    let font = theme::interface_font(cx);
+    let text_width: f32 = labels
         .iter()
         .map(|&text| {
             let run = TextRun {
@@ -326,12 +333,12 @@ fn toolbar_fits_text(planes: bool, sync: bool, window: &Window, cx: &App) -> boo
         .sum();
 
     let rem = f32::from(window.rem_size());
-    let needed = text_width
-        + texts.len() as f32 * 2.0 * BUTTON_PADDING * rem
+    let required_width = text_width
+        + labels.len() as f32 * 2.0 * BUTTON_PADDING * rem
         + (children - 1) as f32 * TOOLBAR_GAP * rem
         + separators as f32 * (SEPARATOR_WIDTH + 2.0 * SEPARATOR_MARGIN * rem)
         + 2.0 * TOOLBAR_PADDING * rem;
-    let frame = window_frame(window);
+    let frame = window_insets(window);
     let available = f32::from(window.viewport_size().width) - frame.left - frame.right;
-    needed <= available
+    required_width <= available
 }
