@@ -30,7 +30,7 @@ use crate::viewer::Viewer;
 fn main() {
     attach_console();
     let command_line = CommandLine::read();
-    let (open_request_sender, open_request_reciever) = mpsc::unbounded::<Vec<PathBuf>>();
+    let (open_request_sender, open_request_receiver) = mpsc::unbounded::<Vec<PathBuf>>();
     if command_line.has_only_files() {
         // if only plain files are passed, add them to the current open instance of Illuminator
         match single_instance::claim_primary_instance(
@@ -101,7 +101,7 @@ fn main() {
             ..Default::default()
         };
         gpui_kit::open_window(options, cx, |window, cx| {
-            cx.new(|cx| Viewer::new(cache, command_line, open_request_reciever, window, cx))
+            cx.new(|cx| Viewer::new(cache, command_line, open_request_receiver, window, cx))
         })
         .expect("cannot open main window");
         cx.activate(true);
