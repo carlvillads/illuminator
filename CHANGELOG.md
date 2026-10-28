@@ -13,6 +13,7 @@ This format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 - Show the mean, minimum, or maximum of the area in each frame.
 - Click or drag on the time series to go to that frame.
 - Copy or save the time series as CSV with voxel count, mean, std. dev., minimum, and maximum of each frame.
+- Add Arch Linux build
 
 ### Changed
 
