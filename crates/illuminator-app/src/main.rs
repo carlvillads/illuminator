@@ -79,6 +79,13 @@ fn main() {
             }
         })
         .detach();
+        // delete uncompressed volumes when this session is ended
+        let session_cache = Arc::clone(&cache);
+        cx.on_app_quit(move |_| {
+            let cache = Arc::clone(&session_cache);
+            async move { cache.remove_session_entries() }
+        })
+        .detach();
 
         let options = WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
