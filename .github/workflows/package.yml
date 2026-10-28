@@ -66,11 +66,53 @@ jobs:
           cat /usr/share/applications/illuminate.desktop
           # software centers read the app's description from here
           test -f /usr/share/metainfo/io.github.carlvillads.illuminator.metainfo.xml
+  
+  arch:
+    name: Arch Linux package
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    steps:
+      - name: Install packaging tools
+        run: |
+          pacman -Syu --noconfirm --needed git namcap shared-mime-info desktop-file-utils
+          # makepkg refuses to run as root, so it builds as a user that may install dependencies
+          useradd --create-home builder
+          echo "builder ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/builder
+      - uses: actions/checkout@v4
+      - name: Prepare the PKGBUILD and source archive
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)
+          install -d -o builder /build
+          sed "s/^pkgver=.*/pkgver=$version/" crates/illuminator-app/packaging/arch/PKGBUILD > /build/PKGBUILD
+          git archive --format=tar.gz --prefix="illuminator-$version/" \
+            --output="/build/illuminator-$version.tar.gz" HEAD
+          chown -R builder /build
+      - name: Build and test the package
+        working-directory: /build
+        run: sudo -H -u builder makepkg --syncdeps --noconfirm
+      - name: Check and install the package
+        working-directory: /build
+        run: |
+          namcap PKGBUILD ./*.pkg.tar.zst | tee namcap.log
+          # namcap prints problems as warnings (W:) and errors (E:); only errors fail the job
+          if grep -q " E: " namcap.log; then exit 1; fi
+          pacman -U --noconfirm ./*.pkg.tar.zst
+          # every library the program links to must have come with the dependencies
+          if ldd /usr/bin/illuminate | grep "not found"; then exit 1; fi
+          illuminate --version
+          grep "nii.gz" /usr/share/mime/globs2
+          desktop-file-validate /usr/share/applications/illuminate.desktop
+      - uses: actions/upload-artifact@v4
+        with:
+          name: illuminator-arch
+          path: /build/*.pkg.tar.zst
+          if-no-files-found: error
 
   release:
     name: Draft release
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [windows, debian, debian-install]
+    needs: [windows, debian, debian-install, arch]
     runs-on: ubuntu-latest
     permissions:
       contents: write
