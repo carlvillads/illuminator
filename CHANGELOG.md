@@ -6,6 +6,8 @@ This format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-28
+
 ### Added
 
 - Add a time series window (<kbd>Shift</kbd>+<kbd>G</kbd>, and the button next to "Curve at cursor").
@@ -23,6 +25,7 @@ This format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 - Major refactor of variable and function names.
 - Change message when no volume is open.
 - Update cache handling to delete temporary files on app close.
+- Label statistics CSV is saved as `<name>_statistics.csv` instead of `<name>_stats.csv`
 
 ## [0.1.1] - 2026-10-22
 
@@ -53,6 +56,7 @@ This format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 ### Removed
 - Nothing
 
-[Unreleased]: https://github.com/carlvillads/illuminator/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/carlvillads/illuminator/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/carlvillads/illuminator/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/carlvillads/illuminator/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/carlvillads/illuminator/releases/tag/v0.1.0
