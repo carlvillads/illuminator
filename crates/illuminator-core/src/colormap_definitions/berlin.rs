@@ -2,12 +2,12 @@
 //! From Scientific colour maps 8 by Fabio Crameri <https://www.fabiocrameri.ch/colourmaps>.
 //! Copyright (c) 2023 Fabio Crameri, MIT License. doi:10.5281/zenodo.1243862
 
-use super::{Cmap, Ramp};
+use super::{ColormapDefinition, Ramp};
 
-pub(crate) const BERLIN: Cmap = Cmap {
+pub(crate) const BERLIN: ColormapDefinition = ColormapDefinition {
     name: "Berlin",
     id: "berlin",
-    desc: "Diverging. Light blue to light red through black",
+    description: "Diverging. Light blue to light red through black",
     ramp: Ramp::Table(&[
         [0.621082, 0.690182, 0.999507],
         [0.612157, 0.689228, 0.995374],

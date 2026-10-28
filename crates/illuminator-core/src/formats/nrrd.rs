@@ -10,14 +10,14 @@ use std::path::Path;
 
 use crate::error::{Error, Result};
 use crate::geometry::Point3D;
-use crate::meta::{DataFile, Format, Mat3x4, SpatialUnits, Transform, VolumeMeta};
-use crate::voxel::{self, DataType, Endian, Scaling};
+use crate::metadata::{DataFile, Format, Matrix3x4, SpatialUnits, Transform, VolumeMetadata};
+use crate::voxel::{self, ByteOrder, DataType, Scaling};
 
-const MAX_HDR_BYTES: u64 = 1 << 20;
+const MAXIMUM_HEADER_BYTES: u64 = 1 << 20;
 
-pub(crate) fn read(path: &Path) -> Result<VolumeMeta> {
+pub(crate) fn read(path: &Path) -> Result<VolumeMetadata> {
     let header = Header::read(path)?;
-    parse(&header, path).map_err(|error| match error {
+    convert_header(&header, path).map_err(|error| match error {
         Error::Invalid(reason) => Error::invalid(format!("{}: {reason}", path.display())),
         other => other,
     })
@@ -42,7 +42,7 @@ impl Header {
             line.clear();
             let read = file.read_until(b'\n', &mut line)?;
             length += read as u64;
-            if length > MAX_HDR_BYTES {
+            if length > MAXIMUM_HEADER_BYTES {
                 return Err(Error::invalid("NRRD header is too long"));
             }
             let text = String::from_utf8_lossy(&line);
@@ -69,24 +69,26 @@ impl Header {
     }
 }
 
-fn parse(header: &Header, path: &Path) -> Result<VolumeMeta> {
-    let datatype = data_type(header.required("type")?)?;
-    let dimension: usize = number(header.required("dimension")?)?;
+fn convert_header(header: &Header, path: &Path) -> Result<VolumeMetadata> {
+    let datatype = parse_data_type(header.required("type")?)?;
+    let dimension: usize = parse_number(header.required("dimension")?)?;
     if !(2..=4).contains(&dimension) {
         return Err(Error::invalid("Expected a 2D, 3D, or 4D image"));
     }
     let sizes = header
         .required("sizes")?
         .split_whitespace()
-        .map(number)
+        .map(parse_number)
         .collect::<Result<Vec<usize>>>()?;
     if sizes.len() != dimension || sizes.contains(&0) {
         return Err(Error::invalid("\"sizes\" doesn't match \"dimension\""));
     }
-    let dims: [usize; 4] = std::array::from_fn(|i| sizes.get(i).copied().unwrap_or(1));
-    let bytes = dims.iter().try_fold(datatype.size(), |count, &size| {
-        voxel::checked_mul(count, size)
-    })?;
+    let dimensions: [usize; 4] = std::array::from_fn(|i| sizes.get(i).copied().unwrap_or(1));
+    let bytes = dimensions
+        .iter()
+        .try_fold(datatype.bytes_per_voxel(), |count, &size| {
+            voxel::checked_multiply(count, size)
+        })?;
 
     let gzip = match header.required("encoding")? {
         "raw" => false,
@@ -98,15 +100,15 @@ fn parse(header: &Header, path: &Path) -> Result<VolumeMeta> {
         }
     };
     let endian = match header.field("endian") {
-        Some("little") => Endian::Little,
-        Some("big") => Endian::Big,
+        Some("little") => ByteOrder::LittleEndian,
+        Some("big") => ByteOrder::BigEndian,
         // one byte per voxel has no byte order
-        None if datatype.size() == 1 => Endian::Little,
+        None if datatype.bytes_per_voxel() == 1 => ByteOrder::LittleEndian,
         _ => return Err(Error::invalid("The header has no valid \"endian\" field")),
     };
 
     let (spacing, units, transform) = match header.field("space directions") {
-        Some(directions) => space(header, directions, dimension)?,
+        Some(directions) => parse_space(header, directions, dimension)?,
         None => {
             // without a space, the spacing has no known unit
             let spacings: Vec<f64> = header
@@ -142,45 +144,47 @@ fn parse(header: &Header, path: &Path) -> Result<VolumeMeta> {
                 .checked_sub(start + bytes as u64)
                 .ok_or_else(|| Error::invalid("The data file is too short"))?
         }
-        skip => number(skip)?,
+        skip => parse_number(skip)?,
     };
 
-    Ok(VolumeMeta {
+    Ok(VolumeMetadata {
         format: Format::Nrrd,
-        dims,
+        dimensions,
         spacing,
-        units,
+        spatial_units: units,
         transform,
-        datatype,
+        data_type: datatype,
         endian,
         scaling: Scaling::default(),
         display_range: None,
         data: DataFile {
             path: data_path,
-            start,
-            offset,
-            bytes,
-            gzip,
+            stream_offset: start,
+            voxel_offset: offset,
+            byte_count: bytes,
+            gzip_compressed: gzip,
         },
     })
 }
 
-fn space(
+fn parse_space(
     header: &Header,
     directions: &str,
     dimension: usize,
 ) -> Result<([f64; 3], SpatialUnits, Option<Transform>)> {
-    let directions = vectors(directions)?;
+    let directions = parse_vectors(directions)?;
     if directions.len() != dimension {
         return Err(Error::invalid(
             "\"space directions\" doesn't match \"dimension\"",
         ));
     }
-    let spatial = directions
+    let spatial_axis_count = directions
         .iter()
         .take_while(|vector| vector.is_some())
         .count();
-    if spatial != dimension.min(3) || directions[spatial..].iter().any(Option::is_some) {
+    if spatial_axis_count != dimension.min(3)
+        || directions[spatial_axis_count..].iter().any(Option::is_some)
+    {
         return Err(Error::invalid("Vector images aren't supported (yet)"));
     }
     let mut columns: Vec<[f64; 3]> = directions.into_iter().flatten().collect();
@@ -190,7 +194,7 @@ fn space(
         columns.push([normal.x / length, normal.y / length, normal.z / length]);
     }
 
-    let flip = match header.field("space") {
+    let axis_signs = match header.field("space") {
         Some("right-anterior-superior" | "RAS" | "scanner-xyz" | "3D-right-handed") => [1.0; 3],
         Some("left-posterior-superior" | "LPS") => [-1.0, -1.0, 1.0],
         Some("left-anterior-superior" | "LAS") => [-1.0, 1.0, 1.0],
@@ -203,16 +207,16 @@ fn space(
         None => return Err(Error::invalid("\"space directions\" without a \"space\"")),
     };
     let origin = match header.field("space origin") {
-        Some(text) => vectors(text)?
+        Some(text) => parse_vectors(text)?
             .first()
             .copied()
             .flatten()
             .ok_or_else(|| Error::invalid("Invalid \"space origin\""))?,
         None => [0.0; 3],
     };
-    let matrix: Mat3x4 = std::array::from_fn(|row| {
+    let matrix: Matrix3x4 = std::array::from_fn(|row| {
         let [x, y, z] = [0, 1, 2].map(|axis| columns[axis][row]);
-        [x, y, z, origin[row]].map(|value| value * flip[row])
+        [x, y, z, origin[row]].map(|value| value * axis_signs[row])
     });
     let spacing = [0, 1, 2].map(|axis| columns[axis].iter().map(|x| x * x).sum::<f64>().sqrt());
 
@@ -237,12 +241,12 @@ fn parse_spatial_units(text: &str) -> SpatialUnits {
     match first {
         "mm" => SpatialUnits::Millimeter,
         "m" => SpatialUnits::Meter,
-        "um" | "µm" => SpatialUnits::Micron,
+        "um" | "µm" => SpatialUnits::Micrometer,
         _ => SpatialUnits::Unknown,
     }
 }
 
-fn vectors(text: &str) -> Result<Vec<Option<[f64; 3]>>> {
+fn parse_vectors(text: &str) -> Result<Vec<Option<[f64; 3]>>> {
     let invalid = || Error::invalid(format!("Invalid vectors \"{text}\""));
     let mut vectors = Vec::new();
     let mut rest = text.trim();
@@ -268,13 +272,13 @@ fn vectors(text: &str) -> Result<Vec<Option<[f64; 3]>>> {
     Ok(vectors)
 }
 
-fn number<T: std::str::FromStr>(text: &str) -> Result<T> {
+fn parse_number<T: std::str::FromStr>(text: &str) -> Result<T> {
     text.trim()
         .parse()
         .map_err(|_| Error::invalid(format!("Invalid number \"{text}\"")))
 }
 
-fn data_type(name: &str) -> Result<DataType> {
+fn parse_data_type(name: &str) -> Result<DataType> {
     // NRRD allows several spellings of each type
     Ok(match name {
         "signed char" | "int8" | "int8_t" => DataType::I8,
@@ -333,8 +337,8 @@ space origin: (10,20,30)";
         format!("NRRD0004\n# made by a test\n{fields}\n\n").into_bytes()
     }
 
-    fn write(dir: &tempfile::TempDir, name: &str, parts: &[&[u8]]) -> std::path::PathBuf {
-        let path = dir.path().join(name);
+    fn write(directory: &tempfile::TempDir, name: &str, parts: &[&[u8]]) -> std::path::PathBuf {
+        let path = directory.path().join(name);
         std::fs::write(&path, parts.concat()).unwrap();
         path
     }
@@ -346,83 +350,96 @@ space origin: (10,20,30)";
 
     #[test]
     fn reads_attached_raw_data() {
-        let dir = tempfile::tempdir().unwrap();
+        let directory = tempfile::tempdir().unwrap();
         let fields = format!(
             "type: short\ndimension: 3\nsizes: 4 3 4\nencoding: raw\nendian: little\n{LPS}"
         );
         let head = header(&fields);
-        let path = write(&dir, "ct.nrrd", &[&head, &voxels(false)]);
+        let path = write(&directory, "ct.nrrd", &[&head, &voxels(false)]);
 
-        let meta = VolumeMeta::read(&path).unwrap();
-        assert_eq!(meta.format, Format::Nrrd);
-        assert_eq!(meta.dims, [4, 3, 4, 1]);
-        assert_eq!(meta.spacing, [2.0, 3.0, 4.0]);
-        assert_eq!(meta.units, SpatialUnits::Millimeter);
+        let metadata = VolumeMetadata::read(&path).unwrap();
+        assert_eq!(metadata.format, Format::Nrrd);
+        assert_eq!(metadata.dimensions, [4, 3, 4, 1]);
+        assert_eq!(metadata.spacing, [2.0, 3.0, 4.0]);
+        assert_eq!(metadata.spatial_units, SpatialUnits::Millimeter);
         assert_eq!(
-            meta.transform.unwrap().matrix,
+            metadata.transform.unwrap().matrix,
             [
                 [-2.0, 0.0, 0.0, -10.0],
                 [0.0, -3.0, 0.0, -20.0],
                 [0.0, 0.0, 4.0, 30.0]
             ]
         );
-        assert_eq!((meta.data.start, meta.data.offset), (head.len() as u64, 0));
+        assert_eq!(
+            (metadata.data.stream_offset, metadata.data.voxel_offset),
+            (head.len() as u64, 0)
+        );
         assert_eq!(load(&path).sample_value([3, 2, 3], 0), Some(47.0));
     }
 
     #[test]
     fn reads_the_space_units_field() {
-        let dir = tempfile::tempdir().unwrap();
+        let directory = tempfile::tempdir().unwrap();
         let fields = format!(
             "type: short\ndimension: 3\nsizes: 4 3 4\nencoding: raw\nendian: little\n{LPS}\nspace units: \"m\" \"m\" \"m\""
         );
-        let path = write(&dir, "meters.nrrd", &[&header(&fields), &voxels(false)]);
-        assert_eq!(VolumeMeta::read(&path).unwrap().units, SpatialUnits::Meter);
+        let path = write(
+            &directory,
+            "meters.nrrd",
+            &[&header(&fields), &voxels(false)],
+        );
+        assert_eq!(
+            VolumeMetadata::read(&path).unwrap().spatial_units,
+            SpatialUnits::Meter
+        );
     }
 
     #[test]
     fn reads_attached_gzip_data() {
-        let dir = tempfile::tempdir().unwrap();
+        let directory = tempfile::tempdir().unwrap();
         let head =
             header("type: int16\ndimension: 3\nsizes: 4 3 4\nencoding: gzip\nendian: little");
-        let path = write(&dir, "ct.nrrd", &[&head, &gzip(&voxels(false))]);
+        let path = write(&directory, "ct.nrrd", &[&head, &gzip(&voxels(false))]);
         assert_eq!(load(&path).sample_value([3, 2, 3], 0), Some(47.0));
     }
 
     #[test]
     fn reads_detached_data() {
-        let dir = tempfile::tempdir().unwrap();
-        write(&dir, "ct.raw.gz", &[&gzip(&voxels(true))]);
+        let directory = tempfile::tempdir().unwrap();
+        write(&directory, "ct.raw.gz", &[&gzip(&voxels(true))]);
         let fields = format!(
             "type: ushort\ndimension: 3\nsizes: 4 3 4\nencoding: gz\nendian: big\ndata file: ct.raw.gz\n{LPS}"
         );
         let mut head = header(&fields);
         head.pop();
-        let path = write(&dir, "ct.nhdr", &[&head]);
+        let path = write(&directory, "ct.nhdr", &[&head]);
         let volume = load(&path);
-        assert_eq!(volume.meta().data.path, dir.path().join("ct.raw.gz"));
+        assert_eq!(
+            volume.metadata().data.path,
+            directory.path().join("ct.raw.gz")
+        );
         assert_eq!(volume.sample_value([3, 2, 3], 0), Some(47.0));
 
-        write(&dir, "end.raw", &[b"junk", &voxels(false)]);
+        write(&directory, "end.raw", &[b"junk", &voxels(false)]);
         let head = header(
             "type: short\ndimension: 3\nsizes: 4 3 4\nencoding: raw\nendian: little\ndata file: end.raw\nbyte skip: -1",
         );
-        let path = write(&dir, "end.nhdr", &[&head]);
+        let path = write(&directory, "end.nhdr", &[&head]);
         assert_eq!(load(&path).sample_value([3, 2, 3], 0), Some(47.0));
     }
 
     #[test]
     fn a_fourth_axis_without_direction_is_time() {
-        let dir = tempfile::tempdir().unwrap();
+        let directory = tempfile::tempdir().unwrap();
         let space = "space: RAS\nspace directions: (1,0,0) (0,1,0) (0,0,1) none";
         let fields = format!("type: uchar\ndimension: 4\nsizes: 2 2 2 3\nencoding: raw\n{space}");
-        let path = write(&dir, "pet.nrrd", &[&header(&fields), &[0; 24]]);
-        assert_eq!(VolumeMeta::read(&path).unwrap().timepoints(), 3);
+        let path = write(&directory, "pet.nrrd", &[&header(&fields), &[0; 24]]);
+        assert_eq!(VolumeMetadata::read(&path).unwrap().timepoints(), 3);
 
         let space = "space: RAS\nspace directions: none (1,0,0) (0,1,0) (0,0,1)";
         let fields = format!("type: uchar\ndimension: 4\nsizes: 3 2 2 2\nencoding: raw\n{space}");
-        let path = write(&dir, "dwi.nrrd", &[&header(&fields), &[0; 24]]);
-        assert!(VolumeMeta::read(&path).is_err());
+        let path = write(&directory, "dwi.nrrd", &[&header(&fields), &[0; 24]]);
+        assert!(VolumeMetadata::read(&path).is_err());
     }
 
     #[test]
@@ -431,7 +448,10 @@ space origin: (10,20,30)";
             parse_spatial_units(r#""mm" "mm" "mm""#),
             SpatialUnits::Millimeter
         );
-        assert_eq!(parse_spatial_units(r#""um" "um""#), SpatialUnits::Micron);
+        assert_eq!(
+            parse_spatial_units(r#""um" "um""#),
+            SpatialUnits::Micrometer
+        );
         assert_eq!(
             parse_spatial_units(r#""mm" "m" "mm""#),
             SpatialUnits::Unknown
@@ -441,18 +461,18 @@ space origin: (10,20,30)";
 
     #[test]
     fn without_space_only_spacing_is_known() {
-        let dir = tempfile::tempdir().unwrap();
+        let directory = tempfile::tempdir().unwrap();
         let fields = "type: float\ndimension: 3\nsizes: 2 2 2\nencoding: raw\nendian: little\nspacings: 0.5 0.5 2";
-        let path = write(&dir, "plain.nrrd", &[&header(fields), &[0; 32]]);
-        let meta = VolumeMeta::read(&path).unwrap();
-        assert_eq!(meta.transform, None);
-        assert_eq!(meta.spacing, [0.5, 0.5, 2.0]);
-        assert_eq!(meta.units, SpatialUnits::Unknown);
+        let path = write(&directory, "plain.nrrd", &[&header(fields), &[0; 32]]);
+        let metadata = VolumeMetadata::read(&path).unwrap();
+        assert_eq!(metadata.transform, None);
+        assert_eq!(metadata.spacing, [0.5, 0.5, 2.0]);
+        assert_eq!(metadata.spatial_units, SpatialUnits::Unknown);
     }
 
     #[test]
     fn rejects_what_it_cannot_show() {
-        let dir = tempfile::tempdir().unwrap();
+        let directory = tempfile::tempdir().unwrap();
         let base = "dimension: 3\nsizes: 2 2 2\nencoding: raw\nendian: little";
         for (name, fields) in [
             ("no-type", base.to_string()),
@@ -474,10 +494,14 @@ space origin: (10,20,30)";
                 format!("type: short\n{base}\nspace directions: (1,0,0) (0,1,0) (0,0,1)"),
             ),
         ] {
-            let path = write(&dir, &format!("{name}.nrrd"), &[&header(&fields), &[0; 16]]);
-            assert!(VolumeMeta::read(&path).is_err(), "{name}");
+            let path = write(
+                &directory,
+                &format!("{name}.nrrd"),
+                &[&header(&fields), &[0; 16]],
+            );
+            assert!(VolumeMetadata::read(&path).is_err(), "{name}");
         }
-        let path = write(&dir, "not.nrrd", &[b"P5 2 2 255\n"]);
-        assert!(VolumeMeta::read(&path).is_err());
+        let path = write(&directory, "not.nrrd", &[b"P5 2 2 255\n"]);
+        assert!(VolumeMetadata::read(&path).is_err());
     }
 }

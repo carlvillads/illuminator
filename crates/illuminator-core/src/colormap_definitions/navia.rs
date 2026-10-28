@@ -2,12 +2,12 @@
 //! From Scientific colour maps 8 by Fabio Crameri <https://www.fabiocrameri.ch/colourmaps>.
 //! Copyright (c) 2023 Fabio Crameri, MIT License. doi:10.5281/zenodo.1243862
 
-use super::{Cmap, Ramp};
+use super::{ColormapDefinition, Ramp};
 
-pub(crate) const NAVIA: Cmap = Cmap {
+pub(crate) const NAVIA: ColormapDefinition = ColormapDefinition {
     name: "Navia",
     id: "navia",
-    desc: "Perceptually uniform. Dark navy through teal and green to pale yellow",
+    description: "Perceptually uniform. Dark navy through teal and green to pale yellow",
     ramp: Ramp::Table(&[
         [0.013420, 0.075817, 0.152989],
         [0.015121, 0.080634, 0.159960],

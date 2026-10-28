@@ -10,8 +10,10 @@ mod layout;
 mod mouse;
 mod panels;
 mod playback;
+mod plot_window;
 mod sidebar;
 mod status_bar;
+mod time_series_window;
 mod toolbar;
 
 use futures::StreamExt;
@@ -28,6 +30,7 @@ use illuminator_core::histogram::Histogram;
 use illuminator_core::loader::{LoadState, VolumeLoader};
 use illuminator_core::slicer::{Coloring, SampledSlice};
 use illuminator_core::suv::SuvInputs;
+use std::any::TypeId;
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
@@ -35,31 +38,31 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use crate::cli::{Cli, LayoutName};
+use crate::command_line::{CommandLine, LayoutName};
 use crate::shortcuts::{self, *};
-use crate::ui::{title_bar, uses_client_manager_decorations};
-use crate::zoom::{Visible, Zoom};
+use crate::ui::{title_bar, uses_client_side_decorations};
+use crate::zoom::{VisibleRegion, Zoom};
 
-use self::layer_settings::LimitInputs;
+use self::layer_settings::WindowLimitInputs;
 use self::mouse::PanDrag;
 use self::playback::FrameSlider;
 
 const SIDEBAR_WIDTH: f32 = 240.0;
-const OVERLAY_OPACITY: f32 = 0.5;
+const DEFAULT_OVERLAY_OPACITY: f32 = 0.5;
 const TOOLBAR_HEIGHT: f32 = 36.0;
-const STATUS_HEIGHT: f32 = 24.0;
-const CORNER_TEXT: f32 = 10.0;
-const STALE_HISTOGRAM_OPACITY: f32 = 0.3;
+const STATUS_BAR_HEIGHT: f32 = 24.0;
+const CORNER_TEXT_FONT_SIZE: f32 = 10.0;
+const STALE_OPACITY: f32 = 0.3;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum SyncMode {
+enum SynchronizationMode {
     World,
-    Proportional,
+    Normalized,
 }
 
 #[derive(Clone, PartialEq)]
 struct ImageKey {
-    sample: SampleKey,
+    sample_key: SampleKey,
     coloring: Coloring,
 }
 
@@ -78,11 +81,11 @@ struct PanelSamples {
 struct Panel {
     image: Option<PanelImage>,
     samples: Option<PanelSamples>,
-    rendering: bool,
+    render_pending: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-enum Preset {
+enum WindowPreset {
     Limits(f64, f64),
     Percentiles(f64, f64),
 }
@@ -94,12 +97,12 @@ enum WindowEdge {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct DragEdge {
+struct WindowEdgeDrag {
     load_id: u64,
     edge: WindowEdge,
 }
 
-impl Render for DragEdge {
+impl Render for WindowEdgeDrag {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         Empty
     }
@@ -107,7 +110,7 @@ impl Render for DragEdge {
 
 /// The numbers for showing a layer in SUV and where they came from
 #[derive(Clone, Copy)]
-struct Suv {
+struct SuvSettings {
     inputs: SuvInputs,
     source: &'static str,
 }
@@ -169,9 +172,9 @@ struct Layer {
     display: VolumeDisplay,
     panels: Vec<Panel>,
     histogram: FrameHistogram,
-    curve: Option<TimeCurve>,
-    curve_pending: bool,
-    suv: Option<Suv>,
+    time_curve: Option<TimeCurve>,
+    time_curve_pending: bool,
+    suv: Option<SuvSettings>,
     load_id: u64,
     visible: bool,
     opacity: f32,
@@ -182,7 +185,7 @@ struct Layer {
 impl Layer {
     fn new(load_id: u64, display: VolumeDisplay, cx: &mut Context<Viewer>) -> Self {
         let suv = match SuvInputs::from_sidecar(display.volume().path()) {
-            Some(Ok(inputs)) => Some(Suv {
+            Some(Ok(inputs)) => Some(SuvSettings {
                 inputs,
                 source: "from sidecar",
             }),
@@ -197,12 +200,12 @@ impl Layer {
             display,
             panels: Vec::new(),
             histogram: FrameHistogram::default(),
-            curve: None,
-            curve_pending: false,
+            time_curve: None,
+            time_curve_pending: false,
             suv,
             load_id,
             visible: true,
-            opacity: OVERLAY_OPACITY,
+            opacity: DEFAULT_OVERLAY_OPACITY,
             opacity_slider,
             _opacity_changes: opacity_changes,
         }
@@ -244,18 +247,18 @@ struct View {
     origin: Point<f32>,
     size: Size<f32>,
     axis: ViewPlane,
-    base: usize,
+    base_layer: usize,
     layers: Range<usize>,
     image_pixels: (usize, usize),
     image_size: Size<f32>,
     zoom: Zoom,
-    fit: (f64, f64),
-    visible: Visible,
+    fit_scale: (f64, f64),
+    visible_region: VisibleRegion,
     mip: bool,
     slot: usize,
     plane: SlicePlane,
-    slice: Option<usize>,
-    current: bool,
+    lightbox_slice: Option<usize>,
+    shows_cursor_slice: bool,
 }
 
 impl View {
@@ -274,20 +277,20 @@ pub(super) struct TimeCurve {
     pub values: Vec<f64>,
 }
 
-struct Hit {
+struct ViewHit {
     base: usize,
     axis: ViewPlane,
     mip: bool,
     s: f64,
     t: f64,
-    in_view: (f64, f64),
+    view_position: (f64, f64),
     image_size: Size<f32>,
     fit: (f64, f64),
     plane: SlicePlane,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum InfoLevel {
+enum CornerTextLevel {
     /// Only images
     Off,
     /// letters + slice number
@@ -295,7 +298,7 @@ enum InfoLevel {
     Full,
 }
 
-impl InfoLevel {
+impl CornerTextLevel {
     fn next(self) -> Self {
         match self {
             Self::Off => Self::Minimal,
@@ -315,7 +318,7 @@ impl InfoLevel {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Layout {
-    Ortho,
+    Orthogonal,
     Compare,
     Grid(ViewPlane),
     Single {
@@ -326,17 +329,17 @@ enum Layout {
 }
 
 impl Layout {
-    fn overlaid(self) -> bool {
+    fn is_overlaid(self) -> bool {
         matches!(
             self,
-            Self::Ortho | Self::Single { layer: None, .. } | Self::Lightbox(_)
+            Self::Orthogonal | Self::Single { layer: None, .. } | Self::Lightbox(_)
         )
     }
 
     fn axis(self) -> Option<ViewPlane> {
         match self {
             Self::Grid(axis) | Self::Single { axis, .. } | Self::Lightbox(axis) => Some(axis),
-            Self::Ortho | Self::Compare => None,
+            Self::Orthogonal | Self::Compare => None,
         }
     }
 
@@ -349,7 +352,7 @@ impl Layout {
         }
     }
 
-    fn same_kind(self, other: Self) -> bool {
+    fn same_variant(self, other: Self) -> bool {
         std::mem::discriminant(&self) == std::mem::discriminant(&other)
     }
 }
@@ -358,20 +361,20 @@ pub struct Viewer {
     cache: Arc<VolumeCache>,
     loader: VolumeLoader,
     layers: Vec<Layer>,
-    sync: bool,
-    sync_mode: SyncMode,
+    cursor_synchronization: bool,
+    sync_mode: SynchronizationMode,
     radiological: bool,
     show_crosshair: bool,
     show_mip: bool,
     frame: usize,
     frame_slider: Option<FrameSlider>,
-    time_playing: Option<Task<()>>,
-    time_fps: u32,
+    playback_task: Option<Task<()>>,
+    playback_frames_per_second: u32,
     time_curve_bounds: Rc<Cell<Bounds<Pixels>>>,
     lightbox_grid: (usize, usize),
     lightbox_step: usize,
-    contrast_drag: Option<(usize, Point<Pixels>)>,
-    limit_inputs: LimitInputs,
+    window_drag: Option<(usize, Point<Pixels>)>,
+    limit_inputs: WindowLimitInputs,
     zoom: [Zoom; 3],
     pan_drag: Option<PanDrag>,
     scroll_remainder: f32,
@@ -379,14 +382,14 @@ pub struct Viewer {
     focus_handle: FocusHandle,
     layout: Layout,
     previous_layout: Layout,
-    hover: Option<Point3D>,
-    selected: usize,
-    info: InfoLevel,
-    reloads: HashMap<u64, u64>,
-    label_loads: HashSet<u64>,
-    load_colormaps: HashMap<u64, Colormap>,
-    retired: Vec<Arc<RenderImage>>,
-    histogram_window: Option<AnyWindowHandle>,
+    hovered_point: Option<Point3D>,
+    selected_layer: usize,
+    corner_text: CornerTextLevel,
+    pending_reloads: HashMap<u64, u64>,
+    label_map_loads: HashSet<u64>,
+    requested_colormaps: HashMap<u64, Colormap>,
+    released_images: Vec<Arc<RenderImage>>,
+    plot_windows: HashMap<TypeId, AnyWindowHandle>,
     _loader_events: Task<()>,
     _open_requests: Task<()>,
 }
@@ -394,40 +397,40 @@ pub struct Viewer {
 impl Viewer {
     pub fn new(
         cache: Arc<VolumeCache>,
-        cli: Cli,
-        mut opened: mpsc::UnboundedReceiver<Vec<PathBuf>>,
+        command_line: CommandLine,
+        mut open_requests: mpsc::UnboundedReceiver<Vec<PathBuf>>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let (sender, mut changes) = mpsc::unbounded::<()>();
+        let (change_sender, mut change_receiver) = mpsc::unbounded::<()>();
         let loader = VolumeLoader::new(Arc::clone(&cache), move || {
-            let _ = sender.unbounded_send(());
+            let _ = change_sender.unbounded_send(());
         });
-        let mut load_colormaps = HashMap::new();
-        for (file, colormap) in cli.files.into_iter().zip(cli.colormaps) {
+        let mut requested_colormaps = HashMap::new();
+        for (file, colormap) in command_line.files.into_iter().zip(command_line.colormaps) {
             let load_id = loader.enqueue(file);
             if let Some(colormap) = colormap {
-                load_colormaps.insert(load_id, colormap);
+                requested_colormaps.insert(load_id, colormap);
             }
         }
-        let label_loads = cli
+        let label_map_loads = command_line
             .labels
             .into_iter()
             .map(|file| loader.enqueue(file))
             .collect();
-        let axis = cli.plane.map_or(ViewPlane::Axial, ViewPlane::from);
-        let layout = match cli.layout.unwrap_or(LayoutName::Ortho) {
-            LayoutName::Ortho => Layout::Ortho,
+        let axis = command_line.plane.map_or(ViewPlane::Axial, ViewPlane::from);
+        let layout = match command_line.layout.unwrap_or(LayoutName::Orthogonal) {
+            LayoutName::Orthogonal => Layout::Orthogonal,
             LayoutName::Compare => Layout::Compare,
             LayoutName::Grid => Layout::Grid(axis),
             LayoutName::Single => Layout::Single { axis, layer: None },
             LayoutName::Lightbox => Layout::Lightbox(axis),
         };
         let loader_events = cx.spawn(async move |this, cx| {
-            while changes.next().await.is_some() {
-                while changes.try_recv().is_ok() {}
+            while change_receiver.next().await.is_some() {
+                while change_receiver.try_recv().is_ok() {}
                 if this
-                    .update(cx, |viewer, cx| viewer.take_loaded(cx))
+                    .update(cx, |viewer, cx| viewer.receive_loaded_volumes(cx))
                     .is_err()
                 {
                     break; // viewer is gone here
@@ -435,7 +438,7 @@ impl Viewer {
             }
         });
         let open_requests = cx.spawn_in(window, async move |this, cx| {
-            while let Some(paths) = opened.next().await {
+            while let Some(paths) = open_requests.next().await {
                 let delivered = this.update_in(cx, |viewer, window, _| {
                     for path in paths {
                         viewer.loader.enqueue(path);
@@ -453,24 +456,24 @@ impl Viewer {
         });
         let focus_handle = cx.focus_handle();
         focus_handle.focus(window, cx);
-        let limit_inputs = LimitInputs::new(window, cx);
+        let limit_inputs = WindowLimitInputs::new(window, cx);
         Self {
             cache,
             loader,
             layers: Vec::new(),
-            sync: true,
-            sync_mode: SyncMode::World,
+            cursor_synchronization: true,
+            sync_mode: SynchronizationMode::World,
             radiological: true,
             show_crosshair: true,
-            show_mip: cli.mip,
+            show_mip: command_line.mip,
             frame: 0,
             frame_slider: None,
-            time_playing: None,
-            time_fps: 5,
+            playback_task: None,
+            playback_frames_per_second: 5,
             time_curve_bounds: Rc::default(),
             lightbox_grid: (4, 3),
             lightbox_step: 1,
-            contrast_drag: None,
+            window_drag: None,
             limit_inputs,
             zoom: Default::default(),
             pan_drag: None,
@@ -478,28 +481,28 @@ impl Viewer {
             active_panel: (0, axis),
             focus_handle,
             layout,
-            previous_layout: Layout::Ortho,
-            hover: None,
-            selected: 0,
-            info: InfoLevel::Full,
-            reloads: HashMap::new(),
-            label_loads,
-            load_colormaps,
-            retired: Vec::new(),
-            histogram_window: None,
+            previous_layout: Layout::Orthogonal,
+            hovered_point: None,
+            selected_layer: 0,
+            corner_text: CornerTextLevel::Full,
+            pending_reloads: HashMap::new(),
+            label_map_loads,
+            requested_colormaps,
+            released_images: Vec::new(),
+            plot_windows: HashMap::new(),
             _loader_events: loader_events,
             _open_requests: open_requests,
         }
     }
 
-    fn take_loaded(&mut self, cx: &mut Context<Self>) {
+    fn receive_loaded_volumes(&mut self, cx: &mut Context<Self>) {
         let mut added = false;
         for loaded in self.loader.take_completed() {
             let load_id = loaded.load_id;
-            let reload_of = self.reloads.remove(&load_id);
+            let replaced_load_id = self.pending_reloads.remove(&load_id);
             match VolumeDisplay::new(loaded) {
                 Ok(display) => {
-                    match reload_of {
+                    match replaced_load_id {
                         Some(old_id) => self.replace_layer(old_id, display),
                         None => self.add_layer(load_id, display, cx),
                     }
@@ -517,18 +520,18 @@ impl Viewer {
         self.loader.dismiss_finished();
         if added {
             self.update_frame_slider(cx);
-            self.sync_from_first();
+            self.synchronize_cursors_from_first();
         }
         cx.notify();
     }
 
-    fn active(&self) -> Option<(usize, ViewPlane)> {
+    fn active_panel(&self) -> Option<(usize, ViewPlane)> {
         let (index, axis) = self.active_panel;
         (index < self.layers.len()).then_some((index, axis))
     }
 
-    fn selected(&self) -> Option<usize> {
-        (self.selected < self.layers.len()).then_some(self.selected)
+    fn selected_layer(&self) -> Option<usize> {
+        (self.selected_layer < self.layers.len()).then_some(self.selected_layer)
     }
 
     /// The plane of the layout or of the active view when the layout shows all three.
@@ -538,7 +541,7 @@ impl Viewer {
 
     /// Changes the selected layer and redraws.
     fn update_selected(&mut self, cx: &mut Context<Self>, update: impl FnOnce(&mut Layer)) {
-        if let Some(index) = self.selected() {
+        if let Some(index) = self.selected_layer() {
             update(&mut self.layers[index]);
             cx.notify();
         }
@@ -552,8 +555,8 @@ impl Viewer {
 
     fn select(&mut self, index: usize, cx: &mut Context<Self>) {
         if index < self.layers.len() {
-            self.selected = index;
-            if !self.layout.overlaid() {
+            self.selected_layer = index;
+            if !self.layout.is_overlaid() {
                 self.active_panel.0 = index;
             }
             cx.notify();
@@ -569,17 +572,17 @@ impl Viewer {
             Layout::Single {
                 layer: Some(layer), ..
             } => layer,
-            _ if layout.overlaid() => 0,
-            _ => self.selected,
+            _ if layout.is_overlaid() => 0,
+            _ => self.selected_layer,
         };
         self.active_panel = (base, self.current_axis());
-        self.sync_from_first();
+        self.synchronize_cursors_from_first();
         cx.notify();
     }
 
-    fn toggle_play(&mut self, _: &TogglePlay, window: &mut Window, cx: &mut Context<Self>) {
-        if self.time_playing.take().is_none() {
-            self.play(window, cx);
+    fn toggle_playback(&mut self, _: &TogglePlayback, window: &mut Window, cx: &mut Context<Self>) {
+        if self.playback_task.take().is_none() {
+            self.start_playback(window, cx);
         }
         cx.notify();
     }
@@ -603,21 +606,21 @@ impl Viewer {
         .detach();
     }
 
-    fn change(
+    fn modify_display(
         &mut self,
         index: usize,
-        change: impl FnOnce(&mut VolumeDisplay) -> illuminator_core::Result<()>,
+        modification: impl FnOnce(&mut VolumeDisplay) -> illuminator_core::Result<()>,
         cx: &mut Context<Self>,
     ) {
-        if let Err(error) = change(&mut self.layers[index].display) {
+        if let Err(error) = modification(&mut self.layers[index].display) {
             eprintln!("Illuminator: layer {}: {error}", index + 1);
         }
-        self.sync_from(index);
+        self.synchronize_cursors_from(index);
         cx.notify();
     }
 
-    fn sync_from(&mut self, active: usize) {
-        if self.layout.overlaid() {
+    fn synchronize_cursors_from(&mut self, active: usize) {
+        if self.layout.is_overlaid() {
             // make sure overlaid layers share world pos
             let cursor = self.layers[active].display.cursor();
             for layer in &mut self.layers {
@@ -625,12 +628,12 @@ impl Viewer {
             }
             return;
         }
-        if !self.sync {
+        if !self.cursor_synchronization {
             return;
         }
         let source = &self.layers[active].display;
         match self.sync_mode {
-            SyncMode::World => {
+            SynchronizationMode::World => {
                 if !source.world_linked() {
                     return;
                 }
@@ -641,42 +644,42 @@ impl Viewer {
                     }
                 }
             }
-            SyncMode::Proportional => {
-                let fraction = source.fractional_cursor();
+            SynchronizationMode::Normalized => {
+                let fraction = source.normalized_cursor();
                 for (index, layer) in self.layers.iter_mut().enumerate() {
                     if index != active {
-                        layer.display.set_fractional_cursor(fraction);
+                        layer.display.set_normalized_cursor(fraction);
                     }
                 }
             }
         }
     }
 
-    fn sync_from_first(&mut self) {
-        if self.layout.overlaid() {
+    fn synchronize_cursors_from_first(&mut self) {
+        if self.layout.is_overlaid() {
             if !self.layers.is_empty() {
-                self.sync_from(0);
+                self.synchronize_cursors_from(0);
             }
             return;
         }
-        let leader = self.layers.iter().position(|layer| {
-            self.sync_mode == SyncMode::Proportional || layer.display.world_linked()
+        let reference_layer = self.layers.iter().position(|layer| {
+            self.sync_mode == SynchronizationMode::Normalized || layer.display.world_linked()
         });
-        if let Some(leader) = leader {
-            self.sync_from(leader);
+        if let Some(reference_layer) = reference_layer {
+            self.synchronize_cursors_from(reference_layer);
         }
     }
 }
 
 impl Render for Viewer {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        for image in self.retired.drain(..) {
+        for image in self.released_images.drain(..) {
             cx.drop_image(image, Some(window));
         }
         self.schedule_renders(window, cx);
         self.schedule_histogram(cx);
-        self.schedule_curve(cx);
-        self.show_limits(window, cx);
+        self.schedule_time_curve(cx);
+        self.refresh_window_limit_inputs(window, cx);
 
         let theme = cx.theme();
         let (background, foreground) = (theme.background, theme.foreground);
@@ -685,43 +688,44 @@ impl Render for Viewer {
             .bg(background)
             .text_color(foreground)
             .track_focus(&self.focus_handle)
-            .key_context(shortcuts::CONTEXT)
+            .key_context(shortcuts::VIEWER_CONTEXT)
             .on_action(cx.listener(Self::close_window))
             .on_action(cx.listener(Self::open_files_action))
             .on_action(cx.listener(Self::next_slice))
             .on_action(cx.listener(Self::previous_slice))
-            .on_action(cx.listener(Self::next_slices))
-            .on_action(cx.listener(Self::previous_slices))
+            .on_action(cx.listener(Self::next_slice_page))
+            .on_action(cx.listener(Self::previous_slice_page))
             .on_action(cx.listener(Self::next_frame))
             .on_action(cx.listener(Self::previous_frame))
-            .on_action(cx.listener(Self::toggle_play))
+            .on_action(cx.listener(Self::toggle_playback))
             .on_action(cx.listener(Self::center_cursor))
-            .on_action(cx.listener(Self::auto_contrast))
+            .on_action(cx.listener(Self::fit_window_action))
             .on_action(cx.listener(Self::next_colormap))
-            .on_action(cx.listener(Self::toggle_segmentation))
+            .on_action(cx.listener(Self::toggle_label_mode))
             .on_action(cx.listener(Self::toggle_outline))
             .on_action(cx.listener(Self::toggle_overlay))
-            .on_action(cx.listener(Self::layout_ortho))
+            .on_action(cx.listener(Self::layout_orthogonal))
             .on_action(cx.listener(Self::layout_compare))
             .on_action(cx.listener(Self::layout_grid))
             .on_action(cx.listener(Self::layout_single))
             .on_action(cx.listener(Self::layout_lightbox))
-            .on_action(cx.listener(Self::copy_image))
-            .on_action(cx.listener(Self::save_image))
+            .on_action(cx.listener(Self::copy_screenshot))
+            .on_action(cx.listener(Self::save_screenshot))
             .on_action(cx.listener(Self::close_selected))
             .on_action(cx.listener(Self::reload_selected))
             .on_action(cx.listener(Self::move_selected_up))
             .on_action(cx.listener(Self::move_selected_down))
-            .on_action(cx.listener(Self::toggle_layer))
+            .on_action(cx.listener(Self::toggle_layer_visibility))
             .on_action(cx.listener(Self::next_layer))
             .on_action(cx.listener(Self::previous_layer))
-            .on_action(cx.listener(Self::toggle_sync))
+            .on_action(cx.listener(Self::toggle_curson_synchronization))
             .on_action(cx.listener(Self::toggle_radiological))
             .on_action(cx.listener(Self::toggle_crosshair))
-            .on_action(cx.listener(Self::toggle_info))
+            .on_action(cx.listener(Self::cycle_corner_text))
             .on_action(cx.listener(Self::toggle_mip))
             .on_action(cx.listener(Self::show_help))
             .on_action(cx.listener(Self::show_histogram))
+            .on_action(cx.listener(Self::show_time_series))
             .on_action(cx.listener(Self::zoom_in))
             .on_action(cx.listener(Self::zoom_out))
             .on_action(cx.listener(Self::reset_zoom))
@@ -730,7 +734,7 @@ impl Render for Viewer {
                     viewer.loader.enqueue(path.clone());
                 }
             }))
-            .when(uses_client_manager_decorations(window), |root| {
+            .when(uses_client_side_decorations(window), |root| {
                 root.child(title_bar("Illuminator"))
             })
             .child(self.render_toolbar(window, cx))
@@ -741,15 +745,15 @@ impl Render for Viewer {
                     .child(self.render_panels(window, cx))
                     .child(self.render_sidebar(cx)),
             )
-            .child(self.render_status(cx))
+            .child(self.render_status_bar(cx))
     }
 }
 
 /// Where the views are in the window.
 fn view_area(window: &Window) -> Bounds<f32> {
     let viewport = window.viewport_size();
-    let frame = window_frame(window);
-    let title_bar = if uses_client_manager_decorations(window) {
+    let frame = window_insets(window);
+    let title_bar = if uses_client_side_decorations(window) {
         f32::from(TITLE_BAR_HEIGHT)
     } else {
         0.0
@@ -759,13 +763,13 @@ fn view_area(window: &Window) -> Bounds<f32> {
         origin: point(frame.left, top),
         size: size(
             (f32::from(viewport.width) - frame.left - frame.right - SIDEBAR_WIDTH).max(0.0),
-            (f32::from(viewport.height) - top - STATUS_HEIGHT - frame.bottom).max(0.0),
+            (f32::from(viewport.height) - top - STATUS_BAR_HEIGHT - frame.bottom).max(0.0),
         ),
     }
 }
 
 /// How far the content is from each edge of the window.
-fn window_frame(window: &Window) -> Edges<f32> {
+fn window_insets(window: &Window) -> Edges<f32> {
     let Decorations::Client { tiling } = window.window_decorations() else {
         return Edges::default();
     };
@@ -785,7 +789,7 @@ fn opacity_slider(load_id: u64, cx: &mut Context<Viewer>) -> (Entity<SliderState
             .min(0.0)
             .max(100.0)
             .step(5.0)
-            .default_value(OVERLAY_OPACITY * 100.0)
+            .default_value(DEFAULT_OVERLAY_OPACITY * 100.0)
     });
     let changes = cx.subscribe(&state, move |viewer, _, event: &SliderEvent, cx| {
         if let SliderEvent::Change(value) = event
@@ -802,10 +806,10 @@ fn opacity_slider(load_id: u64, cx: &mut Context<Viewer>) -> (Entity<SliderState
 mod tests {
     use super::{FrameHistogram, Histogram, HistogramKey, Layout, ViewPlane};
 
-    fn histogram(min: f64) -> Histogram {
+    fn histogram(minimum: f64) -> Histogram {
         Histogram {
-            min,
-            max: min + 2.0,
+            minimum,
+            maximum: minimum + 2.0,
             counts: vec![1, 1],
         }
     }
@@ -873,7 +877,7 @@ mod tests {
         assert!(!cache.needs_count(current));
         assert!(cache.complete(current, current, Ok(Some(histogram(100.0)))));
         assert!(!cache.complete(old, current, Ok(Some(histogram(0.0)))));
-        assert_eq!(cache.current(current).unwrap().min, 100.0);
+        assert_eq!(cache.current(current).unwrap().minimum, 100.0);
     }
 
     #[test]
@@ -917,17 +921,20 @@ mod tests {
             grid.with_axis(ViewPlane::Coronal),
             Layout::Grid(ViewPlane::Coronal)
         );
-        assert!(grid.same_kind(Layout::Grid(ViewPlane::Sagittal)));
-        assert!(!grid.same_kind(Layout::Ortho));
-        assert_eq!(Layout::Ortho.with_axis(ViewPlane::Coronal), Layout::Ortho);
+        assert!(grid.same_variant(Layout::Grid(ViewPlane::Sagittal)));
+        assert!(!grid.same_variant(Layout::Orthogonal));
+        assert_eq!(
+            Layout::Orthogonal.with_axis(ViewPlane::Coronal),
+            Layout::Orthogonal
+        );
         let single = |layer| Layout::Single {
             axis: ViewPlane::Axial,
             layer,
         };
-        assert!(single(None).overlaid());
-        assert!(!single(Some(1)).overlaid());
+        assert!(single(None).is_overlaid());
+        assert!(!single(Some(1)).is_overlaid());
         let lightbox = Layout::Lightbox(ViewPlane::Axial);
-        assert!(lightbox.overlaid());
+        assert!(lightbox.is_overlaid());
         assert_eq!(
             lightbox.with_axis(ViewPlane::Sagittal),
             Layout::Lightbox(ViewPlane::Sagittal)

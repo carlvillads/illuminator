@@ -14,13 +14,13 @@ use gpui_kit::{
 use illuminator_core::display::VolumeDisplay;
 use std::path::Path;
 
-use crate::assets::Carbon;
-use crate::shortcuts::{self, CloseLayer, ReloadLayer, TogglePlay};
-use crate::ui::{self, AppStyle, colormap_strip, format_value};
+use crate::assets::ApplicationUiIcon;
+use crate::shortcuts::{self, CloseLayer, ReloadLayer, TogglePlayback};
+use crate::ui::{self, StyleExtensions, colormap_strip, format_value};
 
-use super::{Layout, SIDEBAR_WIDTH, SyncMode, Viewer};
+use super::{Layout, SIDEBAR_WIDTH, SynchronizationMode, Viewer};
 
-const TIMEPOINT_FRAME_RATES: [u32; 5] = [1, 2, 5, 10, 20];
+const PLAYBACK_FRAME_RATES: [u32; 5] = [1, 2, 5, 10, 20];
 const LIGHTBOX_GRIDS: [(usize, usize); 6] = [(3, 2), (3, 3), (4, 3), (4, 4), (5, 4), (6, 5)];
 const LIGHTBOX_STEPS: [usize; 6] = [1, 2, 3, 4, 5, 10];
 
@@ -40,13 +40,13 @@ impl Viewer {
             .border_l_1()
             .border_color(border)
             .text_sm()
-            .child(self.render_loading(cx))
+            .child(self.render_load_list(cx))
             .child(self.render_layer_list(cx))
             .child(self.render_layer_settings(cx))
             .child(self.render_view_settings(cx))
     }
 
-    fn render_loading(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_load_list(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let muted = cx.theme().muted_foreground;
         v_flex()
             .gap_1()
@@ -66,7 +66,7 @@ impl Viewer {
                                 Button::new(("load-cancel", id))
                                     .ghost()
                                     .xsmall()
-                                    .icon(Carbon::Close)
+                                    .icon(ApplicationUiIcon::Close)
                                     .tooltip("Cancel")
                                     .on_click(
                                         cx.listener(move |viewer, _, _, _| {
@@ -105,18 +105,18 @@ impl Viewer {
             .child(
                 Button::new("layers-open")
                     .xsmall()
-                    .icon(Carbon::FolderOpen)
+                    .icon(ApplicationUiIcon::FolderOpen)
                     .label("Open\u{2026}")
                     .on_click(cx.listener(|viewer, _, _, cx| viewer.open_files(cx))),
             )
             .child(
                 Button::new("layers-reload")
                     .xsmall()
-                    .icon(Carbon::Reload)
+                    .icon(ApplicationUiIcon::Reload)
                     .label("Reload")
                     .disabled(self.layers.is_empty())
                     .on_click(cx.listener(|viewer, _, _, _| {
-                        if let Some(index) = viewer.selected() {
+                        if let Some(index) = viewer.selected_layer() {
                             viewer.reload_layer(index);
                         }
                     })),
@@ -124,11 +124,11 @@ impl Viewer {
             .child(
                 Button::new("layers-close")
                     .xsmall()
-                    .icon(Carbon::Close)
+                    .icon(ApplicationUiIcon::Close)
                     .label("Close")
                     .disabled(self.layers.is_empty())
                     .on_click(cx.listener(|viewer, _, _, cx| {
-                        if let Some(index) = viewer.selected() {
+                        if let Some(index) = viewer.selected_layer() {
                             viewer.close_layer(index, cx);
                         }
                     })),
@@ -139,7 +139,7 @@ impl Viewer {
     /// A layers row in the layer list.
     fn render_layer_row(&self, index: usize, cx: &mut Context<Self>) -> HoverCard {
         let theme = cx.theme();
-        let selected = index == self.selected;
+        let selected = index == self.selected_layer;
         let (active, active_text, hover, info, radius) = (
             theme.accent,
             theme.accent_foreground,
@@ -152,10 +152,10 @@ impl Viewer {
         } else {
             theme.muted_foreground
         };
-        let context = Some(shortcuts::CONTEXT);
+        let context = Some(shortcuts::VIEWER_CONTEXT);
         let layer = &self.layers[index];
         let display = &layer.display;
-        let drag = DragLayer {
+        let drag = LayerDrag {
             index,
             name: display.name().into(),
         };
@@ -175,8 +175,8 @@ impl Viewer {
             })
             .on_click(cx.listener(move |viewer, _, _, cx| viewer.select(index, cx)))
             .on_drag(drag, |drag, _, _, cx| cx.new(|_| drag.clone()))
-            .drag_over::<DragLayer>(move |style, _, _, _| style.border_t_2().border_color(info))
-            .on_drop(cx.listener(move |viewer, drag: &DragLayer, _, cx| {
+            .drag_over::<LayerDrag>(move |style, _, _, _| style.border_t_2().border_color(info))
+            .on_drop(cx.listener(move |viewer, drag: &LayerDrag, _, cx| {
                 viewer.move_layer(drag.index, index, cx);
             }))
             .child(
@@ -184,9 +184,9 @@ impl Viewer {
                     .ghost()
                     .xsmall()
                     .icon(if layer.visible {
-                        Carbon::View
+                        ApplicationUiIcon::View
                     } else {
-                        Carbon::ViewOff
+                        ApplicationUiIcon::ViewOff
                     })
                     .on_click(cx.listener(move |viewer, _, _, cx| {
                         let layer = &mut viewer.layers[index];
@@ -220,7 +220,7 @@ impl Viewer {
                         Button::new(("layer-reload", index))
                             .ghost()
                             .xsmall()
-                            .icon(Carbon::Reload)
+                            .icon(ApplicationUiIcon::Reload)
                             .tooltip_with_action("Reload from disk", &ReloadLayer, context)
                             .on_click(cx.listener(move |viewer, _, _, _| {
                                 viewer.reload_layer(index);
@@ -230,7 +230,7 @@ impl Viewer {
                         Button::new(("layer-close", index))
                             .ghost()
                             .xsmall()
-                            .icon(Carbon::Close)
+                            .icon(ApplicationUiIcon::Close)
                             .tooltip_with_action("Close", &CloseLayer, context)
                             .on_click(cx.listener(move |viewer, _, _, cx| {
                                 viewer.close_layer(index, cx);
@@ -241,7 +241,7 @@ impl Viewer {
         HoverCard::new(("layer-card", index))
             .anchor(Anchor::RightCenter)
             .trigger(row)
-            .content(move |_, _, cx| layer_card(&details, cx.theme().muted_foreground))
+            .content(move |_, _, cx| layer_detail_card(&details, cx.theme().muted_foreground))
     }
 
     /// How many lightbox views and how far apart each view is
@@ -263,7 +263,7 @@ impl Viewer {
                         let viewer = cx.entity().downgrade();
                         move |menu, _, _| {
                             let choices = LIGHTBOX_GRIDS.map(|grid| (grid_label(grid), grid));
-                            ui::choice_items(menu, &viewer, choices, |viewer, grid, _, cx| {
+                            ui::add_choice_items(menu, &viewer, choices, |viewer, grid, _, cx| {
                                 viewer.set_lightbox_grid(grid, cx);
                             })
                         }
@@ -279,7 +279,7 @@ impl Viewer {
                         let viewer = cx.entity().downgrade();
                         move |menu, _, _| {
                             let choices = LIGHTBOX_STEPS.map(|step| (step_label(step), step));
-                            ui::choice_items(menu, &viewer, choices, |viewer, step, _, cx| {
+                            ui::add_choice_items(menu, &viewer, choices, |viewer, step, _, cx| {
                                 viewer.lightbox_step = step;
                                 cx.notify();
                             })
@@ -291,20 +291,20 @@ impl Viewer {
     /// Settings shared by all layers. Empty unless there is something to set
     fn render_view_settings(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let muted = cx.theme().muted_foreground;
-        let sync_modes = !self.layout.overlaid() && self.sync;
+        let show_synchronization_modes = !self.layout.is_overlaid() && self.cursor_synchronization;
         let lightbox = matches!(self.layout, Layout::Lightbox(_));
-        if !sync_modes && self.frame_slider.is_none() && !lightbox {
+        if !show_synchronization_modes && self.frame_slider.is_none() && !lightbox {
             return div();
         }
         let lightbox_settings = lightbox.then(|| self.render_lightbox_settings(cx));
-        let mode_button = |id: &'static str, label: &'static str, mode: SyncMode| {
+        let mode_button = |id: &'static str, label: &'static str, mode: SynchronizationMode| {
             Button::new(id)
                 .xsmall()
                 .label(label)
                 .selected(self.sync_mode == mode)
                 .on_click(cx.listener(move |viewer, _, _, cx| {
                     viewer.sync_mode = mode;
-                    viewer.sync_from_first();
+                    viewer.synchronize_cursors_from_first();
                     cx.notify();
                 }))
         };
@@ -317,7 +317,7 @@ impl Viewer {
                             v_flex()
                                 .flex_1()
                                 .gap_0p5()
-                                .child(frame_tag(self.frame, slider.last_frame, cx))
+                                .child(frame_number_label(self.frame, slider.last_frame, cx))
                                 .child(Slider::new(&slider.state))
                                 .child(frame_ticks(slider.last_frame, muted)),
                         )
@@ -330,35 +330,39 @@ impl Viewer {
                 )
             })
             .when(self.frame_slider.is_some(), |settings| {
-                let playing = self.time_playing.is_some();
+                let playing = self.playback_task.is_some();
                 let viewer = cx.entity().downgrade();
                 settings.child(
                     ui::setting_row("Movie", muted)
                         .child(
                             Button::new("play")
                                 .xsmall()
-                                .icon(if playing { Carbon::Pause } else { Carbon::Play })
+                                .icon(if playing {
+                                    ApplicationUiIcon::Pause
+                                } else {
+                                    ApplicationUiIcon::Play
+                                })
                                 .label(if playing { "Pause" } else { "Play" })
                                 .selected(playing)
                                 .tooltip_with_action(
                                     "Play the frames",
-                                    &TogglePlay,
-                                    Some(shortcuts::CONTEXT),
+                                    &TogglePlayback,
+                                    Some(shortcuts::VIEWER_CONTEXT),
                                 )
                                 .on_click(cx.listener(|viewer, _, window, cx| {
-                                    viewer.toggle_play(&TogglePlay, window, cx);
+                                    viewer.toggle_playback(&TogglePlayback, window, cx);
                                 })),
                         )
                         .child(
                             Button::new("frame-rate")
                                 .ghost()
                                 .xsmall()
-                                .label(format!("{} fps", self.time_fps))
+                                .label(format!("{} fps", self.playback_frames_per_second))
                                 .tooltip("Frames per second")
                                 .dropdown_menu(move |menu, _, _| {
-                                    let choices = TIMEPOINT_FRAME_RATES
+                                    let choices = PLAYBACK_FRAME_RATES
                                         .map(|rate| (format!("{rate} fps"), rate));
-                                    ui::choice_items(
+                                    ui::add_choice_items(
                                         menu,
                                         &viewer,
                                         choices,
@@ -370,14 +374,18 @@ impl Viewer {
                         ),
                 )
             })
-            .when(sync_modes, |settings| {
+            .when(show_synchronization_modes, |settings| {
                 settings.child(
                     ui::setting_row("Sync", muted)
-                        .child(mode_button("sync-world", "World", SyncMode::World))
+                        .child(mode_button(
+                            "sync-world",
+                            "World",
+                            SynchronizationMode::World,
+                        ))
                         .child(mode_button(
                             "sync-proportional",
                             "Proportional",
-                            SyncMode::Proportional,
+                            SynchronizationMode::Normalized,
                         )),
                 )
             })
@@ -385,7 +393,7 @@ impl Viewer {
 }
 
 /// The shown frames number above the slider's thumb
-fn frame_tag(frame: usize, last_frame: usize, cx: &App) -> impl IntoElement {
+fn frame_number_label(frame: usize, last_frame: usize, cx: &App) -> impl IntoElement {
     let theme = cx.theme();
     div().relative().w_full().h(px(16.0)).child(
         h_flex()
@@ -423,39 +431,44 @@ fn frame_ticks(last_frame: usize, color: Hsla) -> impl IntoElement {
 }
 
 fn layer_details(display: &VolumeDisplay) -> Vec<(&'static str, String)> {
-    let meta = display.volume().meta();
+    let metadata = display.volume().metadata();
     let geometry = display.geometry();
     vec![
         ("File", display.name()),
         (
             "Size",
-            format!("{} x {} x {}", meta.width(), meta.height(), meta.depth()),
+            format!(
+                "{} x {} x {}",
+                metadata.width(),
+                metadata.height(),
+                metadata.depth()
+            ),
         ),
         (
             "Voxel",
             format!(
                 "{} x {} x {} {}",
-                format_value(meta.spacing[0]),
-                format_value(meta.spacing[1]),
-                format_value(meta.spacing[2]),
+                format_value(metadata.spacing[0]),
+                format_value(metadata.spacing[1]),
+                format_value(metadata.spacing[2]),
                 geometry.unit_name
             ),
         ),
-        ("Frames", meta.timepoints().to_string()),
-        ("Type", meta.datatype.name().to_string()),
-        ("Format", meta.format.name().to_string()),
+        ("Frames", metadata.timepoints().to_string()),
+        ("Type", metadata.data_type.name().to_string()),
+        ("Format", metadata.format.name().to_string()),
         ("Transform", geometry.transform_name.to_string()),
         ("Path", display.volume().path().display().to_string()),
     ]
 }
 
 #[derive(Clone)]
-struct DragLayer {
+struct LayerDrag {
     index: usize,
     name: SharedString,
 }
 
-impl Render for DragLayer {
+impl Render for LayerDrag {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .px_2()
@@ -468,7 +481,7 @@ impl Render for DragLayer {
 }
 
 /// The hover card with a layer's details
-fn layer_card(details: &[(&'static str, String)], muted: Hsla) -> Div {
+fn layer_detail_card(details: &[(&'static str, String)], muted: Hsla) -> Div {
     v_flex()
         .w(px(360.0))
         .gap_1()

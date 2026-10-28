@@ -4,12 +4,12 @@ use gpui_kit::component::{ActiveTheme, WindowExt, h_flex, v_flex};
 use gpui_kit::{Context, ParentElement, Styled, Window, div, px};
 
 use crate::shortcuts::{
-    self, AutoContrast, CenterCursor, CloseLayer, CloseWindow, LayoutCompare, LayoutGrid,
-    LayoutLightbox, LayoutOrtho, LayoutSingle, MoveLayerDown, MoveLayerUp, NextColormap, NextFrame,
-    NextLayer, NextSlice, NextSlices, OpenFiles, PreviousFrame, PreviousLayer, PreviousSlice,
-    PreviousSlices, ReloadLayer, ShowHelp, ToggleCrosshair, ToggleInfo, ToggleLayer, ToggleMip,
-    ToggleOutline, ToggleOverlay, ToggleRadiological, ToggleSegmentation, ToggleSync, ZoomIn,
-    ZoomOut, ZoomReset,
+    self, CenterCursor, CloseLayer, CloseWindow, CycleCornerText, FitWindow, LayoutCompare,
+    LayoutGrid, LayoutLightbox, LayoutOrthogonal, LayoutSingle, MoveLayerDown, MoveLayerUp,
+    NextColormap, NextFrame, NextLayer, NextSlice, NextSlicePage, OpenFiles, PreviousFrame,
+    PreviousLayer, PreviousSlice, PreviousSlicePage, ReloadLayer, ResetZoom, ShowHelp,
+    ToggleCrosshair, ToggleCursorSynchronization, ToggleLabelMode, ToggleLayerVisibility,
+    ToggleMip, ToggleOutline, ToggleOverlay, ToggleRadiological, ZoomIn, ZoomOut,
 };
 
 use super::{Layout, Viewer};
@@ -46,17 +46,22 @@ impl Viewer {
         self.step_active_slice(-1.0, cx);
     }
 
-    pub(super) fn next_slices(&mut self, _: &NextSlices, _: &mut Window, cx: &mut Context<Self>) {
-        self.step_active_slice(self.page_steps(), cx);
-    }
-
-    pub(super) fn previous_slices(
+    pub(super) fn next_slice_page(
         &mut self,
-        _: &PreviousSlices,
+        _: &NextSlicePage,
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.step_active_slice(-self.page_steps(), cx);
+        self.step_active_slice(self.slice_page_length(), cx);
+    }
+
+    pub(super) fn previous_slice_page(
+        &mut self,
+        _: &PreviousSlicePage,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.step_active_slice(-self.slice_page_length(), cx);
     }
 
     pub(super) fn next_frame(
@@ -83,8 +88,8 @@ impl Viewer {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let Some(index) = self.selected() {
-            self.change(
+        if let Some(index) = self.selected_layer() {
+            self.modify_display(
                 index,
                 |display| {
                     display.reset_cursor();
@@ -95,14 +100,14 @@ impl Viewer {
         }
     }
 
-    pub(super) fn auto_contrast(
+    pub(super) fn fit_window_action(
         &mut self,
-        _: &AutoContrast,
+        _: &FitWindow,
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let Some(index) = self.selected() {
-            self.auto_window(index, cx);
+        if let Some(index) = self.selected_layer() {
+            self.fit_window(index, cx);
         }
     }
 
@@ -117,15 +122,15 @@ impl Viewer {
         });
     }
 
-    pub(super) fn toggle_segmentation(
+    pub(super) fn toggle_label_mode(
         &mut self,
-        _: &ToggleSegmentation,
+        _: &ToggleLabelMode,
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let Some(index) = self.selected() {
+        if let Some(index) = self.selected_layer() {
             let enabled = !self.layers[index].display.label_mode();
-            self.change(index, |display| display.set_label_mode(enabled), cx);
+            self.modify_display(index, |display| display.set_label_mode(enabled), cx);
         }
     }
 
@@ -135,7 +140,7 @@ impl Viewer {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let Some(index) = self.selected() {
+        if let Some(index) = self.selected_layer() {
             self.close_layer(index, cx);
         }
     }
@@ -146,7 +151,7 @@ impl Viewer {
         _: &mut Window,
         _: &mut Context<Self>,
     ) {
-        if let Some(index) = self.selected() {
+        if let Some(index) = self.selected_layer() {
             self.reload_layer(index);
         }
     }
@@ -157,7 +162,7 @@ impl Viewer {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let Some(index) = self.selected()
+        if let Some(index) = self.selected_layer()
             && index > 0
         {
             self.move_layer(index, index - 1, cx);
@@ -170,7 +175,7 @@ impl Viewer {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let Some(index) = self.selected() {
+        if let Some(index) = self.selected_layer() {
             self.move_layer(index, index + 1, cx);
         }
     }
@@ -190,16 +195,21 @@ impl Viewer {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let layout = if self.layout.overlaid() {
+        let layout = if self.layout.is_overlaid() {
             Layout::Compare
         } else {
-            Layout::Ortho
+            Layout::Orthogonal
         };
         self.set_layout(layout, cx);
     }
 
-    pub(super) fn layout_ortho(&mut self, _: &LayoutOrtho, _: &mut Window, cx: &mut Context<Self>) {
-        self.set_layout(Layout::Ortho, cx);
+    pub(super) fn layout_orthogonal(
+        &mut self,
+        _: &LayoutOrthogonal,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.set_layout(Layout::Orthogonal, cx);
     }
 
     pub(super) fn layout_compare(
@@ -234,13 +244,18 @@ impl Viewer {
         self.set_layout(Layout::Lightbox(self.current_axis()), cx);
     }
 
-    pub(super) fn toggle_layer(&mut self, _: &ToggleLayer, _: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn toggle_layer_visibility(
+        &mut self,
+        _: &ToggleLayerVisibility,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.update_selected(cx, |layer| layer.visible = !layer.visible);
     }
 
     pub(super) fn next_layer(&mut self, _: &NextLayer, _: &mut Window, cx: &mut Context<Self>) {
         if !self.layers.is_empty() {
-            self.select((self.selected + 1) % self.layers.len(), cx);
+            self.select((self.selected_layer + 1) % self.layers.len(), cx);
         }
     }
 
@@ -252,13 +267,18 @@ impl Viewer {
     ) {
         if !self.layers.is_empty() {
             let count = self.layers.len();
-            self.select((self.selected + count - 1) % count, cx);
+            self.select((self.selected_layer + count - 1) % count, cx);
         }
     }
 
-    pub(super) fn toggle_sync(&mut self, _: &ToggleSync, _: &mut Window, cx: &mut Context<Self>) {
-        self.sync = !self.sync;
-        self.sync_from_first();
+    pub(super) fn toggle_curson_synchronization(
+        &mut self,
+        _: &ToggleCursorSynchronization,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.cursor_synchronization = !self.cursor_synchronization;
+        self.synchronize_cursors_from_first();
         cx.notify();
     }
 
@@ -273,8 +293,13 @@ impl Viewer {
         cx.notify();
     }
 
-    pub(super) fn toggle_info(&mut self, _: &ToggleInfo, _: &mut Window, cx: &mut Context<Self>) {
-        self.info = self.info.next();
+    pub(super) fn cycle_corner_text(
+        &mut self,
+        _: &CycleCornerText,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.corner_text = self.corner_text.next();
         cx.notify();
     }
 
@@ -301,33 +326,36 @@ impl Viewer {
         self.zoom_active(0.5_f64.sqrt(), window, cx);
     }
 
-    pub(super) fn reset_zoom(&mut self, _: &ZoomReset, _: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn reset_zoom(&mut self, _: &ResetZoom, _: &mut Window, cx: &mut Context<Self>) {
         self.zoom = Default::default();
         cx.notify();
     }
 
     fn step_active_slice(&mut self, steps: f64, cx: &mut Context<Self>) {
-        let Some((index, axis)) = self.active() else {
+        let Some((index, axis)) = self.active_panel() else {
             return;
         };
         let steps = steps * self.slice_stride();
         if self.layers[index].display.step_slice(axis, steps) {
-            self.sync_from(index);
+            self.synchronize_cursors_from(index);
             cx.notify();
         }
     }
 
     /// Zooms active view plane at the middle
     fn zoom_active(&mut self, factor: f64, window: &Window, cx: &mut Context<Self>) {
-        let Some(active) = self.active() else {
+        let Some(active) = self.active_panel() else {
             return;
         };
         let views = self.views(window);
-        let Some(view) = views.iter().find(|view| (view.base, view.axis) == active) else {
+        let Some(view) = views
+            .iter()
+            .find(|view| (view.base_layer, view.axis) == active)
+        else {
             return;
         };
         let zoom = &mut self.zoom[view.axis.index()];
-        *zoom = zoom.zoom_at(factor, (0.5, 0.5), view.fit);
+        *zoom = zoom.zoom_at(factor, (0.5, 0.5), view.fit_scale);
         cx.notify();
     }
 
@@ -335,7 +363,7 @@ impl Viewer {
         let cache = format!(
             "Decompressed volumes are cached in {} >= {:.1} GiB",
             self.cache.directory().display(),
-            self.cache.budget() as f64 / (1u64 << 30) as f64
+            self.cache.capacity() as f64 / (1u64 << 30) as f64
         );
         window.open_dialog(cx, move |dialog, _, cx| {
             let theme = cx.theme();
@@ -345,7 +373,7 @@ impl Viewer {
                 v_flex()
                     .gap_1()
                     .text_sm()
-                    .children(shortcuts::help().into_iter().map(|(keys, action)| {
+                    .children(shortcuts::help_entries().into_iter().map(|(keys, action)| {
                         h_flex()
                             .gap_3()
                             .child(

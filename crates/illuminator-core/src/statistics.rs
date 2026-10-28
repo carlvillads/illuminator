@@ -13,7 +13,7 @@ use crate::volume::Volume;
 use crate::voxel;
 
 #[derive(Clone, Copy)]
-pub struct Source<'a> {
+pub struct VolumeFrame<'a> {
     pub volume: &'a Volume,
     pub geometry: &'a VolumeGeometry,
     pub frame: usize,
@@ -22,23 +22,23 @@ pub struct Source<'a> {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Region {
     pub label: i64,
-    pub voxels: usize,
+    pub voxel_count: usize,
     pub volume_ml: f64,
-    pub values: Option<Summary>,
+    pub value_summary: Option<ValueSummary>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Summary {
+pub struct ValueSummary {
     pub(crate) count: usize,
     pub mean: f64,
-    pub std: f64,
-    pub min: f64,
-    pub max: f64,
+    pub standard_deviation: f64,
+    pub minimum: f64,
+    pub maximum: f64,
 }
 
 pub fn label_statistics(
-    labels: Source,
-    values: Option<Source>,
+    labels: VolumeFrame,
+    values: Option<VolumeFrame>,
     progress: &Progress,
 ) -> Result<Vec<Region>> {
     let depth = labels.geometry.dimensions[2];
@@ -47,8 +47,8 @@ pub fn label_statistics(
         .into_par_iter()
         .try_fold(
             HashMap::new,
-            |mut regions: HashMap<i64, Counts>, z| -> Result<_> {
-                progress.check()?;
+            |mut regions: HashMap<i64, RegionAccumulator>, z| -> Result<_> {
+                progress.check_cancelled()?;
                 measure_slice(labels, values, z, &mut regions)?;
                 let done = done.fetch_add(1, Ordering::Relaxed) + 1;
                 progress.report(done as f64 / depth as f64, "Measuring labels")?;
@@ -57,14 +57,14 @@ pub fn label_statistics(
         )
         .try_reduce(HashMap::new, |a, b| Ok(merge_regions(a, b)))?;
 
-    let voxel_ml = labels.geometry.voxel_to_world.determinant().abs() / 1000.0;
+    let voxel_volume_ml = labels.geometry.voxel_to_world.determinant().abs() / 1000.0;
     let mut regions: Vec<Region> = regions
         .into_iter()
         .map(|(label, counts)| Region {
             label,
-            voxels: counts.voxels,
-            volume_ml: counts.voxels as f64 * voxel_ml,
-            values: counts.values.summary(),
+            voxel_count: counts.voxels,
+            volume_ml: counts.voxels as f64 * voxel_volume_ml,
+            value_summary: counts.values.summary(),
         })
         .collect();
     regions.sort_by_key(|region| region.label);
@@ -73,26 +73,27 @@ pub fn label_statistics(
 
 /// Adds every labelled voxel of slice `z` to `regions`
 fn measure_slice(
-    labels: Source,
-    values: Option<Source>,
+    labels: VolumeFrame,
+    values: Option<VolumeFrame>,
     z: usize,
-    regions: &mut HashMap<i64, Counts>,
+    regions: &mut HashMap<i64, RegionAccumulator>,
 ) -> Result<()> {
-    let meta = labels.volume.meta();
+    let metadata = labels.volume.metadata();
     let [width, height, _] = labels.geometry.dimensions;
-    let bytes = labels.volume.frame(labels.frame);
+    let bytes = labels.volume.frame_bytes(labels.frame);
     for y in 0..height {
         for x in 0..width {
             let index = x + width * (y + height * z);
-            let raw = voxel::read_value(bytes, index, meta.datatype, meta.endian).unwrap_or(0.0);
-            let label = label_id(meta.scaling.apply(raw))?;
+            let raw =
+                voxel::read_value(bytes, index, metadata.data_type, metadata.endian).unwrap_or(0.0);
+            let label = label_id(metadata.scaling.apply(raw))?;
             if label == 0 {
                 continue;
             }
             let counts = regions.entry(label).or_default();
             counts.voxels += 1;
             let voxel = Point3D::new(x as f64, y as f64, z as f64);
-            let world = labels.geometry.voxel_to_world.point(voxel);
+            let world = labels.geometry.voxel_to_world.transform_point(voxel);
             if let Some(value) = values.and_then(|values| value_at(values, world)) {
                 counts.values.push(value);
             }
@@ -102,7 +103,10 @@ fn measure_slice(
 }
 
 /// Combines the regions that two threads measured
-fn merge_regions(mut a: HashMap<i64, Counts>, b: HashMap<i64, Counts>) -> HashMap<i64, Counts> {
+fn merge_regions(
+    mut a: HashMap<i64, RegionAccumulator>,
+    b: HashMap<i64, RegionAccumulator>,
+) -> HashMap<i64, RegionAccumulator> {
     for (label, counts) in b {
         let merged = a.remove(&label).unwrap_or_default().merge(counts);
         a.insert(label, merged);
@@ -110,7 +114,7 @@ fn merge_regions(mut a: HashMap<i64, Counts>, b: HashMap<i64, Counts>) -> HashMa
     a
 }
 
-fn value_at(values: Source, world: Point3D) -> Option<f64> {
+fn value_at(values: VolumeFrame, world: Point3D) -> Option<f64> {
     let nearest = values.geometry.nearest_voxel(world)?;
     values
         .volume
@@ -119,12 +123,12 @@ fn value_at(values: Source, world: Point3D) -> Option<f64> {
 }
 
 #[derive(Default)]
-struct Counts {
+struct RegionAccumulator {
     voxels: usize,
-    values: RunningStats,
+    values: RunningStatistics,
 }
 
-impl Counts {
+impl RegionAccumulator {
     fn merge(self, other: Self) -> Self {
         Self {
             voxels: self.voxels + other.voxels,
@@ -134,34 +138,34 @@ impl Counts {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct RunningStats {
+pub(crate) struct RunningStatistics {
     count: usize,
     mean: f64,
-    m2: f64,
-    min: f64,
-    max: f64,
+    sum_of_squared_deviations: f64,
+    minimum: f64,
+    maximum: f64,
 }
 
-impl Default for RunningStats {
+impl Default for RunningStatistics {
     fn default() -> Self {
         Self {
             count: 0,
             mean: 0.0,
-            m2: 0.0,
-            min: f64::INFINITY,
-            max: f64::NEG_INFINITY,
+            sum_of_squared_deviations: 0.0,
+            minimum: f64::INFINITY,
+            maximum: f64::NEG_INFINITY,
         }
     }
 }
 
-impl RunningStats {
-    fn push(&mut self, value: f64) {
+impl RunningStatistics {
+    pub(crate) fn push(&mut self, value: f64) {
         self.count += 1;
         let delta = value - self.mean;
         self.mean += delta / self.count as f64;
-        self.m2 += delta * (value - self.mean);
-        self.min = self.min.min(value);
-        self.max = self.max.max(value);
+        self.sum_of_squared_deviations += delta * (value - self.mean);
+        self.minimum = self.minimum.min(value);
+        self.maximum = self.maximum.max(value);
     }
 
     fn merge(self, other: Self) -> Self {
@@ -177,23 +181,25 @@ impl RunningStats {
         Self {
             count,
             mean: self.mean + delta * share,
-            m2: self.m2 + other.m2 + delta * delta * self.count as f64 * share,
-            min: self.min.min(other.min),
-            max: self.max.max(other.max),
+            sum_of_squared_deviations: self.sum_of_squared_deviations
+                + other.sum_of_squared_deviations
+                + delta * delta * self.count as f64 * share,
+            minimum: self.minimum.min(other.minimum),
+            maximum: self.maximum.max(other.maximum),
         }
     }
 
-    fn summary(self) -> Option<Summary> {
-        (self.count > 0).then(|| Summary {
+    pub(crate) fn summary(self) -> Option<ValueSummary> {
+        (self.count > 0).then(|| ValueSummary {
             count: self.count,
             mean: self.mean,
-            std: if self.count > 1 {
-                (self.m2 / (self.count - 1) as f64).sqrt()
+            standard_deviation: if self.count > 1 {
+                (self.sum_of_squared_deviations / (self.count - 1) as f64).sqrt()
             } else {
                 0.0
             },
-            min: self.min,
-            max: self.max,
+            minimum: self.minimum,
+            maximum: self.maximum,
         })
     }
 }
@@ -204,11 +210,15 @@ pub fn to_csv(regions: &[Region]) -> String {
         let _ = write!(
             csv,
             "{},{},{}",
-            region.label, region.voxels, region.volume_ml
+            region.label, region.voxel_count, region.volume_ml
         );
-        match region.values {
+        match region.value_summary {
             Some(v) => {
-                let _ = writeln!(csv, ",{},{},{},{},{}", v.count, v.mean, v.std, v.min, v.max);
+                let _ = writeln!(
+                    csv,
+                    ",{},{},{},{},{}",
+                    v.count, v.mean, v.standard_deviation, v.minimum, v.maximum
+                );
             }
             None => csv.push_str(",0,,,,\n"),
         }
@@ -220,7 +230,7 @@ pub fn to_csv(regions: &[Region]) -> String {
 mod tests {
     use super::*;
     use crate::geometry::GeometryOptions;
-    use crate::test_util::{Fixture, load};
+    use crate::test_fixtures::{Fixture, write_and_load};
 
     fn close(a: f64, b: f64) -> bool {
         (a - b).abs() < 1e-9
@@ -229,24 +239,33 @@ mod tests {
     #[test]
     fn running_statistics_merge_like_one_pass() {
         let values = [3.0, -1.0, 4.0, 1.0, 5.0, 9.0, 2.0];
-        let mut whole = RunningStats::default();
+        let mut whole = RunningStatistics::default();
         values.iter().for_each(|&v| whole.push(v));
-        let (mut a, mut b) = (RunningStats::default(), RunningStats::default());
+        let (mut a, mut b) = (RunningStatistics::default(), RunningStatistics::default());
         values[..3].iter().for_each(|&v| a.push(v));
         values[3..].iter().for_each(|&v| b.push(v));
         let (whole, merged) = (whole.summary().unwrap(), a.merge(b).summary().unwrap());
-        assert!(close(whole.mean, merged.mean) && close(whole.std, merged.std));
-        assert_eq!((merged.min, merged.max, merged.count), (-1.0, 9.0, 7));
-        let mut five = RunningStats::default();
+        assert!(
+            close(whole.mean, merged.mean)
+                && close(whole.standard_deviation, merged.standard_deviation)
+        );
+        assert_eq!(
+            (merged.minimum, merged.maximum, merged.count),
+            (-1.0, 9.0, 7)
+        );
+        let mut five = RunningStatistics::default();
         (1..=5).for_each(|v| five.push(f64::from(v)));
-        assert!(close(five.summary().unwrap().std, 2.5f64.sqrt()));
+        assert!(close(
+            five.summary().unwrap().standard_deviation,
+            2.5f64.sqrt()
+        ));
     }
 
     #[test]
     fn measures_values_inside_labels() {
-        let dir = tempfile::tempdir().unwrap();
+        let directory = tempfile::tempdir().unwrap();
         let load_with_geometry = |fixture: &Fixture, name: &str| {
-            let volume = load(&dir, fixture, name);
+            let volume = write_and_load(&directory, fixture, name);
             let geometry = volume.geometry(GeometryOptions::default()).unwrap();
             (volume, geometry)
         };
@@ -256,7 +275,7 @@ mod tests {
         };
         let (label_volume, label_geometry) = load_with_geometry(&labels, "labels.nii");
         let (value_volume, value_geometry) = load_with_geometry(&Fixture::default(), "values.nii");
-        let source = |volume, geometry| Source {
+        let source = |volume, geometry| VolumeFrame {
             volume,
             geometry,
             frame: 0,
@@ -270,14 +289,17 @@ mod tests {
 
         assert_eq!(regions.len(), 2);
         let one = &regions[0];
-        assert_eq!((one.label, one.voxels), (1, 16));
+        assert_eq!((one.label, one.voxel_count), (1, 16));
         assert!(close(one.volume_ml, 0.016));
         let expected: Vec<f64> = (1..48).step_by(3).map(|i| i as f64).collect();
         let mean = expected.iter().sum::<f64>() / 16.0;
         let variance = expected.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / 15.0;
-        let values = one.values.unwrap();
-        assert!(close(values.mean, mean) && close(values.std, variance.sqrt()));
-        assert_eq!((values.min, values.max, values.count), (1.0, 46.0, 16));
+        let values = one.value_summary.unwrap();
+        assert!(close(values.mean, mean) && close(values.standard_deviation, variance.sqrt()));
+        assert_eq!(
+            (values.minimum, values.maximum, values.count),
+            (1.0, 46.0, 16)
+        );
 
         // without values, only what the labels cover
         let volumes = label_statistics(
@@ -286,16 +308,16 @@ mod tests {
             &Progress::default(),
         )
         .unwrap();
-        assert_eq!(volumes[1].voxels, 16);
-        assert_eq!(volumes[1].values, None);
+        assert_eq!(volumes[1].voxel_count, 16);
+        assert_eq!(volumes[1].value_summary, None);
         assert!(to_csv(&volumes).ends_with("2,16,0.016,0,,,,\n"));
     }
 
     #[test]
     fn follows_the_world_across_grids() {
-        let dir = tempfile::tempdir().unwrap();
+        let directory = tempfile::tempdir().unwrap();
         let labels = Fixture {
-            dims: vec![2, 2, 2],
+            dimensions: vec![2, 2, 2],
             value: |i| if i == 0 { 5.0 } else { 0.0 },
             sform: [
                 [2.0, 0.0, 0.0, 1.0],
@@ -304,17 +326,17 @@ mod tests {
             ],
             ..Fixture::default()
         };
-        let label_volume = load(&dir, &labels, "coarse.nii");
-        let value_volume = load(&dir, &Fixture::default(), "fine.nii");
+        let label_volume = write_and_load(&directory, &labels, "coarse.nii");
+        let value_volume = write_and_load(&directory, &Fixture::default(), "fine.nii");
         let label_geometry = label_volume.geometry(GeometryOptions::default()).unwrap();
         let value_geometry = value_volume.geometry(GeometryOptions::default()).unwrap();
         let regions = label_statistics(
-            Source {
+            VolumeFrame {
                 volume: &label_volume,
                 geometry: &label_geometry,
                 frame: 0,
             },
-            Some(Source {
+            Some(VolumeFrame {
                 volume: &value_volume,
                 geometry: &value_geometry,
                 frame: 0,
@@ -324,7 +346,7 @@ mod tests {
         .unwrap();
         assert_eq!((regions.len(), regions[0].label), (1, 5));
         assert!(close(regions[0].volume_ml, 0.008));
-        let values = regions[0].values.unwrap();
+        let values = regions[0].value_summary.unwrap();
         assert_eq!((values.count, values.mean), (1, 17.0));
     }
 }

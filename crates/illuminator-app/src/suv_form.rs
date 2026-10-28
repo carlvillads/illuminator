@@ -5,9 +5,9 @@ use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::menu::DropdownMenu;
 use gpui_kit::component::{ActiveTheme, Sizable, WindowExt, h_flex, v_flex};
 use gpui_kit::*;
-use illuminator_core::suv::{BiologicalSex, Normalization, SuvInputs, TRACERS};
+use illuminator_core::suv::{BiologicalSex, Normalization, SuvInputs, TRACER_HALF_LIVES};
 
-use crate::ui::{choice_items, parse_value};
+use crate::ui::{add_choice_items, parse_value};
 use crate::viewer::Viewer;
 
 pub struct SuvForm {
@@ -16,7 +16,7 @@ pub struct SuvForm {
     weight: Entity<InputState>,
     height: Entity<InputState>,
     dose: Entity<InputState>,
-    minutes: Entity<InputState>,
+    minutes_after_injection: Entity<InputState>,
     biological_sex: Option<BiologicalSex>,
     normalization: Normalization,
     half_life_minutes: f64,
@@ -27,7 +27,7 @@ pub struct SuvForm {
 impl SuvForm {
     pub fn new(
         load_id: u64,
-        known: Option<SuvInputs>,
+        existing_inputs: Option<SuvInputs>,
         viewer: WeakEntity<Viewer>,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -36,35 +36,39 @@ impl SuvForm {
             let text = value.map(|value| value.to_string()).unwrap_or_default();
             cx.new(|cx| InputState::new(window, cx).default_value(text))
         };
-        let weight = input(known.map(|k| k.weight_kg));
-        let height = input(known.and_then(|k| k.height_cm));
-        let dose = input(known.map(|k| k.dose_mbq));
-        let minutes = input(known.map(|k| k.minutes_after_injection));
+        let weight = input(existing_inputs.map(|inputs| inputs.weight_kg));
+        let height = input(existing_inputs.and_then(|inputs| inputs.height_cm));
+        let dose = input(existing_inputs.map(|inputs| inputs.dose_mbq));
+        let minutes_after_injection =
+            input(existing_inputs.map(|inputs| inputs.minutes_after_injection));
         Self {
             load_id,
             viewer,
             weight,
             height,
             dose,
-            minutes,
-            biological_sex: known.and_then(|k| k.biological_sex),
-            normalization: known.map(|k| k.normalization).unwrap_or_default(),
-            half_life_minutes: known.map_or(TRACERS[0].1, |k| k.half_life_minutes),
-            bq_ml_per_unit: known.map_or(1.0, |k| k.bq_ml_per_unit),
+            minutes_after_injection,
+            biological_sex: existing_inputs.and_then(|inputs| inputs.biological_sex),
+            normalization: existing_inputs
+                .map(|inputs| inputs.normalization)
+                .unwrap_or_default(),
+            half_life_minutes: existing_inputs
+                .map_or(TRACER_HALF_LIVES[0].1, |inputs| inputs.half_life_minutes),
+            bq_ml_per_unit: existing_inputs.map_or(1.0, |inputs| inputs.bq_ml_per_unit),
             error: None,
         }
     }
 
     fn apply(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let number = |state: &Entity<InputState>| parse_value(&state.read(cx).value());
+        let parse_field = |state: &Entity<InputState>| parse_value(&state.read(cx).value());
         let inputs = match (
-            number(&self.weight),
-            number(&self.dose),
-            number(&self.minutes),
+            parse_field(&self.weight),
+            parse_field(&self.dose),
+            parse_field(&self.minutes_after_injection),
         ) {
             (Some(weight_kg), Some(dose_mbq), Some(minutes_after_injection)) => SuvInputs {
                 weight_kg,
-                height_cm: number(&self.height),
+                height_cm: parse_field(&self.height),
                 biological_sex: self.biological_sex,
                 normalization: self.normalization,
                 dose_mbq,
@@ -78,7 +82,7 @@ impl SuvForm {
                 return;
             }
         };
-        if let Err(error) = inputs.factor() {
+        if let Err(error) = inputs.conversion_factor() {
             self.error = Some(error.to_string().into());
             cx.notify();
             return;
@@ -100,9 +104,9 @@ impl SuvForm {
             .xsmall()
             .label(label)
             .dropdown_menu(move |menu, _, _| {
-                let tracers =
-                    TRACERS.map(|(name, minutes)| (format!("{name} ({minutes} min)"), minutes));
-                choice_items(menu, &form, tracers, |form, minutes, _, cx| {
+                let tracers = TRACER_HALF_LIVES
+                    .map(|(name, minutes)| (format!("{name} ({minutes} min)"), minutes));
+                add_choice_items(menu, &form, tracers, |form, minutes, _, cx| {
                     form.half_life_minutes = minutes;
                     cx.notify();
                 })
@@ -117,7 +121,7 @@ impl SuvForm {
             .dropdown_menu(move |menu, _, _| {
                 let sexes =
                     [BiologicalSex::Male, BiologicalSex::Female].map(|sex| (sex.label(), sex));
-                choice_items(menu, &form, sexes, |form, biological_sex, _, cx| {
+                add_choice_items(menu, &form, sexes, |form, biological_sex, _, cx| {
                     form.biological_sex = Some(biological_sex);
                     cx.notify();
                 })
@@ -131,7 +135,7 @@ impl SuvForm {
             .label(self.normalization.label())
             .dropdown_menu(move |menu, _, _| {
                 let choices = Normalization::ALL.map(|n| (n.label(), n));
-                choice_items(menu, &form, choices, |form, normalization, _, cx| {
+                add_choice_items(menu, &form, choices, |form, normalization, _, cx| {
                     form.normalization = normalization;
                     form.error = None;
                     cx.notify();
@@ -144,7 +148,7 @@ impl Render for SuvForm {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
         let (muted, danger) = (theme.muted_foreground, theme.danger);
-        let row = |label: &'static str, input: &Entity<InputState>, unit: &'static str| {
+        let input_row = |label: &'static str, input: &Entity<InputState>, unit: &'static str| {
             h_flex()
                 .gap_2()
                 .child(div().w(px(150.0)).child(label))
@@ -154,11 +158,15 @@ impl Render for SuvForm {
         v_flex()
             .gap_2()
             .text_sm()
-            .child(row("Body weight", &self.weight, "kg"))
-            .child(row("Height", &self.height, "cm"))
+            .child(input_row("Body weight", &self.weight, "kg"))
+            .child(input_row("Height", &self.height, "cm"))
             .child(choice_row("Sex", self.biological_sex_button(cx)))
-            .child(row("Injected dose", &self.dose, "MBq"))
-            .child(row("Injection to scan", &self.minutes, "min"))
+            .child(input_row("Injected dose", &self.dose, "MBq"))
+            .child(input_row(
+                "Injection to scan",
+                &self.minutes_after_injection,
+                "min",
+            ))
             .child(choice_row("Tracer", self.tracer_button(cx)))
             .child(choice_row("Normalize by", self.normalization_button(cx)))
             .child(
@@ -186,7 +194,7 @@ impl Render for SuvForm {
 }
 
 fn tracer_name(half_life: f64) -> Option<&'static str> {
-    TRACERS
+    TRACER_HALF_LIVES
         .iter()
         .find(|&&(_, minutes)| (minutes - half_life).abs() <= minutes * 0.01)
         .map(|&(name, _)| name)

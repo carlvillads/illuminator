@@ -2,12 +2,12 @@
 //! From Scientific colour maps 8 by Fabio Crameri <https://www.fabiocrameri.ch/colourmaps>.
 //! Copyright (c) 2023 Fabio Crameri, MIT License. doi:10.5281/zenodo.1243862
 
-use super::{Cmap, Ramp};
+use super::{ColormapDefinition, Ramp};
 
-pub(crate) const VIK: Cmap = Cmap {
+pub(crate) const VIK: ColormapDefinition = ColormapDefinition {
     name: "Vik",
     id: "vik",
-    desc: "Diverging. Dark blue to dark red through white",
+    description: "Diverging. Dark blue to dark red through white",
     ramp: Ramp::Table(&[
         [0.001328, 0.069836, 0.379529],
         [0.002366, 0.076475, 0.383518],

@@ -7,34 +7,39 @@ use crate::progress::Progress;
 use crate::volume::Volume;
 use crate::voxel;
 
-/// The distinct labels in frame `t` from low to high without background.
+/// The distinct labels in `frame` from low to high without background.
 /// Fails if a voxel isn't an integer or if there are more than `limit` labels.
 pub(crate) fn find_labels(
     volume: &Volume,
-    t: usize,
+    frame: usize,
     limit: usize,
     progress: &Progress,
 ) -> Result<Vec<i64>> {
-    let meta = volume.meta();
-    let voxel_count = meta.frame_voxels();
+    let metadata = volume.metadata();
+    let voxel_count = metadata.voxels_per_frame();
     let mut labels = HashSet::new();
     // neighboring voxels usually share a label, so only look at changes
     let mut previous = 0;
-    voxel::for_each_value(volume.frame(t), meta.datatype, meta.endian, |i, raw| {
-        if i % 65536 == 0 {
-            progress.report(i as f64 / voxel_count as f64, "Preparing labels")?;
-        }
-        let label = label_id(meta.scaling.apply(raw))?;
-        if label != previous {
-            previous = label;
-            if label != 0 && labels.insert(label) && labels.len() > limit {
-                return Err(Error::invalid(format!(
-                    "More than {limit} distinct labels. Are you sure this is a label map?"
-                )));
+    voxel::for_each_value(
+        volume.frame_bytes(frame),
+        metadata.data_type,
+        metadata.endian,
+        |i, raw| {
+            if i % 65536 == 0 {
+                progress.report(i as f64 / voxel_count as f64, "Preparing labels")?;
             }
-        }
-        Ok(())
-    })?;
+            let label = label_id(metadata.scaling.apply(raw))?;
+            if label != previous {
+                previous = label;
+                if label != 0 && labels.insert(label) && labels.len() > limit {
+                    return Err(Error::invalid(format!(
+                        "More than {limit} distinct labels. Are you sure this is a label map?"
+                    )));
+                }
+            }
+            Ok(())
+        },
+    )?;
     progress.report(1.0, "Prepared labels")?;
     let mut labels: Vec<i64> = labels.into_iter().collect();
     labels.sort_unstable();
@@ -89,22 +94,22 @@ fn hsv_to_rgb(h: f32, s: f32, v: f32) -> [f32; 3] {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_util::{Fixture, load};
+    use crate::test_fixtures::{Fixture, write_and_load};
     use crate::voxel::DataType;
 
     #[test]
     fn counts_the_labels_of_one_frame() {
-        let dir = tempfile::tempdir().unwrap();
+        let directory = tempfile::tempdir().unwrap();
         let fixture = Fixture {
             datatype: DataType::I32,
-            dims: vec![4, 3, 4, 2],
+            dimensions: vec![4, 3, 4, 2],
             value: |i| {
                 const IDS: [f64; 4] = [0.0, 300.0, 1000.0, 16_777_217.0];
                 if i < 48 { IDS[i % 4] } else { IDS[i % 2] }
             },
             ..Fixture::default()
         };
-        let volume = load(&dir, &fixture, "labels.nii");
+        let volume = write_and_load(&directory, &fixture, "labels.nii");
         let none = Progress::default();
 
         assert_eq!(
@@ -117,13 +122,13 @@ mod tests {
 
     #[test]
     fn rejects_fractional_labels() {
-        let dir = tempfile::tempdir().unwrap();
+        let directory = tempfile::tempdir().unwrap();
         let fixture = Fixture {
             datatype: DataType::F32,
             value: |i| i as f64 + 0.25,
             ..Fixture::default()
         };
-        let volume = load(&dir, &fixture, "labels.nii");
+        let volume = write_and_load(&directory, &fixture, "labels.nii");
         assert!(find_labels(&volume, 0, 256, &Progress::default()).is_err());
     }
 

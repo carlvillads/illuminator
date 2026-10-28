@@ -9,7 +9,7 @@ use std::rc::Rc;
 
 const CAPTION_WIDTH: f32 = 64.0;
 
-pub trait AppStyle: Styled + Sized {
+pub trait StyleExtensions: Styled + Sized {
     fn truncate_start(self) -> Self {
         self.flex_1()
             .min_w_0()
@@ -19,10 +19,10 @@ pub trait AppStyle: Styled + Sized {
     }
 }
 
-impl<E: Styled> AppStyle for E {}
+impl<E: Styled> StyleExtensions for E {}
 
 /// A editable `value` (number) with up to six significant digits.
-pub fn format_editable(value: f64) -> String {
+pub fn format_editable_value(value: f64) -> String {
     if value == 0.0 {
         return "0".to_string();
     }
@@ -94,18 +94,18 @@ pub fn section_title(text: impl Into<SharedString>, cx: &App) -> Div {
         .child(div().flex_1().h(px(1.0)).bg(theme.background))
 }
 
-pub fn colormap_strip(colormap: Colormap, labels: bool, blocks: usize) -> Div {
+pub fn colormap_strip(colormap: Colormap, labels: bool, segment_count: usize) -> Div {
     h_flex()
         .w_full()
         .h(px(10.0))
         .rounded_sm()
         .overflow_hidden()
-        .children((0..blocks).map(|block| {
+        .children((0..segment_count).map(|block| {
             let color = if labels {
                 let [r, g, b, _] = label_color(block as i64 + 1);
                 [r, g, b]
             } else {
-                colormap.color((block as f64 + 0.5) / blocks as f64)
+                colormap.color((block as f64 + 0.5) / segment_count as f64)
             };
             div().flex_1().h_full().bg(rgb_to_rgba(color))
         }))
@@ -116,13 +116,13 @@ pub fn rgb_to_rgba([r, g, b]: [u8; 3]) -> Rgba {
 }
 
 /// Adds one menu item per (label, choice) to menu.
-pub fn choice_items<E: 'static, L: Into<SharedString>, T: Copy + 'static>(
+pub fn add_choice_items<E: 'static, L: Into<SharedString>, T: Copy + 'static>(
     mut menu: PopupMenu,
     entity: &WeakEntity<E>,
     choices: impl IntoIterator<Item = (L, T)>,
-    choose: impl Fn(&mut E, T, &mut Window, &mut Context<E>) + 'static,
+    on_choose: impl Fn(&mut E, T, &mut Window, &mut Context<E>) + 'static,
 ) -> PopupMenu {
-    let choose = Rc::new(choose);
+    let choose = Rc::new(on_choose);
     for (label, choice) in choices {
         let (entity, choose) = (entity.clone(), Rc::clone(&choose));
         menu = menu.item(PopupMenuItem::new(label).on_click(move |_, window, cx| {
@@ -133,7 +133,7 @@ pub fn choice_items<E: 'static, L: Into<SharedString>, T: Copy + 'static>(
 }
 
 /// Whether the users window manager leaves the title bar to the app
-pub fn uses_client_manager_decorations(window: &Window) -> bool {
+pub fn uses_client_side_decorations(window: &Window) -> bool {
     matches!(window.window_decorations(), Decorations::Client { .. })
 }
 
@@ -143,7 +143,7 @@ pub fn title_bar(title: &'static str) -> TitleBar {
 
 #[cfg(test)]
 mod tests {
-    use super::{format_editable, format_value, parse_value};
+    use super::{format_editable_value, format_value, parse_value};
 
     #[test]
     fn values_are_short() {
@@ -153,12 +153,12 @@ mod tests {
 
     #[test]
     fn editable_values_keep_six_digits() {
-        assert_eq!(format_editable(1300.0000000000002), "1300");
-        assert_eq!(format_editable(-1350.0), "-1350");
-        assert_eq!(format_editable(2.5), "2.5");
-        assert_eq!(format_editable(0.000123456789), "0.000123457");
-        assert_eq!(format_editable(-0.0), "0");
-        assert_eq!(format_editable(123456789.0), "123456789");
+        assert_eq!(format_editable_value(1300.0000000000002), "1300");
+        assert_eq!(format_editable_value(-1350.0), "-1350");
+        assert_eq!(format_editable_value(2.5), "2.5");
+        assert_eq!(format_editable_value(0.000123456789), "0.000123457");
+        assert_eq!(format_editable_value(-0.0), "0");
+        assert_eq!(format_editable_value(123456789.0), "123456789");
     }
 
     #[test]
@@ -167,7 +167,7 @@ mod tests {
         assert_eq!(parse_value("2,5"), Some(2.5));
         assert_eq!(parse_value("1e3"), Some(1000.0));
         assert_eq!(
-            parse_value(&format_editable(0.000123456789)),
+            parse_value(&format_editable_value(0.000123456789)),
             Some(0.000123457)
         );
         for wrong in ["", "abc", "inf", "NaN", "1.2.3"] {

@@ -8,8 +8,8 @@
     {
       "value" : {
         "linear-gradient" : [
-          "display-p3:0.72396,0.72751,0.72751,1.00000",
-          "srgb:0.59608,0.59608,0.61569,1.00000"
+          "display-p3:0.67725,0.73906,0.95027,1.00000",
+          "display-p3:0.61372,0.70416,0.83223,1.00000"
         ],
         "orientation" : {
           "start" : {
@@ -90,6 +90,9 @@
     {
       "blend-mode-specializations" : [
         {
+          "value" : "screen"
+        },
+        {
           "appearance" : "tinted",
           "value" : "plus-lighter"
         }
@@ -123,14 +126,14 @@
           }
         }
       ],
-      "lighting" : "individual",
+      "lighting" : "combined",
       "refractivity" : {
         "depth" : 0,
         "enabled" : true,
         "strength" : -0.4104296875
       },
       "shadow" : {
-        "kind" : "neutral",
+        "kind" : "layer-color",
         "opacity" : 0.48
       },
       "specular" : "inside",
@@ -140,6 +143,7 @@
       }
     },
     {
+      "blend-mode" : "hard-light",
       "blur-material-specializations" : [
         {
           "value" : null
@@ -173,14 +177,14 @@
       ],
       "lighting" : "combined",
       "refractivity" : {
-        "depth" : 0,
-        "enabled" : false,
-        "strength" : 1
+        "depth" : 0.5,
+        "enabled" : true,
+        "strength" : 0
       },
       "shadow-specializations" : [
         {
           "value" : {
-            "kind" : "neutral",
+            "kind" : "layer-color",
             "opacity" : 0.77
           }
         },
@@ -197,7 +201,7 @@
         {
           "value" : {
             "enabled" : true,
-            "value" : 0.42
+            "value" : 0.25
           }
         },
         {
@@ -210,9 +214,10 @@
       ]
     },
     {
+      "blend-mode" : "hard-light",
       "blur-material-specializations" : [
         {
-          "value" : 0.5
+          "value" : 0.71
         },
         {
           "appearance" : "tinted",
@@ -256,6 +261,7 @@
         }
       ],
       "lighting" : "combined",
+      "opacity" : 0.95,
       "refractivity" : {
         "depth" : 0.2473828125,
         "enabled" : true,

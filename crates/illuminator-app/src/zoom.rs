@@ -9,7 +9,7 @@ pub struct Zoom {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Visible {
+pub struct VisibleRegion {
     origin: (f64, f64),
     /// Width and height
     extent: (f64, f64),
@@ -25,13 +25,13 @@ impl Default for Zoom {
 }
 
 impl Zoom {
-    pub const MAX: f64 = 32.0;
+    pub const MAXIMUM_SCALE: f64 = 32.0;
 
-    pub fn visible(self, fit: (f64, f64)) -> Visible {
+    pub fn visible(self, fit_scale: (f64, f64)) -> VisibleRegion {
         let extent = |fit: f64| (1.0 / (self.scale * fit)).min(1.0);
-        let extent = (extent(fit.0), extent(fit.1));
+        let extent = (extent(fit_scale.0), extent(fit_scale.1));
         let origin = |center: f64, extent: f64| (center - extent / 2.0).clamp(0.0, 1.0 - extent);
-        Visible {
+        VisibleRegion {
             origin: (
                 origin(self.center.0, extent.0),
                 origin(self.center.1, extent.1),
@@ -40,32 +40,32 @@ impl Zoom {
         }
     }
 
-    pub fn zoom_at(self, factor: f64, anchor: (f64, f64), fit: (f64, f64)) -> Self {
-        let fixed = self.visible(fit).to_plane(anchor);
+    pub fn zoom_at(self, factor: f64, anchor: (f64, f64), fit_scale: (f64, f64)) -> Self {
+        let fixed = self.visible(fit_scale).view_to_plane(anchor);
         let zoomed = Self {
-            scale: (self.scale * factor).clamp(1.0, Self::MAX),
+            scale: (self.scale * factor).clamp(1.0, Self::MAXIMUM_SCALE),
             ..self
         };
-        let extent = zoomed.visible(fit).extent;
-        zoomed.starting_at(
+        let extent = zoomed.visible(fit_scale).extent;
+        zoomed.with_origin(
             (fixed.0 - anchor.0 * extent.0, fixed.1 - anchor.1 * extent.1),
-            fit,
+            fit_scale,
         )
     }
 
-    pub fn pan(self, (ds, dt): (f64, f64), fit: (f64, f64)) -> Self {
-        let visible = self.visible(fit);
-        self.starting_at(
+    pub fn pan(self, (ds, dt): (f64, f64), fit_scale: (f64, f64)) -> Self {
+        let visible = self.visible(fit_scale);
+        self.with_origin(
             (
                 visible.origin.0 - ds * visible.extent.0,
                 visible.origin.1 - dt * visible.extent.1,
             ),
-            fit,
+            fit_scale,
         )
     }
 
-    fn starting_at(self, origin: (f64, f64), fit: (f64, f64)) -> Self {
-        let extent = self.visible(fit).extent;
+    fn with_origin(self, origin: (f64, f64), fit_scale: (f64, f64)) -> Self {
+        let extent = self.visible(fit_scale).extent;
         let center = |origin: f64, extent: f64| origin.clamp(0.0, 1.0 - extent) + extent / 2.0;
         Self {
             center: (center(origin.0, extent.0), center(origin.1, extent.1)),
@@ -74,7 +74,7 @@ impl Zoom {
     }
 }
 
-impl Visible {
+impl VisibleRegion {
     pub fn apply(self, plane: SlicePlane) -> SlicePlane {
         SlicePlane {
             origin: plane.point(self.origin.0, self.origin.1),
@@ -83,14 +83,14 @@ impl Visible {
         }
     }
 
-    pub fn to_plane(self, (s, t): (f64, f64)) -> (f64, f64) {
+    pub fn view_to_plane(self, (s, t): (f64, f64)) -> (f64, f64) {
         (
             self.origin.0 + s * self.extent.0,
             self.origin.1 + t * self.extent.1,
         )
     }
 
-    pub fn to_view(self, (s, t): (f64, f64)) -> (f64, f64) {
+    pub fn plane_to_view(self, (s, t): (f64, f64)) -> (f64, f64) {
         (
             (s - self.origin.0) / self.extent.0,
             (t - self.origin.1) / self.extent.1,
@@ -124,9 +124,9 @@ mod tests {
         let zoom = Zoom::default().zoom_at(4.0, anchor, (1.0, 1.0));
         assert_eq!(zoom.scale, 4.0);
         let visible = zoom.visible((1.0, 1.0));
-        assert!(close(visible.to_plane(anchor), anchor));
+        assert!(close(visible.view_to_plane(anchor), anchor));
         assert!(close(
-            visible.to_view(visible.to_plane((0.1, 0.9))),
+            visible.plane_to_view(visible.view_to_plane((0.1, 0.9))),
             (0.1, 0.9)
         ));
         assert_eq!(zoom.zoom_at(0.01, anchor, (1.0, 1.0)), Zoom::default());
@@ -136,11 +136,14 @@ mod tests {
     fn panning_stops_at_the_edges() {
         let fit = (1.0, 1.0);
         let zoom = Zoom::default().zoom_at(2.0, (0.5, 0.5), fit);
-        assert!(close(zoom.visible(fit).to_plane((0.0, 0.0)), (0.25, 0.25)));
+        assert!(close(
+            zoom.visible(fit).view_to_plane((0.0, 0.0)),
+            (0.25, 0.25)
+        ));
         let panned = zoom.pan((0.5, 0.0), fit).visible(fit);
-        assert!(close(panned.to_plane((0.0, 0.0)), (0.0, 0.25)));
+        assert!(close(panned.view_to_plane((0.0, 0.0)), (0.0, 0.25)));
         let panned = zoom.pan((5.0, -5.0), fit).visible(fit);
-        assert!(close(panned.to_plane((0.0, 0.0)), (0.0, 0.5)));
+        assert!(close(panned.view_to_plane((0.0, 0.0)), (0.0, 0.5)));
     }
 
     #[test]

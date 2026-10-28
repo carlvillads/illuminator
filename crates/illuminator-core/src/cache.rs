@@ -1,6 +1,6 @@
 //! A cache of decompressed `.gz` volumes, so they can be memory-mapped like other files.
 //!
-//! When it would grow past its budget, it first removes the oldest files that no volume uses.
+//! When it would grow past its capacity, it first removes the oldest files that no volume uses.
 
 use flate2::read::MultiGzDecoder;
 use std::collections::{HashMap, HashSet};
@@ -16,7 +16,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use crate::error::{Error, Result};
 use crate::progress::Progress;
 
-const GIB: f64 = 1024.0 * 1024.0 * 1024.0;
+const BYTES_PER_GIBIBYTE: f64 = 1024.0 * 1024.0 * 1024.0;
 
 #[derive(Debug)]
 pub(crate) struct CacheLease {
@@ -35,23 +35,23 @@ type Leases = HashMap<PathBuf, Weak<CacheLease>>;
 #[derive(Default)]
 struct State {
     leases: Leases,
-    reserved: u64,
-    writing: HashSet<PathBuf>,
+    reserved_bytes: u64,
+    paths_being_written: HashSet<PathBuf>,
 }
 
 pub struct VolumeCache {
     directory: PathBuf,
-    budget: u64,
+    capacity: u64,
     state: Mutex<State>,
-    written: Condvar,
+    write_finished: Condvar,
 }
 
 impl VolumeCache {
-    /// A cache in `directory` holding at most `budget_bytes`.
-    /// [`Self::from_env`] picks both from the environment.
-    pub fn new(directory: impl Into<PathBuf>, budget_bytes: u64) -> Result<Self> {
-        if budget_bytes == 0 {
-            return Err(Error::invalid("Cache budget must be more than zero"));
+    /// A cache in `directory` holding at most `capacity_bytes`.
+    /// [`Self::from_environment`] picks both from the environment.
+    pub fn new(directory: impl Into<PathBuf>, capacity_bytes: u64) -> Result<Self> {
+        if capacity_bytes == 0 {
+            return Err(Error::invalid("Cache capacity must be more than zero"));
         }
         let directory = directory.into();
         let mut builder = fs::DirBuilder::new();
@@ -62,13 +62,13 @@ impl VolumeCache {
 
         Ok(Self {
             directory,
-            budget: budget_bytes,
+            capacity: capacity_bytes,
             state: Mutex::new(State::default()),
-            written: Condvar::new(),
+            write_finished: Condvar::new(),
         })
     }
 
-    pub fn from_env() -> Result<Self> {
+    pub fn from_environment() -> Result<Self> {
         let directory = match std::env::var_os("ILLUMINATOR_CACHE_DIR") {
             Some(directory) => PathBuf::from(directory),
             None => std::env::temp_dir().join("illuminator-cache-v1"),
@@ -87,77 +87,79 @@ impl VolumeCache {
                 "ILLUMINATOR_CACHE_GIB must be positive and at most 1048576",
             ));
         }
-        Self::new(directory, (gib * GIB) as u64)
+        Self::new(directory, (gib * BYTES_PER_GIBIBYTE) as u64)
     }
 
     pub fn directory(&self) -> &Path {
         &self.directory
     }
 
-    pub fn budget(&self) -> u64 {
-        self.budget
+    pub fn capacity(&self) -> u64 {
+        self.capacity
     }
 
     #[cfg(test)]
     fn acquire(
         &self,
         source: &Path,
-        min_bytes: u64,
+        minimum_bytes: u64,
         progress: &Progress,
     ) -> Result<Arc<CacheLease>> {
-        self.acquire_from(source, 0, min_bytes, progress)
+        self.acquire_from(source, 0, minimum_bytes, progress)
     }
 
     pub(crate) fn acquire_from(
         &self,
         source: &Path,
         start: u64,
-        min_bytes: u64,
+        minimum_bytes: u64,
         progress: &Progress,
     ) -> Result<Arc<CacheLease>> {
-        progress.check()?;
+        progress.check_cancelled()?;
         let source = fs::canonicalize(source)?;
-        let stamp = file_stamp(&source)?;
-        let mut key = cache_key(&source, stamp);
+        let identity = file_identity(&source)?;
+        let mut key = cache_key(&source, identity);
         if start > 0 {
             key.push_str(&format!("\nfrom {start}"));
         }
-        let target = self.directory.join(format!("{}.nii", cache_name(&key)));
-        let meta = target.with_extension("nii.meta");
+        let target = self
+            .directory
+            .join(format!("{}.nii", cache_file_stem(&key)));
+        let metadata_path = target.with_extension("nii.meta");
 
-        let mut writing = {
+        let mut pending_write = {
             let mut state = self.lock();
             // Another load is decompressing this file
-            while state.writing.contains(&target) {
+            while state.paths_being_written.contains(&target) {
                 progress.report(0.0, "Waiting for another load of this file")?;
                 state = self
-                    .written
+                    .write_finished
                     .wait_timeout(state, Duration::from_millis(100))
                     .expect("cache lock poisoned")
                     .0;
             }
 
-            if let Some(bytes) = cached_size(&target, &meta, &key, min_bytes) {
-                if bytes > self.budget {
-                    return Err(Error::invalid("Cached volume exceeds cache budget"));
+            if let Some(bytes) = cached_size(&target, &metadata_path, &key, minimum_bytes) {
+                if bytes > self.capacity {
+                    return Err(Error::invalid("Cached volume exceeds cache capacity"));
                 }
                 File::options()
                     .write(true)
                     .open(&target)?
                     .set_modified(SystemTime::now())?;
-                let lease = lease_for(&mut state.leases, &target);
-                self.make_room(&mut state, 0)?;
+                let lease = obtain_lease(&mut state.leases, &target);
+                self.reclaim_space(&mut state, 0)?;
                 progress.report(1.0, "Using cached volume")?;
                 return Ok(lease);
             }
 
-            self.make_room(&mut state, min_bytes)?;
-            state.reserved += min_bytes;
-            state.writing.insert(target.clone());
+            self.reclaim_space(&mut state, minimum_bytes)?;
+            state.reserved_bytes += minimum_bytes;
+            state.paths_being_written.insert(target.clone());
             PendingWrite {
                 cache: self,
                 target: target.clone(),
-                reserved: min_bytes,
+                reserved: minimum_bytes,
             }
         };
         // The lock is released here
@@ -169,28 +171,28 @@ impl VolumeCache {
             &source,
             start,
             &mut output,
-            &mut writing,
-            min_bytes,
+            &mut pending_write,
+            minimum_bytes,
             progress,
         )?;
-        if total < min_bytes {
+        if total < minimum_bytes {
             return Err(Error::invalid("Decompressed data is truncated"));
         }
-        if file_stamp(&source)? != stamp {
+        if file_identity(&source)? != identity {
             return Err(Error::invalid(
-                "Source file changed while loading; reopen the volume",
+                "Source file changed while loading. Reopen the volume",
             ));
         }
-        progress.check()?;
+        progress.check_cancelled()?;
 
         let mut metadata = tempfile::Builder::new()
             .prefix("work-")
             .tempfile_in(&self.directory)?;
         metadata.write_all(format!("{key}\n{total}").as_bytes())?;
-        // Lease before the file appears so another threads' make_room cant evict it
-        let lease = lease_for(&mut self.lock().leases, &target);
+        // Lease before the file appears so another thread's reclaim_space can't evict it
+        let lease = obtain_lease(&mut self.lock().leases, &target);
         output.persist(&target).map_err(|error| error.error)?;
-        if let Err(error) = metadata.persist(&meta) {
+        if let Err(error) = metadata.persist(&metadata_path) {
             let _ = fs::remove_file(&target);
             return Err(error.error.into());
         }
@@ -205,7 +207,7 @@ impl VolumeCache {
         start: u64,
         output: &mut impl Write,
         writing: &mut PendingWrite<'_>,
-        min_bytes: u64,
+        minimum_bytes: u64,
         progress: &Progress,
     ) -> Result<u64> {
         let mut file = File::open(source)?;
@@ -214,7 +216,7 @@ impl VolumeCache {
         let mut buffer = vec![0u8; 1024 * 1024];
         let mut total = 0u64;
         loop {
-            progress.check()?;
+            progress.check_cancelled()?;
             let read = input
                 .read(&mut buffer)
                 .map_err(|error| Error::invalid(format!("Gzip decompression failed: {error}")))?;
@@ -222,42 +224,42 @@ impl VolumeCache {
                 return Ok(total);
             }
             let bytes = read as u64;
-            if bytes > self.budget - total {
-                return Err(Error::invalid("Decompressed volume exceeds cache budget"));
+            if bytes > self.capacity - total {
+                return Err(Error::invalid("Decompressed volume exceeds cache capacity"));
             }
-            writing.grow(total + bytes)?;
+            writing.extend_reservation(total + bytes)?;
             output.write_all(&buffer[..read]).map_err(|error| {
                 Error::invalid(format!(
                     "Cannot write decompressed volume; disk may be full ({error})"
                 ))
             })?;
             total += bytes;
-            let fraction = total as f64 / min_bytes.max(1) as f64;
+            let fraction = total as f64 / minimum_bytes.max(1) as f64;
             progress.report(fraction.min(0.99), "Decompressing")?;
         }
     }
 
-    fn make_room(&self, state: &mut State, incoming: u64) -> Result<()> {
-        if incoming > self.budget {
-            return Err(Error::invalid("Volume exceeds cache budget"));
+    fn reclaim_space(&self, state: &mut State, required_bytes: u64) -> Result<()> {
+        if required_bytes > self.capacity {
+            return Err(Error::invalid("Volume exceeds cache capacity"));
         }
         let limit = self
-            .budget
-            .checked_sub(state.reserved + incoming)
+            .capacity
+            .checked_sub(state.reserved_bytes + required_bytes)
             .ok_or_else(|| Error::invalid("Cache is full with loads in progress"))?;
         let mut entries = Vec::new();
         let mut total = 0u64;
         for entry in fs::read_dir(&self.directory)? {
             let entry = entry?;
             let path = entry.path();
-            let info = entry.metadata()?;
-            if !info.is_file() || !is_cache_file(&path) {
+            let file_metadata = entry.metadata()?;
+            if !file_metadata.is_file() || !is_cache_file(&path) {
                 continue;
             }
             total = total
-                .checked_add(info.len())
+                .checked_add(file_metadata.len())
                 .ok_or_else(|| Error::invalid("Cache size overflow"))?;
-            entries.push((info.modified()?, info.len(), path));
+            entries.push((file_metadata.modified()?, file_metadata.len(), path));
         }
         entries.sort();
 
@@ -291,6 +293,16 @@ impl VolumeCache {
     fn lock(&self) -> MutexGuard<'_, State> {
         self.state.lock().expect("cache lock poisoned")
     }
+
+    /// Removes the cache files generated by this instance.
+    pub fn remove_session_entries(&self) {
+        let mut state = self.lock();
+        for path in std::mem::take(&mut state.leases).into_keys() {
+            if fs::remove_file(&path).is_ok() {
+                let _ = fs::remove_file(path.with_extension("nii.meta"));
+            }
+        }
+    }
 }
 
 struct PendingWrite<'a> {
@@ -300,14 +312,14 @@ struct PendingWrite<'a> {
 }
 
 impl PendingWrite<'_> {
-    fn grow(&mut self, total: u64) -> Result<()> {
+    fn extend_reservation(&mut self, total: u64) -> Result<()> {
         if total <= self.reserved {
             return Ok(());
         }
-        let extra = total - self.reserved;
+        let additional_bytes = total - self.reserved;
         let mut state = self.cache.lock();
-        self.cache.make_room(&mut state, extra)?;
-        state.reserved += extra;
+        self.cache.reclaim_space(&mut state, additional_bytes)?;
+        state.reserved_bytes += additional_bytes;
         self.reserved = total;
         Ok(())
     }
@@ -320,14 +332,14 @@ impl Drop for PendingWrite<'_> {
             .state
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        state.reserved -= self.reserved;
-        state.writing.remove(&self.target);
+        state.reserved_bytes -= self.reserved;
+        state.paths_being_written.remove(&self.target);
         drop(state);
-        self.cache.written.notify_all();
+        self.cache.write_finished.notify_all();
     }
 }
 
-fn lease_for(leases: &mut Leases, path: &Path) -> Arc<CacheLease> {
+fn obtain_lease(leases: &mut Leases, path: &Path) -> Arc<CacheLease> {
     if let Some(lease) = leases.get(path).and_then(Weak::upgrade) {
         return lease;
     }
@@ -338,18 +350,18 @@ fn lease_for(leases: &mut Leases, path: &Path) -> Arc<CacheLease> {
     lease
 }
 
-fn cached_size(target: &Path, meta: &Path, key: &str, min_bytes: u64) -> Option<u64> {
+fn cached_size(target: &Path, metadata_path: &Path, key: &str, minimum_bytes: u64) -> Option<u64> {
     let bytes = fs::metadata(target)
         .ok()
-        .filter(|info| info.is_file())?
+        .filter(|file_metadata| file_metadata.is_file())?
         .len();
-    let recorded = fs::read_to_string(meta).ok()?;
-    (bytes >= min_bytes && recorded == format!("{key}\n{bytes}")).then_some(bytes)
+    let recorded = fs::read_to_string(metadata_path).ok()?;
+    (bytes >= minimum_bytes && recorded == format!("{key}\n{bytes}")).then_some(bytes)
 }
 
-fn file_stamp(path: &Path) -> Result<(u64, SystemTime)> {
-    let info = fs::metadata(path)?;
-    Ok((info.len(), info.modified()?))
+fn file_identity(path: &Path) -> Result<(u64, SystemTime)> {
+    let file_metadata = fs::metadata(path)?;
+    Ok((file_metadata.len(), file_metadata.modified()?))
 }
 
 fn cache_key(source: &Path, (size, modified): (u64, SystemTime)) -> String {
@@ -362,7 +374,7 @@ fn cache_key(source: &Path, (size, modified): (u64, SystemTime)) -> String {
     )
 }
 
-fn cache_name(key: &str) -> String {
+fn cache_file_stem(key: &str) -> String {
     let mut a: u64 = 14695981039346656037;
     let mut b: u64 = 7809847782465536322;
     for byte in key.bytes() {
@@ -436,19 +448,19 @@ mod tests {
 
     #[test]
     fn names_are_recognized() {
-        let name = cache_name("some key");
+        let name = cache_file_stem("some key");
         assert_eq!(name.len(), 39);
         assert!(is_cache_file(Path::new(&format!("{name}.nii"))));
         assert!(!is_cache_file(Path::new(&format!("{name}.nii.meta"))));
         assert!(!is_cache_file(Path::new("work-abc123")));
-        assert_ne!(cache_name("some key"), cache_name("other key"));
+        assert_ne!(cache_file_stem("some key"), cache_file_stem("other key"));
     }
 
     #[test]
     fn decompresses_once_and_reuses() {
-        let dir = tempfile::tempdir().unwrap();
-        let cache = VolumeCache::new(dir.path().join("cache"), 1 << 20).unwrap();
-        let source = dir.path().join("a.nii.gz");
+        let directory = tempfile::tempdir().unwrap();
+        let cache = VolumeCache::new(directory.path().join("cache"), 1 << 20).unwrap();
+        let source = directory.path().join("a.nii.gz");
         let bytes = data(5000, 0);
         write_gz(&source, &bytes);
 
@@ -470,9 +482,9 @@ mod tests {
 
     #[test]
     fn decompresses_from_partway_into_a_file() {
-        let dir = tempfile::tempdir().unwrap();
-        let cache = VolumeCache::new(dir.path().join("cache"), 1 << 20).unwrap();
-        let source = dir.path().join("a.nrrd");
+        let directory = tempfile::tempdir().unwrap();
+        let cache = VolumeCache::new(directory.path().join("cache"), 1 << 20).unwrap();
+        let source = directory.path().join("a.nrrd");
         let bytes = data(5000, 0);
         write_gz(&source, &bytes);
         let gzip = fs::read(&source).unwrap();
@@ -486,9 +498,9 @@ mod tests {
 
     #[test]
     fn changed_source_gets_a_new_entry() {
-        let dir = tempfile::tempdir().unwrap();
-        let cache = VolumeCache::new(dir.path().join("cache"), 1 << 20).unwrap();
-        let source = dir.path().join("a.nii.gz");
+        let directory = tempfile::tempdir().unwrap();
+        let cache = VolumeCache::new(directory.path().join("cache"), 1 << 20).unwrap();
+        let source = directory.path().join("a.nii.gz");
         write_gz(&source, &data(5000, 0));
         let old = cache.acquire(&source, 5000, &Progress::default()).unwrap();
 
@@ -509,9 +521,9 @@ mod tests {
 
     #[test]
     fn bad_gzip_leaves_nothing_behind() {
-        let dir = tempfile::tempdir().unwrap();
-        let cache = VolumeCache::new(dir.path().join("cache"), 1 << 20).unwrap();
-        let good = dir.path().join("good.nii.gz");
+        let directory = tempfile::tempdir().unwrap();
+        let cache = VolumeCache::new(directory.path().join("cache"), 1 << 20).unwrap();
+        let good = directory.path().join("good.nii.gz");
         write_gz(&good, &data(5000, 0));
         let gzip = fs::read(&good).unwrap();
 
@@ -521,7 +533,7 @@ mod tests {
         let truncated = gzip[..gzip.len() - 8].to_vec();
 
         for (name, bytes) in [("corrupt.nii.gz", corrupt), ("short.nii.gz", truncated)] {
-            let path = dir.path().join(name);
+            let path = directory.path().join(name);
             fs::write(&path, bytes).unwrap();
             assert!(
                 cache.acquire(&path, 5000, &Progress::default()).is_err(),
@@ -534,9 +546,9 @@ mod tests {
 
     #[test]
     fn cancellation_stops_and_cleans_up() {
-        let dir = tempfile::tempdir().unwrap();
-        let cache = VolumeCache::new(dir.path().join("cache"), 1 << 20).unwrap();
-        let source = dir.path().join("a.nii.gz");
+        let directory = tempfile::tempdir().unwrap();
+        let cache = VolumeCache::new(directory.path().join("cache"), 1 << 20).unwrap();
+        let source = directory.path().join("a.nii.gz");
         write_gz(&source, &data(5000, 0));
 
         let cancel = Arc::new(AtomicBool::new(false));
@@ -551,10 +563,10 @@ mod tests {
 
     #[test]
     fn evicts_oldest_unused_entries() {
-        let dir = tempfile::tempdir().unwrap();
-        let cache = VolumeCache::new(dir.path().join("tiny"), 900).unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let cache = VolumeCache::new(directory.path().join("tiny"), 900).unwrap();
         let [a, b, c] = ["a", "b", "c"].map(|name| {
-            let path = dir.path().join(format!("{name}.nii.gz"));
+            let path = directory.path().join(format!("{name}.nii.gz"));
             write_gz(&path, &data(400, 0));
             path
         });
@@ -574,20 +586,20 @@ mod tests {
     }
 
     #[test]
-    fn rejects_volumes_larger_than_the_budget() {
-        let dir = tempfile::tempdir().unwrap();
-        let cache = VolumeCache::new(dir.path().join("cache"), 100).unwrap();
-        let source = dir.path().join("a.nii.gz");
+    fn rejects_volumes_larger_than_the_capacity() {
+        let directory = tempfile::tempdir().unwrap();
+        let cache = VolumeCache::new(directory.path().join("cache"), 100).unwrap();
+        let source = directory.path().join("a.nii.gz");
         write_gz(&source, &data(5000, 0));
         assert!(cache.acquire(&source, 5000, &Progress::default()).is_err());
-        assert!(VolumeCache::new(dir.path().join("zero"), 0).is_err());
+        assert!(VolumeCache::new(directory.path().join("zero"), 0).is_err());
     }
 
     #[test]
     fn parallel_loads_of_one_file_share_the_work() {
-        let dir = tempfile::tempdir().unwrap();
-        let cache = VolumeCache::new(dir.path().join("cache"), 1 << 24).unwrap();
-        let source = dir.path().join("a.nii.gz");
+        let directory = tempfile::tempdir().unwrap();
+        let cache = VolumeCache::new(directory.path().join("cache"), 1 << 24).unwrap();
+        let source = directory.path().join("a.nii.gz");
         let bytes = data(1 << 20, 0);
         write_gz(&source, &bytes);
 
@@ -612,14 +624,35 @@ mod tests {
 
     #[test]
     fn failed_loads_release_their_reservation() {
-        let dir = tempfile::tempdir().unwrap();
-        let cache = VolumeCache::new(dir.path().join("cache"), 6000).unwrap();
-        let bad = dir.path().join("bad.nii.gz");
+        let directory = tempfile::tempdir().unwrap();
+        let cache = VolumeCache::new(directory.path().join("cache"), 6000).unwrap();
+        let bad = directory.path().join("bad.nii.gz");
         fs::write(&bad, b"not gzip").unwrap();
         assert!(cache.acquire(&bad, 5000, &Progress::default()).is_err());
 
-        let good = dir.path().join("good.nii.gz");
+        let good = directory.path().join("good.nii.gz");
         write_gz(&good, &data(5000, 0));
         assert!(cache.acquire(&good, 5000, &Progress::default()).is_ok());
+    }
+
+    #[test]
+    fn removes_only_the_entries_of_its_session() {
+        let directory = tempfile::tempdir().unwrap();
+        let [a, b] = ["a", "b"].map(|name| {
+            let path = directory.path().join(format!("{name}.nii.gz"));
+            write_gz(&path, &data(5000, 0));
+            path
+        });
+        let none = Progress::default();
+        let earlier = VolumeCache::new(directory.path().join("cache"), 1 << 20).unwrap();
+        drop(earlier.acquire(&a, 5000, &none).unwrap());
+        let current = VolumeCache::new(earlier.directory(), 1 << 20).unwrap();
+        let lease = current.acquire(&b, 5000, &none).unwrap();
+        assert_eq!(cache_entries(current.directory()), 2);
+
+        current.remove_session_entries();
+        assert_eq!(cache_entries(current.directory()), 1);
+        assert!(!lease.path().exists());
+        assert!(!lease.path().with_extension("nii.meta").exists());
     }
 }

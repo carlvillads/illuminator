@@ -1,0 +1,69 @@
+# Maintainer: Carl Villads Priisholm <me@cvrp.dk>
+pkgname=illuminator
+pkgver=0.2.0
+pkgrel=1
+pkgdesc='Fast medical volume viewer'
+arch=('x86_64')
+url='https://github.com/carlvillads/illuminator'
+license=('Apache-2.0 OR MIT')
+depends=(
+  'glibc'
+  'hicolor-icon-theme'
+  'libgcc'
+  'libxcb'
+  'libxkbcommon'
+  'libxkbcommon-x11'
+  'vulkan-driver'
+  'vulkan-icd-loader'
+  'wayland'
+)
+makedepends=('cargo' 'fontconfig' 'freetype2')
+options=('!debug' '!lto')
+source=("$pkgname-$pkgver.tar.gz")
+sha256sums=('SKIP')
+prepare() {
+  cd "$pkgname-$pkgver"
+  export RUSTUP_TOOLCHAIN=stable
+  cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
+}
+
+build() {
+  cd "$pkgname-$pkgver"
+  export RUSTUP_TOOLCHAIN=stable
+  export CARGO_TARGET_DIR=target
+  cargo build --frozen --release -p illuminator-app
+}
+
+check() {
+  cd "$pkgname-$pkgver"
+  export RUSTUP_TOOLCHAIN=stable
+  export CARGO_TARGET_DIR=target
+  cargo test --frozen --workspace
+}
+
+package() {
+  cd "$pkgname-$pkgver"
+  local packaging_directory=crates/illuminator-app/packaging/linux
+
+  install -Dm755 target/release/illuminate -t "$pkgdir/usr/bin"
+  install -Dm644 "$packaging_directory/io.github.carlvillads.illuminator.metainfo.xml" \
+    -t "$pkgdir/usr/share/metainfo"
+  install -Dm644 "$packaging_directory/nifti.xml" "$pkgdir/usr/share/mime/packages/illuminator.xml"
+  for size in 32 48 64 128 256 512; do
+    install -Dm644 "$packaging_directory/icons/${size}x${size}.png" \
+      "$pkgdir/usr/share/icons/hicolor/${size}x${size}/apps/illuminate.png"
+  done
+  install -Dm644 /dev/stdin "$pkgdir/usr/share/applications/illuminate.desktop" <<EOF
+[Desktop Entry]
+Type=Application
+Name=Illuminator
+Comment=Fast medical volume viewer
+Categories=Science;MedicalSoftware;
+Icon=illuminate
+Exec=illuminate %F
+Terminal=false
+MimeType=image/x-nifti;
+StartupWMClass=illuminator
+EOF
+  install -Dm644 LICENSE-MIT LICENSE-APACHE -t "$pkgdir/usr/share/licenses/$pkgname"
+}

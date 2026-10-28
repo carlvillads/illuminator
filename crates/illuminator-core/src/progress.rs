@@ -5,12 +5,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::error::{Error, Result};
 
-type ReportFn = dyn Fn(f64, &str) + Send + Sync;
+type ReportCallback = dyn Fn(f64, &str) + Send + Sync;
 
 #[derive(Clone)]
 pub struct Progress {
     cancelled: Option<Arc<AtomicBool>>,
-    report: Option<Arc<ReportFn>>,
+    report: Option<Arc<ReportCallback>>,
     start: f64,
     extent: f64,
 }
@@ -47,7 +47,7 @@ impl Progress {
         }
     }
 
-    pub(crate) fn part(&self, start: f64, extent: f64) -> Self {
+    pub(crate) fn subrange(&self, start: f64, extent: f64) -> Self {
         Self {
             start: self.start + self.extent * start,
             extent: self.extent * extent,
@@ -55,7 +55,7 @@ impl Progress {
         }
     }
 
-    pub(crate) fn check(&self) -> Result<()> {
+    pub(crate) fn check_cancelled(&self) -> Result<()> {
         match &self.cancelled {
             Some(flag) if flag.load(Ordering::Relaxed) => Err(Error::Cancelled),
             _ => Ok(()),
@@ -63,7 +63,7 @@ impl Progress {
     }
 
     pub(crate) fn report(&self, fraction: f64, stage: &str) -> Result<()> {
-        self.check()?;
+        self.check_cancelled()?;
         if let Some(report) = &self.report {
             report(self.start + self.extent * fraction.clamp(0.0, 1.0), stage);
         }
@@ -84,10 +84,10 @@ mod tests {
         let progress = Progress::new(Arc::new(AtomicBool::new(false)), move |value, _| {
             seen.lock().unwrap().push(value);
         });
-        progress.part(0.8, 0.1).report(0.5, "step").unwrap();
+        progress.subrange(0.8, 0.1).report(0.5, "step").unwrap();
         progress
-            .part(0.8, 0.1)
-            .part(0.5, 0.5)
+            .subrange(0.8, 0.1)
+            .subrange(0.5, 0.5)
             .report(1.0, "nested")
             .unwrap();
         progress.report(7.0, "clamped").unwrap();
@@ -104,13 +104,13 @@ mod tests {
     fn cancellation() {
         let flag = Arc::new(AtomicBool::new(false));
         let progress = Progress::new(Arc::clone(&flag), |_, _| {});
-        assert!(progress.check().is_ok());
+        assert!(progress.check_cancelled().is_ok());
         flag.store(true, Ordering::Relaxed);
-        assert!(matches!(progress.check(), Err(Error::Cancelled)));
+        assert!(matches!(progress.check_cancelled(), Err(Error::Cancelled)));
         assert!(matches!(
-            progress.part(0.0, 0.5).report(0.1, "step"),
+            progress.subrange(0.0, 0.5).report(0.1, "step"),
             Err(Error::Cancelled)
         ));
-        assert!(Progress::default().check().is_ok());
+        assert!(Progress::default().check_cancelled().is_ok());
     }
 }

@@ -1,27 +1,30 @@
 //! Copying and saving screenshots.
 
 use gpui_kit::{AppContext, ClipboardItem, Context, Image, ImageFormat, Window};
-use illuminator_core::meta::strip_extension;
+use illuminator_core::metadata::strip_extension;
 use std::path::PathBuf;
 
-use crate::picture::{Picture, PictureImage, PictureLine, Rect};
-use crate::shortcuts::{CopyImage, SaveImage};
+use crate::screenshot::{Rectangle, Screenshot, ScreenshotImage, ScreenshotLine};
+use crate::shortcuts::{CopyScreenshot, SaveScreenshot};
 use crate::theme;
 
 use super::{Viewer, view_area};
 
 impl Viewer {
-    pub(super) fn copy_image(
+    pub(super) fn copy_screenshot(
         &mut self,
-        _: &CopyImage,
+        _: &CopyScreenshot,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(picture) = self.picture(window) else {
+        let Some(screenshot) = self.screenshot(window) else {
             return;
         };
         cx.spawn(async move |_, cx| {
-            match cx.background_spawn(async move { picture.png() }).await {
+            match cx
+                .background_spawn(async move { screenshot.encode_png() })
+                .await
+            {
                 Ok(png) => cx.update(|cx| {
                     let image = Image::from_bytes(ImageFormat::Png, png);
                     cx.write_to_clipboard(ClipboardItem::new_image(&image));
@@ -32,13 +35,13 @@ impl Viewer {
         .detach();
     }
 
-    pub(super) fn save_image(
+    pub(super) fn save_screenshot(
         &mut self,
-        _: &SaveImage,
+        _: &SaveScreenshot,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(picture) = self.picture(window) else {
+        let Some(screenshot) = self.screenshot(window) else {
             return;
         };
         // save the image next to the base layer and name it after it
@@ -55,7 +58,7 @@ impl Viewer {
             let file = path.clone();
             let saved = cx
                 .background_spawn(async move {
-                    match picture.png() {
+                    match screenshot.encode_png() {
                         Ok(png) => std::fs::write(&file, png),
                         Err(error) => Err(std::io::Error::other(error)),
                     }
@@ -68,60 +71,60 @@ impl Viewer {
         .detach();
     }
 
-    fn picture(&self, window: &Window) -> Option<Picture> {
+    fn screenshot(&self, window: &Window) -> Option<Screenshot> {
         let views = self.views(window);
         if views.is_empty() {
             return None;
         }
         let scale = window.scale_factor();
-        let device = |value: f32| (value * scale).round().max(0.0) as u32;
+        let to_device_pixels = |value: f32| (value * scale).round().max(0.0) as u32;
         let area = view_area(window).size;
-        let mut picture = Picture {
-            width: device(area.width),
-            height: device(area.height),
+        let mut screenshot = Screenshot {
+            width: to_device_pixels(area.width),
+            height: to_device_pixels(area.height),
             images: Vec::new(),
             lines: Vec::new(),
         };
         for view in &views {
-            let shown = self.shown(view);
+            let shown = self.visible_images(view);
             if shown.is_empty() {
                 continue;
             }
             let image = view.image_size;
             let offset = view.image_offset();
-            let rect = Rect {
-                left: device(view.origin.x + offset.x),
-                top: device(view.origin.y + offset.y),
-                width: device(image.width),
-                height: device(image.height),
+            let rect = Rectangle {
+                left: to_device_pixels(view.origin.x + offset.x),
+                top: to_device_pixels(view.origin.y + offset.y),
+                width: to_device_pixels(image.width),
+                height: to_device_pixels(image.height),
             };
-            picture
+            screenshot
                 .images
-                .extend(shown.into_iter().map(|(image, opacity)| PictureImage {
+                .extend(shown.into_iter().map(|(image, opacity)| ScreenshotImage {
                     image,
                     rect,
                     opacity,
                 }));
-            if let Some((x, y)) = self.crosshair_at(view, scale) {
+            if let Some((x, y)) = self.crosshair_position(view, scale) {
                 let [vertical, horizontal] = theme::crosshair_colors(view.axis);
-                picture.lines.push(PictureLine {
-                    rect: Rect {
-                        left: device(view.origin.x + x),
-                        width: device(1.0),
+                screenshot.lines.push(ScreenshotLine {
+                    rect: Rectangle {
+                        left: to_device_pixels(view.origin.x + x),
+                        width: to_device_pixels(1.0),
                         ..rect
                     },
                     color: vertical,
                 });
-                picture.lines.push(PictureLine {
-                    rect: Rect {
-                        top: device(view.origin.y + y),
-                        height: device(1.0),
+                screenshot.lines.push(ScreenshotLine {
+                    rect: Rectangle {
+                        top: to_device_pixels(view.origin.y + y),
+                        height: to_device_pixels(1.0),
                         ..rect
                     },
                     color: horizontal,
                 });
             }
         }
-        Some(picture)
+        Some(screenshot)
     }
 }

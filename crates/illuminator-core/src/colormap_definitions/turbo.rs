@@ -5,12 +5,12 @@
 //! <https://gist.github.com/mikhailov-work/0d177465a8151eb6ede1768d51d476c7>
 //! <https://research.google/blog/turbo-an-improved-rainbow-colormap-for-visualization/>
 
-use super::{Cmap, Ramp};
+use super::{ColormapDefinition, Ramp};
 
-pub(crate) const TURBO: Cmap = Cmap {
+pub(crate) const TURBO: ColormapDefinition = ColormapDefinition {
     name: "Turbo",
     id: "turbo",
-    desc: "Not perceptually uniform. Smooth rainbow with high contrast",
+    description: "Not perceptually uniform. Smooth rainbow with high contrast",
     ramp: Ramp::Polynomial(&[
         [0.13572138, 0.09140261, 0.10667330],
         [4.61539260, 2.19418839, 12.64194608],
