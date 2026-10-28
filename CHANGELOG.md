@@ -19,6 +19,7 @@ This format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 - Update app icon.
 - Share one window layout between the histogram and time series windows.
 - Update toolbar icon behaviour.
+- Major refactor of variable and function names.
 
 ## [0.1.1] - 2026-10-22
 
