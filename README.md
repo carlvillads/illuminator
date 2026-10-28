@@ -132,10 +132,6 @@ The packages are written to `target/packages`. Changes should be recorded in [CH
 
 ![Extra screenshot 4](https://cvrp.dk/illuminator/screenshots/5.png)
 
-## Citing
-
-If you feel Illuminator has helped you enough to warrant it, you can cite it using the "Cite this repository" button in the sidebar.
-
 ## License
 
 Licensed under either the Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE)), or the MIT license ([LICENSE-MIT](LICENSE-MIT)).
