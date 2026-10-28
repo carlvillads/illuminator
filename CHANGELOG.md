@@ -21,6 +21,7 @@ This format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 - Update toolbar icon behaviour.
 - Major refactor of variable and function names.
 - Change message when no volume is open.
+- Update cache handling to delete temporary files on app close.
 
 ## [0.1.1] - 2026-10-22
 
