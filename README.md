@@ -26,7 +26,13 @@ Download the latest package from the [releases page](https://github.com/carlvill
 - **Debian and Ubuntu:** Install with apt:
 
   ```bash
-  sudo apt install ./illuminate_0.1.0_amd64.deb
+  sudo apt install ./illuminate_0.2.0_amd64.deb
+  ```
+
+- **Arch Linux**: Install with pacman:
+
+  ```bash
+  sudo pacman -U ./illuminator-0.2.0-1-x86_64.pkg.tar.zst
   ```
 
 ## Use
