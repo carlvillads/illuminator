@@ -1,3 +1,4 @@
+# Maintainer: Carl Villads Priisholm <me@cvrp.dk>
 pkgname=illuminator
 pkgver=0.2.0
 pkgrel=1
@@ -6,19 +7,18 @@ arch=('x86_64')
 url='https://github.com/carlvillads/illuminator'
 license=('Apache-2.0 OR MIT')
 depends=(
-  'fontconfig'
-  'freetype2'
-  'gcc-libs'
   'glibc'
-  'libx11'
+  'hicolor-icon-theme'
+  'libgcc'
+  'libxcb'
   'libxkbcommon'
   'libxkbcommon-x11'
   'vulkan-driver'
   'vulkan-icd-loader'
   'wayland'
 )
-makedepends=('cargo')
-options=('!debug')
+makedepends=('cargo' 'fontconfig' 'freetype2')
+options=('!debug' '!lto')
 source=("$pkgname-$pkgver.tar.gz")
 sha256sums=('SKIP')
 prepare() {
