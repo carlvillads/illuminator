@@ -111,7 +111,7 @@ impl Viewer {
                     .items_center()
                     .justify_center()
                     .text_color(muted)
-                    .child("Drop scans here or open from the toolbar"),
+                    .child("Drop scans here or open from the sidebar"),
             );
         }
 
