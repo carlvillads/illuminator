@@ -3139,7 +3139,7 @@ dependencies = [
 
 [[package]]
 name = "illuminator-app"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "clap",
  "embed-resource",
@@ -3155,7 +3155,7 @@ dependencies = [
 
 [[package]]
 name = "illuminator-core"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "flate2",
  "memmap2",
