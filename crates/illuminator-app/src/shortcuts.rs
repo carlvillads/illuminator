@@ -121,7 +121,11 @@ pub fn bind_keys(cx: &mut App) {
     cx.bind_keys([
         KeyBinding::new(secondary_keystroke!("q"), Quit, None),
         KeyBinding::new(secondary_keystroke!("w"), CloseWindow, viewer_context),
-        KeyBinding::new(secondary_keystroke!("w"), CloseWindow, Some(PLOT_WINDOW_CONTEXT)),
+        KeyBinding::new(
+            secondary_keystroke!("w"),
+            CloseWindow,
+            Some(PLOT_WINDOW_CONTEXT),
+        ),
         KeyBinding::new(secondary_keystroke!("o"), OpenFiles, viewer_context),
         KeyBinding::new(secondary_keystroke!("c"), CopyScreenshot, viewer_context),
         KeyBinding::new(secondary_keystroke!("e"), SaveScreenshot, viewer_context),
@@ -155,7 +159,11 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("3", LayoutGrid, outside_text_input),
         KeyBinding::new("4", LayoutSingle, outside_text_input),
         KeyBinding::new("5", LayoutLightbox, outside_text_input),
-        KeyBinding::new(secondary_keystroke!("backspace"), CloseLayer, viewer_context),
+        KeyBinding::new(
+            secondary_keystroke!("backspace"),
+            CloseLayer,
+            viewer_context,
+        ),
         KeyBinding::new(secondary_keystroke!("r"), ReloadLayer, viewer_context),
         KeyBinding::new("alt-k", MoveLayerUp, viewer_context),
         KeyBinding::new("alt-j", MoveLayerDown, viewer_context),
