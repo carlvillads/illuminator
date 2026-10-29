@@ -34,6 +34,12 @@
   <content_rating type="oars-1.1" />
 
   <releases>
+    <release version="0.2.1" date="2026-10-29">
+      <description>
+        <p>Small bug fixes and improvements. See full changelog on github</p>
+      </description>
+      <url type="details">https://github.com/carlvillads/illuminator/releases/tag/v0.2.1</url>
+    </release>
     <release version="0.2.0" date="2026-10-28">
       <description>
         <p>Larger update with new functionalities, and updated icon!</p>
