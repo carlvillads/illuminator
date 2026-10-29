@@ -72,6 +72,9 @@ fn main() {
         gpui_kit::init(cx);
         theme::initialize(cx);
         shortcuts::bind_keys(cx);
+        gpui_kit::base::TooltipDefaults::new()
+            .with_show_delay(std::time::Duration::from_millis(300))
+            .install(cx);
         // quit when the last window closes
         cx.on_window_closed(|cx, _| {
             if cx.windows().is_empty() {
