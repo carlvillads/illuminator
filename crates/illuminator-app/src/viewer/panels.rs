@@ -4,7 +4,7 @@ use gpui_kit::component::{ActiveTheme, v_flex};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::{
     Context, Div, Hsla, InteractiveElement, IntoElement, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, ParentElement, RenderImage, ScrollWheelEvent,
+    MouseMoveEvent, MouseUpEvent, ParentElement, RenderImage, ScrollEvent,
     StatefulInteractiveElement, Styled, Window, div, img, px, rgb, rgba,
 };
 use illuminator_core::colormap::Colormap;
@@ -99,7 +99,7 @@ impl Viewer {
                     _ => {}
                 }
             }))
-            .on_scroll_wheel(cx.listener(|viewer, event: &ScrollWheelEvent, window, cx| {
+            .on_scroll(cx.listener(|viewer, event: &ScrollEvent, window, cx| {
                 viewer.handle_scroll(event, window, cx);
             }));
 

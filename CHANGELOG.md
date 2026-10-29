@@ -6,6 +6,14 @@ This format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-10-29
+
+### Changed
+
+- Update Arch packaging workflow.
+- Bump gpui-kit version from 0.7.1 to 0.8.1
+- Change tooltip delay from 600ms to 300ms
+
 ## [0.2.0] - 2026-10-28
 
 ### Added
@@ -56,7 +64,8 @@ This format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 ### Removed
 - Nothing
 
-[Unreleased]: https://github.com/carlvillads/illuminator/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/carlvillads/illuminator/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/carlvillads/illuminator/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/carlvillads/illuminator/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/carlvillads/illuminator/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/carlvillads/illuminator/releases/tag/v0.1.0

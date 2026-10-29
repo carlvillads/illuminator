@@ -17,35 +17,15 @@ depends=(
   'vulkan-icd-loader'
   'wayland'
 )
-makedepends=('cargo' 'fontconfig' 'freetype2')
-options=('!debug' '!lto')
-source=("$pkgname-$pkgver.tar.gz")
-sha256sums=('SKIP')
-prepare() {
-  cd "$pkgname-$pkgver"
-  export RUSTUP_TOOLCHAIN=stable
-  cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
-}
-
-build() {
-  cd "$pkgname-$pkgver"
-  export RUSTUP_TOOLCHAIN=stable
-  export CARGO_TARGET_DIR=target
-  cargo build --frozen --release -p illuminator-app
-}
-
-check() {
-  cd "$pkgname-$pkgver"
-  export RUSTUP_TOOLCHAIN=stable
-  export CARGO_TARGET_DIR=target
-  cargo test --frozen --workspace
-}
+options=('!debug' '!strip')
+source=("$pkgname-$pkgver.tar.gz" 'illuminate')
+sha256sums=('SKIP' 'SKIP')
 
 package() {
   cd "$pkgname-$pkgver"
   local packaging_directory=crates/illuminator-app/packaging/linux
 
-  install -Dm755 target/release/illuminate -t "$pkgdir/usr/bin"
+  install -Dm755 "$srcdir/illuminate" -t "$pkgdir/usr/bin"
   install -Dm644 "$packaging_directory/io.github.carlvillads.illuminator.metainfo.xml" \
     -t "$pkgdir/usr/share/metainfo"
   install -Dm644 "$packaging_directory/nifti.xml" "$pkgdir/usr/share/mime/packages/illuminator.xml"
