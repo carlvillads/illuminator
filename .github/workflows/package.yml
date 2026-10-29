@@ -13,13 +13,13 @@ jobs:
     name: Windows installer
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo install cargo-packager --version 0.11.8 --locked
-      - run: cargo install cargo-about --version 0.9.2 --locked --features cli
+      - run: cargo install cargo-about --version 0.9.3 --locked --features cli
       - run: cargo packager --release -p illuminator-app
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: illuminator-windows
           path: target/packages/*-setup.exe
@@ -35,13 +35,13 @@ jobs:
           apt-get update
           apt-get install -y curl build-essential pkg-config libfontconfig-dev libfreetype-dev \
             libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev libx11-xcb-dev
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo install cargo-packager --version 0.11.8 --locked
-      - run: cargo install cargo-about --version 0.9.2 --locked --features cli
+      - run: cargo install cargo-about --version 0.9.3 --locked --features cli
       - run: cargo packager --release -p illuminator-app --formats deb
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: illuminator-debian
           path: target/packages/*.deb
@@ -53,7 +53,7 @@ jobs:
     runs-on: ubuntu-latest
     container: debian:12
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: illuminator-debian
       - name: Install the package and check it
@@ -79,8 +79,8 @@ jobs:
           # makepkg refuses to run as root, so it builds as a user that may install dependencies
           useradd --create-home builder
           echo "builder ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/builder
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
         with:
           name: illuminator-debian
           path: debian
@@ -110,7 +110,7 @@ jobs:
           illuminate --version
           grep "nii.gz" /usr/share/mime/globs2
           desktop-file-validate /usr/share/applications/illuminate.desktop
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: illuminator-arch
           path: /build/*.pkg.tar.zst
@@ -124,10 +124,10 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Release notes from CHANGELOG.md
         run: bash .github/scripts/release-notes.sh "${GITHUB_REF_NAME#v}" > notes.md
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: packages
           merge-multiple: true
