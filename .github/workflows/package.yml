@@ -69,6 +69,7 @@ jobs:
   
   arch:
     name: Arch Linux package
+    needs: debian
     runs-on: ubuntu-latest
     container: archlinux:base-devel
     steps:
@@ -79,7 +80,11 @@ jobs:
           useradd --create-home builder
           echo "builder ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/builder
       - uses: actions/checkout@v4
-      - name: Prepare the PKGBUILD and source archive
+      - uses: actions/download-artifact@v4
+        with:
+          name: illuminator-debian
+          path: debian
+      - name: Prepare the PKGBUILD and sources
         run: |
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)
@@ -87,8 +92,9 @@ jobs:
           sed "s/^pkgver=.*/pkgver=$version/" crates/illuminator-app/packaging/arch/PKGBUILD > /build/PKGBUILD
           git archive --format=tar.gz --prefix="illuminator-$version/" \
             --output="/build/illuminator-$version.tar.gz" HEAD
+          bsdtar -xOf debian/*.deb 'data.tar.*' | bsdtar -xOf - usr/bin/illuminate > /build/illuminate
           chown -R builder /build
-      - name: Build and test the package
+      - name: Build the package
         working-directory: /build
         run: sudo -H -u builder makepkg --syncdeps --noconfirm
       - name: Check and install the package
@@ -100,6 +106,7 @@ jobs:
           pacman -U --noconfirm ./*.pkg.tar.zst
           # every library the program links to must have come with the dependencies
           if ldd /usr/bin/illuminate | grep "not found"; then exit 1; fi
+          objdump -T /usr/bin/illuminate | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -n 1
           illuminate --version
           grep "nii.gz" /usr/share/mime/globs2
           desktop-file-validate /usr/share/applications/illuminate.desktop
