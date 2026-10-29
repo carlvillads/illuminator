@@ -1,6 +1,6 @@
 //! Clicking, dragging and scrolling in the views.
 
-use gpui_kit::{Context, Pixels, Point, ScrollWheelEvent, Size, Window, px};
+use gpui_kit::{Context, Pixels, Point, ScrollEvent, Size, Window, px};
 use illuminator_core::geometry::ViewPlane;
 
 use super::{Layout, Viewer};
@@ -97,14 +97,14 @@ impl Viewer {
 
     pub(super) fn handle_scroll(
         &mut self,
-        event: &ScrollWheelEvent,
+        event: &ScrollEvent,
         window: &Window,
         cx: &mut Context<Self>,
     ) {
         let Some(hit) = self.hit(event.position, window) else {
             return;
         };
-        if event.modifiers.secondary() {
+        if event.modifiers.secondary(cx) {
             let pixels = f64::from(f32::from(
                 event.delta.pixel_delta(px(PIXELS_PER_SCROLL_STEP)).y,
             ));

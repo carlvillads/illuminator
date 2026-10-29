@@ -9,6 +9,8 @@ This format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 ### Changed
 
 - Update Arch packaging workflow.
+- Bump gpui-kit version from 0.7.1 to 0.8.1
+- Change tooltip delay from 600ms to 300ms
 
 ## [0.2.0] - 2026-10-28
 
