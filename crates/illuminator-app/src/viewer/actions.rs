@@ -27,10 +27,10 @@ impl Viewer {
     pub(super) fn open_files_action(
         &mut self,
         _: &OpenFiles,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.open_files(cx);
+        self.open_files(window, cx);
     }
 
     pub(super) fn next_slice(&mut self, _: &NextSlice, _: &mut Window, cx: &mut Context<Self>) {

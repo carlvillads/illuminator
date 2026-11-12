@@ -107,7 +107,7 @@ impl Viewer {
                     .xsmall()
                     .icon(ApplicationUiIcon::FolderOpen)
                     .label("Open\u{2026}")
-                    .on_click(cx.listener(|viewer, _, _, cx| viewer.open_files(cx))),
+                    .on_click(cx.listener(|viewer, _, window, cx| viewer.open_files(window, cx))),
             )
             .child(
                 Button::new("layers-reload")
