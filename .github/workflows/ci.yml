@@ -33,7 +33,7 @@ jobs:
     name: Formatting
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
       - uses: dtolnay/rust-toolchain@1.99.0
         with:
           components: rustfmt
@@ -43,7 +43,7 @@ jobs:
     name: Changelog and AppStream
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
       - name: Cargo.toml, CHANGELOG.md, and the metainfo agree on version
         run: bash .github/scripts/release-notes.sh
       - name: Validate the AppStream metainfo
@@ -61,11 +61,11 @@ jobs:
         os: [ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@v2.9.3
       - name: Install Linux libraries
         if: runner.os == 'Linux'
         run: |
