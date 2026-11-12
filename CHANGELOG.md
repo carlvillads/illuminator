@@ -6,6 +6,14 @@ This format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 
 ## [Unreleased]
 
+### Added
+
+- Popup window for startup errors.
+
+### Changed
+
+- When opening more volumes with one already loaded, the pop-up dialouge will start at the same directory as the currently selected volume.
+
 ## [0.2.1] - 2026-10-29
 
 ### Changed
