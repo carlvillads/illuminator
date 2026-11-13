@@ -13,6 +13,7 @@ This format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 ### Changed
 
 - When opening more volumes with one already loaded, the pop-up dialouge will start at the same directory as the currently selected volume.
+- Upgrade gpui-kit version from 0.8.1 to 0.9.1
 
 ## [0.2.1] - 2026-10-29
 
