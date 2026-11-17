@@ -6,6 +6,14 @@ This format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 
 ## [Unreleased]
 
+### Added
+
+- CAAI PET rainbow colormap (`caai-rainbow`).
+
+### Changed
+
+- Sample colormaps into 4096 colors instead of 1024.
+
 ## [0.2.2] - 2026-11-17
 
 ### Added

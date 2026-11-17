@@ -3,6 +3,7 @@
 mod berlin;
 mod blue;
 mod bone;
+mod caai_rainbow;
 mod cool;
 mod grayc;
 mod grayscale;
@@ -20,6 +21,7 @@ mod viridis;
 pub(crate) use berlin::BERLIN;
 pub(crate) use blue::BLUE;
 pub(crate) use bone::BONE;
+pub(crate) use caai_rainbow::CAAI_RAINBOW;
 pub(crate) use cool::COOL;
 pub(crate) use grayc::GRAYC;
 pub(crate) use grayscale::{GRAYSCALE, INVERSE_GRAYSCALE};

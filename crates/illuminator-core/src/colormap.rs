@@ -18,6 +18,7 @@ pub enum Colormap {
     Bone,
     Cool,
     Turbo,
+    CaaiRainbow,
     GrayC,
     Lipari,
     Navia,
@@ -26,7 +27,7 @@ pub enum Colormap {
 }
 
 impl Colormap {
-    pub const ALL: [Self; 17] = [
+    pub const ALL: [Self; 18] = [
         Self::Grayscale,
         Self::InverseGrayscale,
         Self::Red,
@@ -39,6 +40,7 @@ impl Colormap {
         Self::Bone,
         Self::Cool,
         Self::Turbo,
+        Self::CaaiRainbow,
         Self::GrayC,
         Self::Lipari,
         Self::Navia,
@@ -60,6 +62,7 @@ impl Colormap {
             Self::Bone => &colormap_definitions::BONE,
             Self::Cool => &colormap_definitions::COOL,
             Self::Turbo => &colormap_definitions::TURBO,
+            Self::CaaiRainbow => &colormap_definitions::CAAI_RAINBOW,
             Self::GrayC => &colormap_definitions::GRAYC,
             Self::Lipari => &colormap_definitions::LIPARI,
             Self::Navia => &colormap_definitions::NAVIA,
@@ -100,7 +103,7 @@ pub(crate) enum ColorTable {
 }
 
 impl ColorTable {
-    const LENGTH: usize = 1024;
+    const LENGTH: usize = 4096;
 
     pub(crate) fn new(colormap: Colormap) -> Self {
         match colormap {

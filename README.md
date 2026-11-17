@@ -53,7 +53,7 @@ illuminate ct.nii.gz pet.nii.gz -c inferno -l segmentation.nii.gz --layout compa
 | `--mip` | Show MIPs on open |
 | `--size WIDTHxHEIGHT` | Window size in points, e.g. `1440x900` |
 
-Colormaps: `grayscale`, `gray-r`, `red`, `blue`, `viridis`, `plasma`, `magma`, `inferno`, `hot`, `bone`, `cool`, `turbo`, `grayc`, `lipari`, `navia`, `berlin` and `vik`.
+Colormaps: `grayscale`, `gray-r`, `red`, `blue`, `viridis`, `plasma`, `magma`, `inferno`, `hot`, `bone`, `cool`, `turbo`, `caai-rainbow`, `grayc`, `lipari`, `navia`, `berlin` and `vik`.
 
 ### Mouse and keyboard
 
