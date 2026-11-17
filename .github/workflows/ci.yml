@@ -34,8 +34,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7.0.1
-      - uses: dtolnay/rust-toolchain@1.99.0
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: 1.99.0
           components: rustfmt
       - run: cargo fmt --all --check
 
@@ -62,8 +63,9 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7.0.1
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: stable
           components: clippy
       - uses: Swatinem/rust-cache@v2.9.3
       - name: Install Linux libraries
