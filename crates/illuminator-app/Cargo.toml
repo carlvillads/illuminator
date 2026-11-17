@@ -18,6 +18,7 @@ image = { workspace = true, features = ["png"] }
 url.workspace = true
 interprocess.workspace = true
 clap.workspace = true
+rfd.workspace = true
 
 [dev-dependencies]
 serde_json.workspace = true

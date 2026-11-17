@@ -587,23 +587,30 @@ impl Viewer {
         cx.notify();
     }
 
-    fn open_files(&mut self, cx: &mut Context<Self>) {
-        let chosen = cx.prompt_for_paths(PathPromptOptions {
-            files: true,
-            directories: false,
-            multiple: true,
-            prompt: Some("Open".into()),
-        });
+    fn open_files(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let mut dialog = rfd::AsyncFileDialog::new().set_parent(&*window);
+        if let Some(directory) = self.selected_volume_directory() {
+            dialog = dialog.set_directory(directory);
+        }
         cx.spawn(async move |this, cx| {
-            if let Ok(Ok(Some(paths))) = chosen.await {
-                let _ = this.update(cx, |viewer, _| {
-                    for path in paths {
-                        viewer.loader.enqueue(path);
-                    }
-                });
-            }
+            let Some(files) = dialog.pick_files().await else {
+                return; // cancelled
+            };
+            let _ = this.update(cx, |viewer, _| {
+                for file in files {
+                    viewer.loader.enqueue(file.path().to_path_buf());
+                }
+            });
         })
         .detach();
+    }
+
+    /// directory that holds the selected layers volume. `None` if nothing is loaded.
+    fn selected_volume_directory(&self) -> Option<PathBuf> {
+        let layer = &self.layers[self.selected_layer()?];
+        // volume from cli can have a relative path
+        let path = std::path::absolute(layer.display.volume().path()).ok()?;
+        path.parent().map(PathBuf::from)
     }
 
     fn modify_display(

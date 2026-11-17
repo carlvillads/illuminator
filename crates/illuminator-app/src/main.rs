@@ -11,6 +11,7 @@ mod label_statistics;
 mod screenshot;
 mod shortcuts;
 mod single_instance;
+mod startup_failure;
 mod suv_form;
 mod theme;
 mod ui;
@@ -29,6 +30,7 @@ use crate::viewer::Viewer;
 
 fn main() {
     attach_console();
+    startup_failure::startup_panic_hook();
     let command_line = CommandLine::read();
     let (open_request_sender, open_request_receiver) = mpsc::unbounded::<Vec<PathBuf>>();
     if command_line.has_only_files() {
@@ -48,10 +50,7 @@ fn main() {
 
     let cache = match VolumeCache::from_environment() {
         Ok(cache) => Arc::new(cache),
-        Err(error) => {
-            eprintln!("Illuminator: {error}");
-            std::process::exit(1);
-        }
+        Err(error) => startup_failure::report_and_exit(&error.to_string()),
     };
 
     let app = gpui_kit::application().with_assets(assets::ApplicationAssets);
@@ -68,6 +67,7 @@ fn main() {
         }
         let _ = open_request_sender.unbounded_send(paths);
     });
+    startup_failure::watch_for_first_frame();
     app.run(move |cx| {
         gpui_kit::init(cx);
         theme::initialize(cx);
@@ -103,10 +103,15 @@ fn main() {
             app_id: Some("illuminator".into()),
             ..Default::default()
         };
-        gpui_kit::open_window(options, cx, |window, cx| {
+        let opened = gpui_kit::open_window(options, cx, |window, cx| {
+            window.on_next_frame(|_, _| startup_failure::record_first_frame());
             cx.new(|cx| Viewer::new(cache, command_line, open_request_receiver, window, cx))
-        })
-        .expect("cannot open main window");
+        });
+        if let Err(error) = opened {
+            startup_failure::report_and_exit(&format!(
+                "The main window could not be opened.\n\n{error:#}"
+            ));
+        }
         cx.activate(true);
     });
 }

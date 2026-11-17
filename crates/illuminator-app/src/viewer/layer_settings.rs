@@ -10,10 +10,10 @@ use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{ActiveTheme, Disableable, Sizable, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::{
-    AnyElement, AppContext, Context, Div, DragMoveEvent, Entity, Focusable, Hsla,
-    InteractiveElement, IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent, ParentElement,
-    SharedString, StatefulInteractiveElement, Styled, Subscription, Window, canvas, div, px,
-    relative,
+    AnyElement, App, AppContext, Bounds, Canvas, Context, Div, DragMoveEvent, Entity, Focusable,
+    Hsla, InteractiveElement, IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent,
+    ParentElement, Pixels, SharedString, StatefulInteractiveElement, Styled, Subscription, Window,
+    canvas, div, fill, point, px, relative,
 };
 use illuminator_core::colormap::Colormap;
 use illuminator_core::display::VolumeDisplay;
@@ -488,23 +488,26 @@ impl Viewer {
         };
         let (low, high) = layer.display.window_limits();
         let peak = histogram.counts.iter().copied().max().unwrap_or(0).max(1);
-        let bins = histogram.counts.len() as f32;
-        let bars = histogram.counts.iter().enumerate().map(|(bin, &count)| {
-            let center = histogram.minimum + (bin as f64 + 0.5) * histogram.bin_width();
-            let inside = (low..=high).contains(&center);
-            let height = ((count as f64).ln_1p() / (peak as f64).ln_1p()) as f32;
-            div()
-                .absolute()
-                .bottom_0()
-                .left(relative(bin as f32 / bins))
-                .w(relative(1.0 / bins))
-                .h(relative(height))
-                .bg(if inside {
-                    foreground.opacity(opacity)
-                } else {
-                    muted.opacity(0.5 * opacity)
-                })
-        });
+        let bars = histogram
+            .counts
+            .iter()
+            .enumerate()
+            .filter(|&(_, &count)| count > 0)
+            .map(|(bin, &count)| {
+                let center = histogram.minimum + (bin as f64 + 0.5) * histogram.bin_width();
+                let inside = (low..=high).contains(&center);
+                SidebarColumn {
+                    index: bin,
+                    height: ((count as f64).ln_1p() / (peak as f64).ln_1p()) as f32,
+                    color: if inside {
+                        foreground.opacity(opacity)
+                    } else {
+                        muted.opacity(0.5 * opacity)
+                    },
+                }
+            })
+            .collect();
+        let bars = column_canvas(bars, histogram.counts.len());
         let window_edge_handle = |window_edge_handle: WindowEdge, value: f64| {
             let id = match window_edge_handle {
                 WindowEdge::Low => "window-low",
@@ -537,7 +540,7 @@ impl Viewer {
             .gap_0p5()
             .child(
                 chart
-                    .children(bars)
+                    .child(bars.absolute().size_full())
                     .child(
                         div()
                             .absolute()
@@ -566,7 +569,7 @@ impl Viewer {
                     .child(window_edge_handle(WindowEdge::Low, low))
                     .child(window_edge_handle(WindowEdge::High, high)),
             )
-            .child(transfer_strip(histogram, layer.display.coloring()).opacity(opacity))
+            .child(transfer_strip(histogram, layer.display.coloring(), opacity))
             .child(histogram_range_labels(
                 format_value(histogram.minimum),
                 format_value(histogram.maximum),
@@ -806,25 +809,45 @@ fn time_curve_footer(
 }
 
 /// The colors along the histogram's value axis, as the views show them
-fn transfer_strip(histogram: &Histogram, coloring: Coloring) -> Div {
+fn transfer_strip(histogram: &Histogram, coloring: Coloring, opacity: f32) -> Canvas<()> {
     const BLOCKS: usize = 64;
-    let Coloring::Intensity { colormap, .. } = coloring else {
-        return div();
-    };
-    h_flex()
-        .w_full()
-        .h(px(6.0))
-        .rounded_sm()
-        .overflow_hidden()
-        .children((0..BLOCKS).map(|block| {
+    let mut blocks = Vec::new();
+    if let Coloring::Intensity { colormap, .. } = coloring {
+        for block in 0..BLOCKS {
             let fraction = (block as f64 + 0.5) / BLOCKS as f64;
             let value = histogram.minimum + fraction * (histogram.maximum - histogram.minimum);
-            let block = div().flex_1().h_full();
-            match coloring.window_position(value) {
-                Some(t) => block.bg(rgb_to_rgba(colormap.color(t))),
-                None => block,
+            if let Some(t) = coloring.window_position(value) {
+                let color = Hsla::from(rgb_to_rgba(colormap.color(t)));
+                blocks.push(SidebarColumn {
+                    index: block,
+                    height: 1.0,
+                    color: color.opacity(opacity),
+                });
             }
-        }))
+        }
+    }
+    column_canvas(blocks, BLOCKS)
+        .w_full()
+        .h(px(TRANSFER_STRIP_HEIGHT))
+}
+
+fn column_canvas(columns: Vec<SidebarColumn>, column_count: usize) -> Canvas<()> {
+    canvas(
+        |_, _, _| {},
+        move |bounds: Bounds<Pixels>, _, window: &mut Window, _: &mut App| {
+            let edge = |index: usize| {
+                bounds.left() + bounds.size.width * (index as f32 / column_count as f32)
+            };
+            for column in &columns {
+                let top = bounds.bottom() - bounds.size.height * column.height;
+                let area = Bounds::from_corners(
+                    point(edge(column.index), top),
+                    point(edge(column.index + 1), bounds.bottom()),
+                );
+                window.paint_quad(fill(area, column.color));
+            }
+        },
+    )
 }
 
 /// A color strip and the name of `colormap`.
@@ -840,6 +863,15 @@ fn colormap_preview(colormap: Colormap) -> Div {
 struct WindowPresetGroup {
     title: &'static str,
     presets: &'static [(&'static str, WindowPreset)],
+}
+
+/// One column of the sidebar histogram or transfer strip
+struct SidebarColumn {
+    /// Place among the columns from left to right
+    index: usize,
+    /// Height as a fraction of the canvas from the bottom
+    height: f32,
+    color: Hsla,
 }
 
 #[cfg(test)]
